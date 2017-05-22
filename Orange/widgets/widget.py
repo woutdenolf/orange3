@@ -115,6 +115,8 @@ class OWWidget(QDialog, OWComponent, Report, ProgressBarMixin,
     keywords = []
     background = None
     replaces = None
+    allows_cycle = False
+
 
     #: A list of published input definitions
     inputs = []
