@@ -358,7 +358,9 @@ def main(argv=None):
             widget_registry = pickle.load(f)
         widget_registry = qt.QtWidgetRegistry(widget_registry)
     else:
-        widget_discovery.run(config.widgets_entry_points())
+        entry_points = config.widgets_entry_points(
+            with_default_entry=(only_addon is False))
+        widget_discovery.run(entry_points)
         # Store cached descriptions
         cache.save_registry_cache(widget_discovery.cached_descriptions)
         with open(cache_filename, "wb") as f:
