@@ -759,8 +759,14 @@ class OWWidget(QDialog, OWComponent, Report, ProgressBarMixin,
                 return
             ClipboardFormat.write_image(None, graph_obj)
 
+    def updateProperties(self):
+        """Function called when the properties are requested to the scheme.
+        This can be usefull to synchronize the properties"""
+        pass
+
     def __restoreWidgetGeometry(self, geometry):
         # type: (bytes) -> bool
+
         def _fullscreen_to_maximized(geometry):
             """Don't restore windows into full screen mode because it loses
             decorations and can't be de-fullscreened at least on some platforms.
