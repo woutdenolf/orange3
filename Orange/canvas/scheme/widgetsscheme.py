@@ -454,6 +454,7 @@ class WidgetManager(QObject):
         if not initialized:
             try:
                 widget.__init__()
+                widget.node = node
             except Exception:
                 sys.excepthook(*sys.exc_info())
                 msg = traceback.format_exc()

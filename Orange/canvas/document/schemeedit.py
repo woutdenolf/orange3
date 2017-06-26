@@ -931,6 +931,7 @@ class SchemeEditWidget(QWidget):
                     )
 
         if ok:
+            name = self.enumerateTitle(name)
             self.__undoStack.push(
                 commands.RenameNodeCommand(self.__scheme, node, node.title,
                                            str(name))
