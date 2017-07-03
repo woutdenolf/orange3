@@ -20,6 +20,7 @@ from Orange.widgets.evaluate.utils import check_results_adequacy
 from Orange.widgets.utils import colorpalette, colorbrewer
 from Orange.widgets.evaluate.owrocanalysis import convex_hull
 from Orange.widgets.io import FileFormat
+from Orange.widgets.widget import Input
 from Orange.canvas import report
 
 
@@ -58,7 +59,9 @@ class OWLiftCurve(widget.OWWidget):
                   "from the evaluation of classifiers."
     icon = "icons/LiftCurve.svg"
     priority = 1020
-    inputs = [("Evaluation Results", Orange.evaluation.Results, "set_results")]
+
+    class Inputs:
+        evaluation_results = Input("Evaluation Results", Orange.evaluation.Results)
 
     target_index = settings.Setting(0)
     selected_classifiers = settings.Setting([])
@@ -101,8 +104,9 @@ class OWLiftCurve(widget.OWWidget):
         self.plotview = pg.GraphicsView(background="w")
         self.plotview.setFrameStyle(QtWidgets.QFrame.StyledPanel)
 
-        self.plot = pg.PlotItem()
-        self.plot.getViewBox().setMenuEnabled(False)
+        self.plot = pg.PlotItem(enableMenu=False)
+        self.plot.setMouseEnabled(False, False)
+        self.plot.hideButtons()
 
         pen = QPen(self.palette().color(QPalette.Text))
 
@@ -120,11 +124,12 @@ class OWLiftCurve(widget.OWWidget):
         axis.setLabel("TP Rate")
 
         self.plot.showGrid(True, True, alpha=0.1)
-        self.plot.setRange(xRange=(0.0, 1.0), yRange=(0.0, 1.0))
+        self.plot.setRange(xRange=(0.0, 1.0), yRange=(0.0, 1.0), padding=0.05)
 
         self.plotview.setCentralItem(self.plot)
         self.mainArea.layout().addWidget(self.plotview)
 
+    @Inputs.evaluation_results
     def set_results(self, results):
         """Set the input evaluation results."""
         self.clear()

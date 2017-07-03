@@ -154,11 +154,10 @@ class LearnerScorer(Scorer):
         raise NotImplementedError
 
     def score_data(self, data, feature=None):
-        scores = self.score(data)
 
         def average_scores(scores):
             scores_grouped = defaultdict(list)
-            for attr, score in zip(self.domain.attributes, scores):
+            for attr, score in zip(model_domain.attributes, scores):
                 # Go up the chain of preprocessors to obtain the original variable
                 while getattr(attr, 'compute_value', False):
                     attr = getattr(attr.compute_value, 'variable', attr)
@@ -167,8 +166,14 @@ class LearnerScorer(Scorer):
                     if attr in scores_grouped else 0
                     for attr in data.domain.attributes]
 
-        scores = np.atleast_2d(scores)
-        if data.domain != self.domain:
+        scores = np.atleast_2d(self.score(data))
+
+        from Orange.modelling import Fitter  # Avoid recursive import
+        model_domain = (self.get_learner(data).domain
+                        if isinstance(self, Fitter) else
+                        self.domain)
+
+        if data.domain != model_domain:
             scores = np.array([average_scores(row) for row in scores])
 
         return scores[:, data.domain.attributes.index(feature)] \
@@ -230,13 +235,11 @@ def _gini(D):
                   np.sum(D, axis=0) / np.sum(D))
 
 
-def _symmetrical_uncertainty(X, Y):
+def _symmetrical_uncertainty(data, attr1, attr2):
     """Symmetrical uncertainty, Press et al., 1988."""
-    from Orange.preprocess._relieff import contingency_table
-    X, Y = np.around(X), np.around(Y)
-    cont = contingency_table(X, Y)
+    cont = np.asarray(contingency.Discrete(data, attr1, attr2), dtype=float)
     ig = InfoGain().from_contingency(cont, 1)
-    return 2 * ig / (_entropy(cont.sum(0)) + _entropy(cont.sum(1)))
+    return 2 * ig / (_entropy(cont) + _entropy(cont.T))
 
 
 class FCBF(ClassificationScorer):
@@ -248,9 +251,10 @@ class FCBF(ClassificationScorer):
     2003. http://www.aaai.org/Papers/ICML/2003/ICML03-111.pdf
     """
     def score_data(self, data, feature=None):
+        attributes = data.domain.attributes
         S = []
-        for i, a in enumerate(data.X.T):
-            S.append((_symmetrical_uncertainty(a, data.Y), i))
+        for i, attr in enumerate(attributes):
+            S.append((_symmetrical_uncertainty(data, attr, data.domain.class_var), i))
         S.sort()
         worst = []
 
@@ -262,9 +266,7 @@ class FCBF(ClassificationScorer):
             while True:
                 try: SUqc, Fq = S[-q]
                 except IndexError: break
-                # TODO: cache
-                if _symmetrical_uncertainty(data.X.T[Fp],
-                                            data.X.T[Fq]) >= SUqc:
+                if _symmetrical_uncertainty(data, attributes[Fp], attributes[Fq]) >= SUqc:
                     del S[-q]
                     worst.append((1e-4*SUqc, Fq))
                 else:

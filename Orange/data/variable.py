@@ -357,6 +357,10 @@ class Variable(Reprable, metaclass=VariableMeta):
     def is_string(self):
         return isinstance(self, StringVariable)
 
+    @property
+    def is_time(self):
+        return isinstance(self, TimeVariable)
+
     def repr_val(self, val):
         """
         Return a textual representation of variable's value `val`. Argument
@@ -552,9 +556,11 @@ class DiscreteVariable(Variable):
 
     def __init__(self, name="", values=(), ordered=False, base_value=-1, compute_value=None):
         """ Construct a discrete variable descriptor with the given values. """
+        self.values = list(values)
+        if not all(isinstance(value, str) for value in self.values):
+            raise TypeError("values of DiscreteVariables must be strings")
         super().__init__(name, compute_value)
         self.ordered = ordered
-        self.values = list(values)
         self.base_value = base_value
 
     @property
@@ -610,6 +616,8 @@ class DiscreteVariable(Variable):
     def add_value(self, s):
         """ Add a value `s` to the list of values.
         """
+        if not isinstance(s, str):
+            raise TypeError("values of DiscreteVariables must be strings")
         self.values.append(s)
         self._colors = None
 

@@ -19,7 +19,8 @@ from Orange.widgets.settings import Setting, ContextHandler, ContextSetting, \
     PerfectDomainContextHandler
 from Orange.widgets.utils.domaineditor import DomainEditor
 from Orange.widgets.utils.itemmodels import PyListModel
-from Orange.widgets.utils.filedialogs import RecentPathsWComboMixin
+from Orange.widgets.utils.filedialogs import RecentPathsWComboMixin, dialog_formats
+from Orange.widgets.widget import Output
 
 # Backward compatibility: class RecentPath used to be defined in this module,
 # and it is used in saved (pickled) settings. It must be imported into the
@@ -94,9 +95,9 @@ class OWFile(widget.OWWidget, RecentPathsWComboMixin):
     priority = 10
     category = "Data"
     keywords = ["data", "file", "load", "read"]
-    outputs = [widget.OutputSignal(
-        "Data", Table,
-        doc="Attribute-valued data set read from the input file.")]
+
+    class Outputs:
+        data = Output("Data", Table, doc="Attribute-valued data set read from the input file.")
 
     want_main_area = False
 
@@ -121,12 +122,7 @@ class OWFile(widget.OWWidget, RecentPathsWComboMixin):
 
     variables = ContextSetting([])
 
-    dlg_formats = (
-        "All readable files ({});;".format(
-            '*' + ' *'.join(FileFormat.readers.keys())) +
-        ";;".join("{} (*{})".format(f.DESCRIPTION, ' *'.join(f.EXTENSIONS))
-                  for f in sorted(set(FileFormat.readers.values()),
-                                  key=list(FileFormat.readers.values()).index)))
+    domain_editor = SettingProvider(DomainEditor)
 
     class Warning(widget.OWWidget.Warning):
         file_too_big = widget.Msg("The file is too large to load automatically."
@@ -270,7 +266,7 @@ class OWFile(widget.OWWidget, RecentPathsWComboMixin):
             start_file = self.last_path() or os.path.expanduser("~/")
 
         filename, _ = QFileDialog.getOpenFileName(
-            self, 'Open Orange Data File', start_file, self.dlg_formats)
+            self, 'Open Orange Data File', start_file, dialog_formats())
         if not filename:
             return
         self.loaded_file = filename
@@ -285,14 +281,20 @@ class OWFile(widget.OWWidget, RecentPathsWComboMixin):
         # pylint: disable=broad-except
         self.editor_model.set_domain(None)
         self.apply_button.setEnabled(False)
-        self.Warning.file_too_big.clear()
+        self.clear_messages()
+        self.set_file_list()
+        if self.last_path() and not os.path.exists(self.last_path()):
+            self.Error.file_not_found()
+            self.Outputs.data.send(None)
+            self.info.setText("No data.")
+            return
 
         error = None
         try:
             self.reader = self._get_reader()
             if self.reader is None:
                 self.data = None
-                self.send("Data", None)
+                self.Outputs.data.send(None)
                 self.info.setText("No data.")
                 self.sheet_box.hide()
                 return
@@ -311,7 +313,7 @@ class OWFile(widget.OWWidget, RecentPathsWComboMixin):
 
         if error:
             self.data = None
-            self.send("Data", None)
+            self.Outputs.data.send(None)
             self.info.setText("An error occurred:\n{}".format(error))
             self.editor_model.reset()
             self.sheet_box.hide()
@@ -403,50 +405,20 @@ class OWFile(widget.OWWidget, RecentPathsWComboMixin):
             self.variables[:] = self.current_context.modified_variables
 
     def apply_domain_edit(self):
-        attributes = []
-        class_vars = []
-        metas = []
-        places = [attributes, class_vars, metas]
-        X, y, m = [], [], []
-        cols = [X, y, m]  # Xcols, Ycols, Mcols
-
-        def is_missing(x):
-            return str(x) in ("nan", "")
-
-        for column, (name, tpe, place, vals, is_con), (orig_var, orig_plc) in \
-            zip(count(), self.editor_model.variables,
-                chain([(at, 0) for at in self.data.domain.attributes],
-                      [(cl, 1) for cl in self.data.domain.class_vars],
-                      [(mt, 2) for mt in self.data.domain.metas])):
-            if place == 3:
-                continue
-            if orig_plc == 2:
-                col_data = list(chain(*self.data[:, orig_var].metas))
+        if self.data is None:
+            table = None
+        else:
+            domain, cols = self.domain_editor.get_domain(self.data.domain, self.data)
+            if not (domain.variables or domain.metas):
+                table = None
             else:
-                col_data = list(chain(*self.data[:, orig_var]))
-            if name == orig_var.name and tpe == type(orig_var):
-                var = orig_var
-            elif tpe == DiscreteVariable:
-                values = list(str(i) for i in set(col_data) if not is_missing(i))
-                var = tpe(name, values)
-                col_data = [np.nan if is_missing(x) else values.index(str(x))
-                            for x in col_data]
-            elif tpe == StringVariable and type(orig_var) == DiscreteVariable:
-                var = tpe(name)
-                col_data = [orig_var.repr_val(x) if not np.isnan(x) else ""
-                            for x in col_data]
-            else:
-                var = tpe(name)
-            places[place].append(var)
-            cols[place].append(col_data)
-        domain = Domain(attributes, class_vars, metas)
-        X = np.array(X).T if len(X) else np.empty((len(self.data), 0))
-        y = np.array(y).T if len(y) else None
-        dtpe = object if any(isinstance(m, StringVariable)
-                             for m in domain.metas) else float
-        m = np.array(m, dtype=dtpe).T if len(m) else None
-        table = Table.from_numpy(domain, X, y, m, self.data.W)
-        self.send("Data", table)
+                X, y, m = cols
+                table = Table.from_numpy(domain, X, y, m, self.data.W)
+                table.name = self.data.name
+                table.ids = np.array(self.data.ids)
+                table.attributes = getattr(self.data, 'attributes', {})
+
+        self.Outputs.data.send(table)
         self.apply_button.setEnabled(False)
 
     def get_widget_name_extension(self):

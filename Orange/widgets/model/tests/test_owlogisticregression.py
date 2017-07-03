@@ -2,6 +2,8 @@
 # pylint: disable=missing-docstring
 import unittest
 
+import numpy as np
+
 from Orange.classification import LogisticRegressionLearner
 from Orange.data import Table, Domain, ContinuousVariable, DiscreteVariable
 from Orange.statistics.util import stats
@@ -53,10 +55,10 @@ class TestOWLogisticRegression(WidgetTest, WidgetLearnerTestMixin):
 
     def test_output_coefficients(self):
         """Check if coefficients are on output after apply"""
-        self.assertIsNone(self.get_output("Coefficients"))
+        self.assertIsNone(self.get_output(self.widget.Outputs.coefficients))
         self.send_signal("Data", self.data)
         self.widget.apply_button.button.click()
-        self.assertIsInstance(self.get_output("Coefficients"), Table)
+        self.assertIsInstance(self.get_output(self.widget.Outputs.coefficients), Table)
 
     def test_domain_with_more_values_than_table(self):
         """
@@ -92,6 +94,20 @@ class TestOWLogisticRegression(WidgetTest, WidgetLearnerTestMixin):
         )
         self.send_signal("Data", table)
         self.widget.apply_button.button.click()
-        coef = self.get_output("Coefficients")
+        coef = self.get_output(self.widget.Outputs.coefficients)
         self.assertEqual(coef.domain[0].name, "no")
         self.assertGreater(coef[2][0], 0.)
+
+    def test_target_with_nan(self):
+        """
+        Rows with targets with nans are removed.
+        GH-2392
+        """
+        table = Table("iris")
+        table.Y[5:10] = np.NaN
+        self.send_signal("Data", table)
+        coef1 = self.get_output("Coefficients")
+        del table[5:10]
+        self.send_signal("Data", table)
+        coef2 = self.get_output("Coefficients")
+        self.assertTrue(np.array_equal(coef1, coef2))

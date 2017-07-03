@@ -3,6 +3,7 @@
 from itertools import chain
 
 import numpy as np
+import scipy.sparse as sp
 
 from Orange.data import Table, Domain, DiscreteVariable, StringVariable
 from Orange.widgets.data.owmergedata import OWMergeData, INSTANCEID, INDEX
@@ -38,10 +39,10 @@ class TestOWMergeData(WidgetTest):
 
     def test_input_remove(self):
         """Check widget after inputs have been removed"""
-        self.send_signal("Data", self.dataA)
-        self.send_signal("Extra Data", self.dataA)
-        self.send_signal("Data", None)
-        self.send_signal("Extra Data", None)
+        self.send_signal(self.widget.Inputs.data, self.dataA)
+        self.send_signal(self.widget.Inputs.extra_data, self.dataA)
+        self.send_signal(self.widget.Inputs.data, None)
+        self.send_signal(self.widget.Inputs.extra_data, None)
 
     def test_combobox_items_left(self):
         """Check if combo box content is properly set for merging option
@@ -50,20 +51,20 @@ class TestOWMergeData(WidgetTest):
         data_combo = self.widget.controls.attr_augment_data
         extra_combo = self.widget.controls.attr_augment_extra
 
-        self.send_signal("Data", self.dataA)
-        self.send_signal("Extra Data", self.dataA)
+        self.send_signal(self.widget.Inputs.data, self.dataA)
+        self.send_signal(self.widget.Inputs.extra_data, self.dataA)
         data_items = list(chain([INDEX], domainA, domainA.metas))
         extra_items = list(chain(
             [INDEX], domainA.variables[::2], domainA.metas[1:]))
         self.assertListEqual(data_combo.model()[:], data_items)
         self.assertListEqual(extra_combo.model()[:], extra_items)
 
-        self.send_signal("Extra Data", self.dataB)
+        self.send_signal(self.widget.Inputs.extra_data, self.dataB)
         extra_items = list(chain([INDEX], domainB, domainB.metas))
         self.assertListEqual(data_combo.model()[:], data_items)
         self.assertListEqual(extra_combo.model()[:], extra_items)
 
-        self.send_signal("Data", self.dataB)
+        self.send_signal(self.widget.Inputs.data, self.dataB)
         data_items = list(chain([INDEX], domainB, domainB.metas))
         self.assertListEqual(data_combo.model()[:], data_items)
         self.assertListEqual(extra_combo.model()[:], extra_items)
@@ -75,22 +76,22 @@ class TestOWMergeData(WidgetTest):
         data_combo = self.widget.controls.attr_merge_data
         extra_combo = self.widget.controls.attr_merge_extra
 
-        self.send_signal("Data", self.dataA)
-        self.send_signal("Extra Data", self.dataA)
+        self.send_signal(self.widget.Inputs.data, self.dataA)
+        self.send_signal(self.widget.Inputs.extra_data, self.dataA)
         self.widget.controls.merging.buttons[1].click()
         data_items = extra_items = list(chain(
             [INSTANCEID, INDEX], domainA.variables[::2], domainA.metas[1:]))
         self.assertListEqual(data_combo.model()[:], data_items)
         self.assertListEqual(extra_combo.model()[:], extra_items)
 
-        self.send_signal("Extra Data", self.dataB)
+        self.send_signal(self.widget.Inputs.extra_data, self.dataB)
         data_items = list(chain(
             [INDEX], domainA.variables[::2], domainA.metas[1:]))
         extra_items = list(chain([INDEX], domainB, domainB.metas))
         self.assertListEqual(data_combo.model()[:], data_items)
         self.assertListEqual(extra_combo.model()[:], extra_items)
 
-        self.send_signal("Data", self.dataB)
+        self.send_signal(self.widget.Inputs.data, self.dataB)
         data_items = extra_items = list(chain(
             [INSTANCEID, INDEX], domainB, domainB.metas))
         self.assertListEqual(data_combo.model()[:], data_items)
@@ -103,22 +104,22 @@ class TestOWMergeData(WidgetTest):
         data_combo = self.widget.controls.attr_combine_data
         extra_combo = self.widget.controls.attr_combine_extra
 
-        self.send_signal("Data", self.dataA)
-        self.send_signal("Extra Data", self.dataA)
+        self.send_signal(self.widget.Inputs.data, self.dataA)
+        self.send_signal(self.widget.Inputs.extra_data, self.dataA)
         self.widget.controls.merging.buttons[1].click()
         data_items = extra_items = list(chain(
             [INSTANCEID, INDEX], domainA.variables[::2], domainA.metas[1:]))
         self.assertListEqual(data_combo.model()[:], data_items)
         self.assertListEqual(extra_combo.model()[:], extra_items)
 
-        self.send_signal("Extra Data", self.dataB)
+        self.send_signal(self.widget.Inputs.extra_data, self.dataB)
         data_items = list(chain(
             [INDEX], domainA.variables[::2], domainA.metas[1:]))
         extra_items = list(chain([INDEX], domainB, domainB.metas))
         self.assertListEqual(data_combo.model()[:], data_items)
         self.assertListEqual(extra_combo.model()[:], extra_items)
 
-        self.send_signal("Data", self.dataB)
+        self.send_signal(self.widget.Inputs.data, self.dataB)
         data_items = extra_items = list(chain(
             [INSTANCEID, INDEX], domainB, domainB.metas))
         self.assertListEqual(data_combo.model()[:], data_items)
@@ -130,12 +131,12 @@ class TestOWMergeData(WidgetTest):
         domain = self.dataA.domain
         result = Table(domain, np.array([[1, 1], [2, 0]]), np.array([1, 2]),
                        np.array([[1.0, "m2"], [np.nan, "m3"]]).astype(object))
-        self.send_signal("Data", self.dataA[:3, [0, "cls", -1]])
-        self.send_signal("Extra Data", self.dataA[1:, [1, "cls", -2]])
+        self.send_signal(self.widget.Inputs.data, self.dataA[:3, [0, "cls", -1]])
+        self.send_signal(self.widget.Inputs.extra_data, self.dataA[1:, [1, "cls", -2]])
         self.widget.attr_merge_data = "Source position (index)"
         self.widget.attr_merge_extra = "Source position (index)"
         self.widget.controls.merging.buttons[1].click()
-        self.assertTablesEqual(self.get_output("Data"), result)
+        self.assertTablesEqual(self.get_output(self.widget.Outputs.data), result)
 
     def test_output_merge_by_ids_outer(self):
         """Check output for merging option 'Concatenate tables, merge rows' by
@@ -146,12 +147,12 @@ class TestOWMergeData(WidgetTest):
                        np.array([0, 1, 2, np.nan]),
                        np.array([[0.0, ""], [1.0, "m2"], [np.nan, "m3"],
                                  [np.nan, "m4"]]).astype(object))
-        self.send_signal("Data", self.dataA[:3, [0, "cls", -1]])
-        self.send_signal("Extra Data", self.dataA[1:, [1, "cls", -2]])
+        self.send_signal(self.widget.Inputs.data, self.dataA[:3, [0, "cls", -1]])
+        self.send_signal(self.widget.Inputs.extra_data, self.dataA[1:, [1, "cls", -2]])
         self.widget.attr_combine_data = "Source position (index)"
         self.widget.attr_combine_extra = "Source position (index)"
         self.widget.controls.merging.buttons[2].click()
-        self.assertTablesEqual(self.get_output("Data"), result)
+        self.assertTablesEqual(self.get_output(self.widget.Outputs.data), result)
 
     def test_output_merge_by_index_left(self):
         """Check output for merging option 'Append columns from Extra Data' by
@@ -168,9 +169,9 @@ class TestOWMergeData(WidgetTest):
                             ]).astype(object)
         result = Table(result_d, result_X, result_Y, result_M)
 
-        self.send_signal("Data", self.dataA)
-        self.send_signal("Extra Data", self.dataB)
-        self.assertTablesEqual(self.get_output("Data"), result)
+        self.send_signal(self.widget.Inputs.data, self.dataA)
+        self.send_signal(self.widget.Inputs.extra_data, self.dataB)
+        self.assertTablesEqual(self.get_output(self.widget.Outputs.data), result)
 
     def test_output_merge_by_index_inner(self):
         """Check output for merging option 'Find matching rows' by
@@ -185,10 +186,10 @@ class TestOWMergeData(WidgetTest):
                              [np.nan, "m3", 0.0]]).astype(object)
         result = Table(result_d, result_X, result_Y, result_M)
 
-        self.send_signal("Data", self.dataA)
-        self.send_signal("Extra Data", self.dataB)
+        self.send_signal(self.widget.Inputs.data, self.dataA)
+        self.send_signal(self.widget.Inputs.extra_data, self.dataB)
         self.widget.controls.merging.buttons[1].click()
-        self.assertTablesEqual(self.get_output("Data"), result)
+        self.assertTablesEqual(self.get_output(self.widget.Outputs.data), result)
 
     def test_output_merge_by_index_outer(self):
         """Check output for merging option 'Concatenate tables, merge rows' by
@@ -205,10 +206,10 @@ class TestOWMergeData(WidgetTest):
                            ).astype(object)
         result = Table(result_d, result_X, result_Y, result_M)
 
-        self.send_signal("Data", self.dataA)
-        self.send_signal("Extra Data", self.dataB)
+        self.send_signal(self.widget.Inputs.data, self.dataA)
+        self.send_signal(self.widget.Inputs.extra_data, self.dataB)
         self.widget.controls.merging.buttons[2].click()
-        self.assertTablesEqual(self.get_output("Data"), result)
+        self.assertTablesEqual(self.get_output(self.widget.Outputs.data), result)
 
     def test_output_merge_by_attribute_left(self):
         """Check output for merging option 'Append columns from Extra Data' by
@@ -225,12 +226,12 @@ class TestOWMergeData(WidgetTest):
                            ).astype(object)
         result = Table(result_d, result_X, result_Y, result_M)
 
-        self.send_signal("Data", self.dataA)
-        self.send_signal("Extra Data", self.dataB)
+        self.send_signal(self.widget.Inputs.data, self.dataA)
+        self.send_signal(self.widget.Inputs.extra_data, self.dataB)
         self.widget.attr_augment_data = domainA[0]
         self.widget.attr_augment_extra = domainB[0]
         self.widget.commit()
-        self.assertTablesEqual(self.get_output("Data"), result)
+        self.assertTablesEqual(self.get_output(self.widget.Outputs.data), result)
 
     def test_output_merge_by_attribute_inner(self):
         """Check output for merging option 'Find matching rows' by attribute"""
@@ -244,12 +245,12 @@ class TestOWMergeData(WidgetTest):
                              [np.nan, "m3", 0.0]]).astype(object)
         result = Table(result_d, result_X, result_Y, result_M)
 
-        self.send_signal("Data", self.dataA)
-        self.send_signal("Extra Data", self.dataB)
+        self.send_signal(self.widget.Inputs.data, self.dataA)
+        self.send_signal(self.widget.Inputs.extra_data, self.dataB)
         self.widget.attr_merge_data = domainA[0]
         self.widget.attr_merge_extra = domainB[0]
         self.widget.controls.merging.buttons[1].click()
-        self.assertTablesEqual(self.get_output("Data"), result)
+        self.assertTablesEqual(self.get_output(self.widget.Outputs.data), result)
 
     def test_output_merge_by_attribute_outer(self):
         """Check output for merging option 'Concatenate tables, merge rows' by
@@ -266,12 +267,12 @@ class TestOWMergeData(WidgetTest):
                            ).astype(object)
         result = Table(result_d, result_X, result_Y, result_M)
 
-        self.send_signal("Data", self.dataA)
-        self.send_signal("Extra Data", self.dataB)
+        self.send_signal(self.widget.Inputs.data, self.dataA)
+        self.send_signal(self.widget.Inputs.extra_data, self.dataB)
         self.widget.attr_combine_data = domainA[0]
         self.widget.attr_combine_extra = domainB[0]
         self.widget.controls.merging.buttons[2].click()
-        self.assertTablesEqual(self.get_output("Data"), result)
+        self.assertTablesEqual(self.get_output(self.widget.Outputs.data), result)
 
     def test_output_merge_by_class_left(self):
         """Check output for merging option 'Append columns from Extra Data' by
@@ -287,12 +288,12 @@ class TestOWMergeData(WidgetTest):
                            ).astype(object)
         result = Table(result_d, result_X, result_Y, result_M)
 
-        self.send_signal("Data", self.dataA)
-        self.send_signal("Extra Data", self.dataB)
+        self.send_signal(self.widget.Inputs.data, self.dataA)
+        self.send_signal(self.widget.Inputs.extra_data, self.dataB)
         self.widget.attr_augment_data = domainA[2]
         self.widget.attr_augment_extra = domainB[2]
         self.widget.commit()
-        self.assertTablesEqual(self.get_output("Data"), result)
+        self.assertTablesEqual(self.get_output(self.widget.Outputs.data), result)
 
     def test_output_merge_by_class_inner(self):
         """Check output for merging option 'Find matching rows' by class
@@ -306,12 +307,12 @@ class TestOWMergeData(WidgetTest):
                            ).astype(object)
         result = Table(result_d, result_X, result_Y, result_M)
 
-        self.send_signal("Data", self.dataA)
-        self.send_signal("Extra Data", self.dataB)
+        self.send_signal(self.widget.Inputs.data, self.dataA)
+        self.send_signal(self.widget.Inputs.extra_data, self.dataB)
         self.widget.attr_merge_data = domainA.class_vars[0]
         self.widget.attr_merge_extra = domainB.class_vars[0]
         self.widget.controls.merging.buttons[1].click()
-        self.assertTablesEqual(self.get_output("Data"), result)
+        self.assertTablesEqual(self.get_output(self.widget.Outputs.data), result)
 
     def test_output_merge_by_class_outer(self):
         """Check output for merging option 'Concatenate tables, merge rows' by
@@ -330,12 +331,12 @@ class TestOWMergeData(WidgetTest):
                              [np.nan, "", np.nan]]).astype(object)
         result = Table(result_d, result_X, result_Y, result_M)
 
-        self.send_signal("Data", self.dataA)
-        self.send_signal("Extra Data", self.dataB)
+        self.send_signal(self.widget.Inputs.data, self.dataA)
+        self.send_signal(self.widget.Inputs.extra_data, self.dataB)
         self.widget.attr_combine_data = domainA.class_vars[0]
         self.widget.attr_combine_extra = domainB.class_vars[0]
         self.widget.controls.merging.buttons[2].click()
-        self.assertTablesEqual(self.get_output("Data"), result)
+        self.assertTablesEqual(self.get_output(self.widget.Outputs.data), result)
 
     def test_output_merge_by_meta_left(self):
         """Check output for merging option 'Append columns from Extra Data' by
@@ -352,12 +353,12 @@ class TestOWMergeData(WidgetTest):
                              [0.0, "m4"]]).astype(object)
         result = Table(result_d, result_X, result_Y, result_M)
 
-        self.send_signal("Data", self.dataA)
-        self.send_signal("Extra Data", self.dataB)
+        self.send_signal(self.widget.Inputs.data, self.dataA)
+        self.send_signal(self.widget.Inputs.extra_data, self.dataB)
         self.widget.attr_augment_data = domainA[-2]
         self.widget.attr_augment_extra = domainB[-1]
         self.widget.commit()
-        self.assertTablesEqual(self.get_output("Data"), result)
+        self.assertTablesEqual(self.get_output(self.widget.Outputs.data), result)
 
     def test_output_merge_by_meta_inner(self):
         """Check output for merging option 'Find matching rows' by meta
@@ -371,12 +372,12 @@ class TestOWMergeData(WidgetTest):
         result_M = np.array([[0.0, "m4"]]).astype(object)
         result = Table(result_d, result_X, result_Y, result_M)
 
-        self.send_signal("Data", self.dataA)
-        self.send_signal("Extra Data", self.dataB)
+        self.send_signal(self.widget.Inputs.data, self.dataA)
+        self.send_signal(self.widget.Inputs.extra_data, self.dataB)
         self.widget.attr_merge_data = domainA[-2]
         self.widget.attr_merge_extra = domainB[-1]
         self.widget.controls.merging.buttons[1].click()
-        self.assertTablesEqual(self.get_output("Data"), result)
+        self.assertTablesEqual(self.get_output(self.widget.Outputs.data), result)
 
     def test_output_merge_by_meta_outer(self):
         """Check output for merging option 'Concatenate tables, merge rows' by
@@ -397,12 +398,12 @@ class TestOWMergeData(WidgetTest):
 
         result = Table(result_d, result_X, result_Y, result_M)
 
-        self.send_signal("Data", self.dataA)
-        self.send_signal("Extra Data", self.dataB)
+        self.send_signal(self.widget.Inputs.data, self.dataA)
+        self.send_signal(self.widget.Inputs.extra_data, self.dataB)
         self.widget.attr_combine_data = domainA[-2]
         self.widget.attr_combine_extra = domainB[-1]
         self.widget.controls.merging.buttons[2].click()
-        self.assertTablesEqual(self.get_output("Data"), result)
+        self.assertTablesEqual(self.get_output(self.widget.Outputs.data), result)
 
     def assertTablesEqual(self, table1, table2):
         self.assertEqual(table1.domain, table2.domain)
@@ -417,11 +418,36 @@ class TestOWMergeData(WidgetTest):
         indices.pop(26)
         zoo = Table("zoo")[indices]
         zoo_images = Table("zoo-with-images")
-        self.send_signal("Data", zoo)
-        self.send_signal("Extra Data", zoo_images)
+        self.send_signal(self.widget.Inputs.data, zoo)
+        self.send_signal(self.widget.Inputs.extra_data, zoo_images)
         self.assertEqual(self.widget.attr_augment_data, zoo.domain[-1])
         self.assertEqual(self.widget.attr_augment_extra, zoo_images.domain[-1])
         self.assertEqual(self.widget.attr_merge_data, zoo.domain[-1])
         self.assertEqual(self.widget.attr_merge_extra, zoo_images.domain[-1])
         self.assertEqual(self.widget.attr_combine_data, zoo.domain[-1])
         self.assertEqual(self.widget.attr_combine_extra, zoo_images.domain[-1])
+
+    def test_sparse(self):
+        """
+        Merge should work with sparse.
+        GH-2295
+        GH-2155
+        """
+        data = Table("iris")[::25]
+        data_ed_dense = Table("titanic")[::300]
+        data_ed_sparse = Table("titanic")[::300]
+        data_ed_sparse.X = sp.csr_matrix(data_ed_sparse.X)
+        self.send_signal("Data", data)
+
+        self.send_signal("Extra Data", data_ed_dense)
+        output_dense = self.get_output("Data")
+        self.assertFalse(sp.issparse(output_dense.X))
+        self.assertFalse(output_dense.is_sparse())
+
+        self.send_signal("Extra Data", data_ed_sparse)
+        output_sparse = self.get_output("Data")
+        self.assertTrue(sp.issparse(output_sparse.X))
+        self.assertTrue(output_sparse.is_sparse())
+
+        output_sparse.X = output_sparse.X.toarray()
+        self.assertTablesEqual(output_dense, output_sparse)

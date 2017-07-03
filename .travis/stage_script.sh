@@ -2,9 +2,12 @@
 if [ "$RUN_PYLINT" ]; then
     cd $TRAVIS_BUILD_DIR
     foldable pip install -r requirements-dev.txt
+    foldable pip uninstall -y radon     # disable radon in favor of codeclimate
     cp pylintrc ~/.pylintrc
     .travis/check_pylint_diff
-    exit $?
+    EXIT_CODE=$?
+    echo "Lint check returned ${EXIT_CODE}"
+    return ${EXIT_CODE}
 fi
 
 cd "$ORANGE_DIR"

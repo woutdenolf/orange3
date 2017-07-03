@@ -29,7 +29,7 @@ from Orange.widgets.settings import ContextSetting, DomainContextHandler
 from Orange.widgets.utils import itemmodels, vartype
 from Orange.widgets.utils.sql import check_sql_input
 from Orange.canvas import report
-from Orange.widgets.widget import OWWidget, Msg
+from Orange.widgets.widget import OWWidget, Msg, Input, Output
 
 FeatureDescriptor = \
     namedtuple("FeatureDescriptor", ["name", "expression"])
@@ -241,7 +241,7 @@ class DiscreteFeatureEditor(FeatureEditor):
     def editorData(self):
         values = self.valuesedit.text()
         values = re.split(r"(?<!\\),", values)
-        values = tuple(v.replace(r"\,", ",").strip() for v in values)
+        values = tuple(filter(None, [v.replace(r"\,", ",").strip() for v in values]))
         return DiscreteDescriptor(
             name=self.nameedit.text(),
             values=values,
@@ -289,7 +289,7 @@ class DescriptorModel(itemmodels.PyListModel):
             return super().data(index, role)
 
 
-class FeatureConstructorSettingsHandler(DomainContextHandler):
+class FeatureConstructorHandler(DomainContextHandler):
     """Context handler that filters descriptors"""
 
     def is_valid_item(self, setting, descriptor, attrs, metas):
@@ -318,12 +318,16 @@ class OWFeatureConstructor(OWWidget):
     description = "Construct new features (data columns) from a set of " \
                   "existing features in the input data set."
     icon = "icons/FeatureConstructor.svg"
-    inputs = [("Data", Orange.data.Table, "setData")]
-    outputs = [("Data", Orange.data.Table)]
+
+    class Inputs:
+        data = Input("Data", Orange.data.Table)
+
+    class Outputs:
+        data = Output("Data", Orange.data.Table)
 
     want_main_area = False
 
-    settingsHandler = FeatureConstructorSettingsHandler()
+    settingsHandler = FeatureConstructorHandler()
     descriptors = ContextSetting([])
     currentIndex = ContextSetting(-1)
 
@@ -482,6 +486,7 @@ class OWFeatureConstructor(OWWidget):
         self.descriptors = descriptors
         self.featuremodel[:] = list(self.descriptors)
 
+    @Inputs.data
     @check_sql_input
     def setData(self, data=None):
         """Set the input dataset."""
@@ -515,7 +520,7 @@ class OWFeatureConstructor(OWWidget):
         if self.data is not None:
             self.apply()
         else:
-            self.send("Data", None)
+            self.Outputs.data.send(None)
 
     def addFeature(self, descriptor):
         self.featuremodel.append(descriptor)
@@ -589,7 +594,7 @@ class OWFeatureConstructor(OWWidget):
             self.Error.more_values_needed(disc_attrs_not_ok)
             return
 
-        self.send("Data", data)
+        self.Outputs.data.send(data)
 
     def send_report(self):
         items = OrderedDict()
@@ -829,7 +834,7 @@ def make_lambda(expression, args, values):
         if sys.version_info >= (3, 0):
             return ast.arg(arg=name, annotation=None)
         else:
-            return ast.Name(id=arg, ctx=ast.Param(), lineno=1, col_offset=0)
+            return ast.Name(id=name, ctx=ast.Param(), lineno=1, col_offset=0)
 
     lambda_ = ast.Lambda(
         args=ast.arguments(
@@ -881,7 +886,7 @@ __GLOBALS.update({
     "weibullvariate": random.weibullvariate,
     "triangular": random.triangular,
     "uniform": random.uniform}
-)
+                )
 
 
 class FeatureFunc:
@@ -909,8 +914,10 @@ def unique(seq):
     return unique_el
 
 
-def main(argv=sys.argv):
+def main(argv=None):
     from AnyQt.QtWidgets import QApplication
+    if argv is None:
+        argv = sys.argv
     app = QApplication(list(argv))
     argv = app.arguments()
     if len(argv) > 1:
