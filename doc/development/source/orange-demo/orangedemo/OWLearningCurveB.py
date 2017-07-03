@@ -3,18 +3,19 @@ from collections import OrderedDict
 from functools import reduce
 
 import numpy
-import sklearn.cross_validation
 
-from PyQt4.QtGui import QTableWidget, QTableWidgetItem
+from AnyQt.QtWidgets import QTableWidget, QTableWidgetItem
 
 import Orange.data
 import Orange.classification
+import Orange.evaluation
 
-from Orange.widgets import widget, gui, settings
+from Orange.widgets import gui, settings
+from Orange.widgets.widget import OWWidget, Input
 from Orange.evaluation.testing import Results
 
 
-class OWLearningCurveB(widget.OWWidget):
+class OWLearningCurveB(OWWidget):
     name = "Learning Curve (B)"
     description = ("Takes a data set and a set of learners and shows a "
                    "learning curve in a table")
@@ -22,10 +23,11 @@ class OWLearningCurveB(widget.OWWidget):
     priority = 1010
 
 # [start-snippet-1]
-    inputs = [("Data", Orange.data.Table, "set_dataset", widget.Default),
-              ("Test Data", Orange.data.Table, "set_testdataset"),
-              ("Learner", Orange.classification.Learner, "set_learner",
-               widget.Multiple + widget.Default)]
+    class Inputs:
+        data = Input("Data", Orange.data.Table, default=True)
+        test_data = Input("Test Data", Orange.data.Table)
+        learner = Input("Learner", Orange.classification.Learner,
+                        multiple=True)
 # [end-snippet-1]
 
     #: cross validation folds
@@ -101,6 +103,7 @@ class OWLearningCurveB(widget.OWWidget):
     ##########################################################################
     # slots: handle input signals
 
+    @Inputs.data
     def set_dataset(self, data):
         """Set the input train dataset."""
         # Clear all results/scores
@@ -118,6 +121,7 @@ class OWLearningCurveB(widget.OWWidget):
 
         self.commitBtn.setEnabled(self.data is not None)
 
+    @Inputs.test_data
     def set_testdataset(self, testdata):
         """Set a separate test dataset."""
         # Clear all results/scores
@@ -128,6 +132,7 @@ class OWLearningCurveB(widget.OWWidget):
 
         self.testdata = testdata
 
+    @Inputs.learner
     def set_learner(self, learner, id):
         """Set the input learner for channel id."""
         if id in self.learners:
@@ -188,22 +193,17 @@ class OWLearningCurveB(widget.OWWidget):
             return
         learners = [learner for _, learner in need_update]
 
-        self.progressBarInit()
         if self.testdata is None:
             # compute the learning curve result for all learners in one go
             results = learning_curve(
                 learners, self.data, folds=self.folds,
                 proportions=self.curvePoints,
-                callback=lambda value: self.progressBarSet(100 * value)
             )
         else:
             results = learning_curve_with_test_data(
                 learners, self.data, self.testdata, times=self.folds,
                 proportions=self.curvePoints,
-                callback=lambda value: self.progressBarSet(100 * value)
             )
-
-        self.progressBarFinished()
         # split the combined result into per learner/model results
         results = [list(Results.split_by_model(p_results)) for p_results in results]
 
@@ -274,6 +274,7 @@ def learning_curve(learners, data, folds=10, proportions=None,
     ]
     return results
 
+
 def learning_curve_with_test_data(learners, traindata, testdata, times=10,
                                   proportions=None, random_state=None,
                                   callback=None):
@@ -322,6 +323,9 @@ def results_add(x, y):
     assert x.domain is y.domain
     assert x.predicted.shape[0] == y.predicted.shape[0]
 
+    assert len(x.learners) == len(y.learners)
+    assert all(xl is yl for xl, yl in zip(x.learners, y.learners))
+
     row_indices = numpy.hstack((x.row_indices, y.row_indices))
     predicted = numpy.hstack((x.predicted, y.predicted))
     actual = numpy.hstack((x.actual, y.actual))
@@ -339,6 +343,7 @@ def results_add(x, y):
     res = Orange.evaluation.Results()
     res.data = x.data
     res.domain = x.domain
+    res.learners = x.learners
     res.row_indices = row_indices
     res.actual = actual
     res.predicted = predicted
@@ -358,10 +363,10 @@ def results_add(x, y):
     return res
 
 
-def main(argv=sys.argv):
-    from PyQt4.QtGui import QApplication
-    app = QApplication(argv)
-    argv = app.argv()
+def main(argv=None):
+    from AnyQt.QtWidgets import QApplication
+    app = QApplication(list(argv) if argv else [])
+    argv = app.arguments()
     if len(argv) > 1:
         filename = argv[1]
     else:
@@ -402,7 +407,8 @@ def main(argv=sys.argv):
     ow.set_learner(None, 2)
     ow.set_learner(None, 3)
     ow.handleNewSignals()
+    ow.onDeleteWidget()
     return 0
 
-if __name__=="__main__":
-    sys.exit(main())
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

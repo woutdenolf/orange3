@@ -14,6 +14,7 @@ from Orange.widgets import widget, gui, settings
 from Orange.widgets.evaluate.utils import check_results_adequacy
 from Orange.widgets.utils import colorpalette, colorbrewer
 from Orange.widgets.io import FileFormat
+from Orange.widgets.widget import Input
 from Orange.canvas import report
 
 
@@ -35,7 +36,9 @@ class OWCalibrationPlot(widget.OWWidget):
     description = "Calibration plot based on evaluation of classifiers."
     icon = "icons/CalibrationPlot.svg"
     priority = 1030
-    inputs = [("Evaluation Results", Orange.evaluation.Results, "set_results")]
+
+    class Inputs:
+        evaluation_results = Input("Evaluation Results", Orange.evaluation.Results)
 
     class Warning(widget.OWWidget.Warning):
         empty_input = widget.Msg(
@@ -75,17 +78,21 @@ class OWCalibrationPlot(widget.OWWidget):
                      callback=self._on_display_rug_changed)
 
         self.plotview = pg.GraphicsView(background="w")
-        self.plot = pg.PlotItem()
+        self.plot = pg.PlotItem(enableMenu=False)
+        self.plot.setMouseEnabled(False, False)
+        self.plot.hideButtons()
 
         axis = self.plot.getAxis("bottom")
         axis.setLabel("Predicted Probability")
 
         axis = self.plot.getAxis("left")
         axis.setLabel("Observed Average")
-        self.plotview.setCentralItem(self.plot)
 
+        self.plot.setRange(xRange=(0.0, 1.0), yRange=(0.0, 1.0), padding=0.05)
+        self.plotview.setCentralItem(self.plot)
         self.mainArea.layout().addWidget(self.plotview)
 
+    @Inputs.evaluation_results
     def set_results(self, results):
         self.clear()
         results = check_results_adequacy(results, self.Error)
@@ -220,7 +227,7 @@ def gaussian_smoother(x, y, sigma=1.0):
         W = a * numpy.exp(-gamma * ((xs - x) ** 2))
         return numpy.average(y, weights=W)
 
-    return numpy.frompyfunc(smoother, 1, 1)
+    return numpy.vectorize(smoother, otypes=[numpy.float])
 
 
 def main():

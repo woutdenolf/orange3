@@ -2,16 +2,18 @@ import sys
 from collections import OrderedDict
 
 import numpy
-from PyQt4.QtGui import QTableWidget, QTableWidgetItem
+from AnyQt.QtWidgets import QTableWidget, QTableWidgetItem
 
 import Orange.data
 import Orange.classification
+import Orange.evaluation
 
-from Orange.widgets import widget, gui, settings
+from Orange.widgets import gui, settings
+from Orange.widgets.widget import OWWidget, Input
 from Orange.evaluation.testing import Results
 
 
-class OWLearningCurveA(widget.OWWidget):
+class OWLearningCurveA(OWWidget):
     name = "Learning Curve (A)"
     description = ("Takes a data set and a set of learners and shows a "
                    "learning curve in a table")
@@ -19,9 +21,10 @@ class OWLearningCurveA(widget.OWWidget):
     priority = 1000
 
 # [start-snippet-1]
-    inputs = [("Data", Orange.data.Table, "set_dataset"),
-              ("Learner", Orange.classification.Learner, "set_learner",
-               widget.Multiple + widget.Default)]
+    class Inputs:
+        data = Input("Data", Orange.data.Table)
+        learner = Input("Learner", Orange.classification.Learner,
+                        multiple=True)
 # [end-snippet-1]
 
     #: cross validation folds
@@ -97,6 +100,7 @@ class OWLearningCurveA(widget.OWWidget):
     ##########################################################################
     # slots: handle input signals
 
+    @Inputs.data
     def set_dataset(self, data):
         """Set the input train dataset."""
         # Clear all results/scores
@@ -114,6 +118,7 @@ class OWLearningCurveA(widget.OWWidget):
 
         self.commitBtn.setEnabled(self.data is not None)
 
+    @Inputs.learner
     def set_learner(self, learner, id):
         """Set the input learner for channel id."""
         if id in self.learners:
@@ -175,14 +180,11 @@ class OWLearningCurveA(widget.OWWidget):
 
         learners = [learner for _, learner in need_update]
 
-        self.progressBarInit()
         # compute the learning curve result for all learners in one go
         results = learning_curve(
             learners, self.data, folds=self.folds,
             proportions=self.curvePoints,
-            callback=lambda value: self.progressBarSet(100 * value)
         )
-        self.progressBarFinished()
         # split the combined result into per learner/model results
         results = [list(Results.split_by_model(p_results))
                    for p_results in results]
@@ -255,10 +257,10 @@ def learning_curve(learners, data, folds=10, proportions=None,
     return results
 
 
-def main(argv=sys.argv):
-    from PyQt4.QtGui import QApplication
-    app = QApplication(argv)
-    argv = app.argv()
+def main(argv=None):
+    from AnyQt.QtWidgets import QApplication
+    app = QApplication(list(argv) if argv else [])
+    argv = app.arguments()
     if len(argv) > 1:
         filename = argv[1]
     else:
@@ -293,7 +295,8 @@ def main(argv=sys.argv):
     ow.set_learner(None, 2)
     ow.set_learner(None, 3)
     ow.handleNewSignals()
+    ow.onDeleteWidget()
     return 0
 
-if __name__=="__main__":
-    sys.exit(main())
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

@@ -1,4 +1,9 @@
+# pylint doesn't understand the Settings magic
+# pylint: disable=invalid-sequence-index
+
 import sys
+import functools
+from itertools import chain
 import abc
 import enum
 import logging
@@ -26,7 +31,7 @@ from AnyQt.QtGui import QStandardItemModel, QStandardItem
 from AnyQt.QtCore import Qt, QSize, QThread, QMetaObject, Q_ARG
 from AnyQt.QtCore import pyqtSlot as Slot
 
-from Orange.data import Table, DiscreteVariable
+from Orange.data import Table, DiscreteVariable, ContinuousVariable
 from Orange.data.sql.table import SqlTable, AUTO_DL_LIMIT
 import Orange.evaluation
 import Orange.classification
@@ -36,43 +41,19 @@ from Orange.base import Learner
 from Orange.evaluation import scoring, Results
 from Orange.preprocess.preprocess import Preprocess
 from Orange.preprocess import RemoveNaNClasses
-from Orange.widgets import widget, gui, settings
+from Orange.widgets import gui, settings, widget
 from Orange.widgets.utils.itemmodels import DomainModel
-from Orange.widgets.widget import OWWidget, Msg
+from Orange.widgets.widget import OWWidget, Msg, Input, Output
 from Orange.widgets.utils.concurrent import ThreadExecutor
 
 log = logging.getLogger(__name__)
 
-
-Input = namedtuple(
-    "Input",
+InputLearner = namedtuple(
+    "InputLearner",
     ["learner",  # :: Orange.base.Learner
      "results",  # :: Option[Try[Orange.evaluation.Results]]
      "stats"]    # :: Option[Sequence[Try[float]]]
 )
-
-
-def classification_stats(results):
-    return tuple(score(results) for score in classification_stats.scores)
-
-classification_stats.headers, classification_stats.scores = zip(*(
-    ("AUC", scoring.AUC),
-    ("CA", scoring.CA),
-    ("F1", scoring.F1),
-    ("Precision", scoring.Precision),
-    ("Recall", scoring.Recall),
-))
-
-
-def regression_stats(results):
-    return tuple(score(results) for score in regression_stats.scores)
-
-regression_stats.headers, regression_stats.scores = zip(*(
-    ("MSE", scoring.MSE),
-    ("RMSE", scoring.RMSE),
-    ("MAE", scoring.MAE),
-    ("R2", scoring.R2),
-))
 
 
 class ItemDelegate(QStyledItemDelegate):
@@ -163,15 +144,22 @@ class OWTestLearners(OWWidget):
     icon = "icons/TestLearners1.svg"
     priority = 100
 
-    inputs = [("Learner", Learner, "set_learner", widget.Multiple),
-              ("Data", Table, "set_train_data", widget.Default),
-              ("Test Data", Table, "set_test_data"),
-              ("Preprocessor", Preprocess, "set_preprocessor")]
+    class Inputs:
+        train_data = Input("Data", Table, default=True)
+        test_data = Input("Test Data", Table)
+        learner = Input("Learner", Learner, multiple=True)
+        preprocessor = Input("Preprocessor", Preprocess)
 
-    outputs = [("Predictions", Table),
-               ("Evaluation Results", Results)]
+    class Outputs:
+        predictions = Output("Predictions", Table)
+        evaluations_results = Output("Evaluation Results", Results)
 
     settings_version = 3
+    UserAdviceMessages = [
+        widget.Message(
+            "Click on the table header to select shown columns",
+            "click_header")]
+
     settingsHandler = settings.PerfectDomainContextHandler(metas_in_res=True)
 
     #: Resampling/testing types
@@ -203,9 +191,12 @@ class OWTestLearners(OWWidget):
     TARGET_AVERAGE = "(Average over classes)"
     class_selection = settings.ContextSetting(TARGET_AVERAGE)
 
+    BUILTIN_ORDER = {
+        DiscreteVariable: ("AUC", "CA", "F1", "Precision", "Recall"),
+        ContinuousVariable: ("MSE", "RMSE", "MAE", "R2")}
+
     shown_scores = \
-        settings.Setting({"AUC", "CA", "F1", "Precision", "Recall",
-                          "MSE", "RMSE", "MAE", "R2"})
+        settings.Setting(set(chain(*BUILTIN_ORDER.values())))
 
     class Error(OWWidget.Error):
         train_data_empty = Msg("Train data set is empty.")
@@ -216,6 +207,8 @@ class OWTestLearners(OWWidget):
         too_many_folds = Msg("Number of folds exceeds the data size")
         class_inconsistent = Msg("Test and train data sets "
                                  "have different target variables.")
+        memory_error = Msg("Not enough memory.")
+        only_one_class_var_value = Msg("Target variable has only one value.")
 
     class Warning(OWWidget.Warning):
         missing_data = \
@@ -237,6 +230,8 @@ class OWTestLearners(OWWidget):
         self.preprocessor = None
         self.train_data_missing_vals = False
         self.test_data_missing_vals = False
+        self.scorers = []
+
         #: An Ordered dictionary with current inputs and their testing results.
         self.learners = OrderedDict()  # type: Dict[Any, Input]
 
@@ -332,6 +327,7 @@ class OWTestLearners(OWWidget):
         if self.resampling == OWTestLearners.FeatureFold and not enabled:
             self.resampling = OWTestLearners.KFold
 
+    @Inputs.learner
     def set_learner(self, learner, key):
         """
         Set the input `learner` for `key`.
@@ -346,9 +342,10 @@ class OWTestLearners(OWWidget):
             self._invalidate([key])
             del self.learners[key]
         else:
-            self.learners[key] = Input(learner, None, None)
+            self.learners[key] = InputLearner(learner, None, None)
             self._invalidate([key])
 
+    @Inputs.train_data
     def set_train_data(self, data):
         """
         Set the input training dataset.
@@ -359,18 +356,24 @@ class OWTestLearners(OWWidget):
         """
         self.Information.data_sampled.clear()
         self.Error.train_data_empty.clear()
+        self.Error.class_required.clear()
+        self.Error.too_many_classes.clear()
+        self.Error.only_one_class_var_value.clear()
         if data is not None and not len(data):
             self.Error.train_data_empty()
             data = None
-        if data and not data.domain.class_vars:
-            self.Error.class_required()
-            data = None
-        elif data and len(data.domain.class_vars) > 1:
-            self.Error.too_many_classes()
-            data = None
-        else:
-            self.Error.class_required.clear()
-            self.Error.too_many_classes.clear()
+        if data:
+            conds = [not data.domain.class_vars,
+                     len(data.domain.class_vars) > 1,
+                     data.domain.has_discrete_class and len(data.domain.class_var.values) == 1]
+            errors = [self.Error.class_required,
+                      self.Error.too_many_classes,
+                      self.Error.only_one_class_var_value]
+            for cond, error in zip(conds, errors):
+                if cond:
+                    error()
+                    data = None
+                    break
 
         if isinstance(data, SqlTable):
             if data.approx_len() < AUTO_DL_LIMIT:
@@ -392,6 +395,7 @@ class OWTestLearners(OWWidget):
 
         self.data = data
         self.closeContext()
+        self._update_scorers()
         self._update_controls()
         if data is not None:
             self._update_class_selection()
@@ -400,6 +404,7 @@ class OWTestLearners(OWWidget):
                 self.resampling = OWTestLearners.FeatureFold
         self._invalidate()
 
+    @Inputs.test_data
     def set_test_data(self, data):
         # type: (Orange.data.Table) -> None
         """
@@ -448,6 +453,25 @@ class OWTestLearners(OWWidget):
                 (False, True): " test "}[(self.train_data_missing_vals,
                                           self.test_data_missing_vals)]
 
+    # List of scorers shouldn't be retrieved globally, when the module is
+    # loading since add-ons could have registered additional scorers.
+    # It could have been cached but
+    # - we don't gain much with it
+    # - it complicates the unit tests
+    def _update_scorers(self):
+        if self.data is None or self.data.domain.class_var is None:
+            self.scorers = []
+            return
+        class_var = self.data and self.data.domain.class_var
+        order = {name: i
+                 for i, name in enumerate(self.BUILTIN_ORDER[type(class_var)])}
+        # 'abstract' is retrieved from __dict__ to avoid inheriting
+        usable = (cls for cls in scoring.Score.registry.values()
+                  if cls.is_scalar and not cls.__dict__.get("abstract")
+                  and isinstance(class_var, cls.class_types))
+        self.scorers = sorted(usable, key=lambda cls: order.get(cls.name, 99))
+
+    @Inputs.preprocessor
     def set_preprocessor(self, preproc):
         """
         Set the input preprocessor to apply on the training data.
@@ -481,19 +505,12 @@ class OWTestLearners(OWWidget):
 
     def _update_header(self):
         # Set the correct horizontal header labels on the results_model.
-        headers = ["Method"]
-        if self.data is not None:
-            if self.data.domain.has_discrete_class:
-                headers.extend(classification_stats.headers)
-            else:
-                headers.extend(regression_stats.headers)
-
-        # remove possible extra columns from the model.
-        for i in reversed(range(len(headers),
-                                self.result_model.columnCount())):
-            self.result_model.takeColumn(i)
-
-        self.result_model.setHorizontalHeaderLabels(headers)
+        model = self.result_model
+        model.setColumnCount(1 + len(self.scorers))
+        for col, score in enumerate(self.scorers):
+            item = QStandardItem(score.name)
+            item.setToolTip(score.long_name)
+            model.setHorizontalHeaderItem(col + 1, item)
         self._update_shown_columns()
 
     def _update_shown_columns(self):
@@ -546,8 +563,10 @@ class OWTestLearners(OWWidget):
                     ovr_results = results_one_vs_rest(
                         slot.results.value, target_index)
 
-                    stats = [Try(lambda: score(ovr_results))
-                             for score in classification_stats.scores]
+                    # Cell variable is used immediatelly, it's not stored
+                    # pylint: disable=cell-var-from-loop
+                    stats = [Try(scorer_caller(scorer, ovr_results))
+                             for scorer in self.scorers]
                 else:
                     stats = None
             else:
@@ -643,8 +662,11 @@ class OWTestLearners(OWWidget):
         """
         Commit the results to output.
         """
+        self.Error.memory_error.clear()
         valid = [slot for slot in self.learners.values()
                  if slot.results is not None and slot.results.success]
+        combined = None
+        predictions = None
         if valid:
             # Evaluation results
             combined = results_merge([slot.results.value for slot in valid])
@@ -652,12 +674,13 @@ class OWTestLearners(OWWidget):
                                       for slot in valid]
 
             # Predictions & Probabilities
-            predictions = combined.get_augmented_data(combined.learner_names)
-        else:
-            combined = None
-            predictions = None
-        self.send("Evaluation Results", combined)
-        self.send("Predictions", predictions)
+            try:
+                predictions = combined.get_augmented_data(combined.learner_names)
+            except MemoryError:
+                self.Error.memory_error()
+
+        self.Outputs.evaluations_results.send(combined)
+        self.Outputs.predictions.send(predictions)
 
     def send_report(self):
         """Report on the testing schema and results"""
@@ -892,15 +915,13 @@ class OWTestLearners(OWWidget):
         for learner, result in zip(learners, results.split_by_model()):
             stats = None
             if class_var.is_primitive():
-                scorers = classification_stats.scores if class_var.is_discrete \
-                    else regression_stats.scores
                 ex = result.failed[0]
                 if ex:
-                    stats = [Try.Fail(ex)] * len(scorers)
+                    stats = [Try.Fail(ex)] * len(self.scorers)
                     result = Try.Fail(ex)
                 else:
-                    stats = [Try(lambda: score(result)) for score in
-                             scorers]
+                    stats = [Try(scorer_caller(scorer, result))
+                             for scorer in self.scorers]
                     result = Try.Success(result)
             key = learner_key.get(learner)
             self.learners[key] = \
@@ -925,6 +946,13 @@ class OWTestLearners(OWWidget):
     def onDeleteWidget(self):
         self.cancel()
         super().onDeleteWidget()
+
+
+def scorer_caller(scorer, ovr_results):
+    if scorer.is_binary:
+        return lambda: scorer(ovr_results, target=1, average='weighted')
+    else:
+        return lambda: scorer(ovr_results)
 
 
 class UserInterrupt(BaseException):

@@ -20,6 +20,7 @@ from Orange.widgets import widget, gui, settings
 from Orange.widgets.evaluate.utils import check_results_adequacy
 from Orange.widgets.utils import colorpalette, colorbrewer
 from Orange.widgets.io import FileFormat
+from Orange.widgets.widget import Input
 from Orange.canvas import report
 
 
@@ -296,7 +297,9 @@ class OWROCAnalysis(widget.OWWidget):
                   "based on the evaluation of classifiers."
     icon = "icons/ROCAnalysis.svg"
     priority = 1010
-    inputs = [("Evaluation Results", Orange.evaluation.Results, "set_results")]
+
+    class Inputs:
+        evaluation_results = Input("Evaluation Results", Orange.evaluation.Results)
 
     class Warning(widget.OWWidget.Warning):
         empty_results = widget.Msg(
@@ -392,9 +395,9 @@ class OWROCAnalysis(widget.OWWidget):
         self.plotview = pg.GraphicsView(background="w")
         self.plotview.setFrameStyle(QFrame.StyledPanel)
 
-        self.plot = pg.PlotItem()
-        self.plot.getViewBox().setMenuEnabled(False)
-        self.plot.getViewBox().setMouseEnabled(False, False)
+        self.plot = pg.PlotItem(enableMenu=False)
+        self.plot.setMouseEnabled(False, False)
+        self.plot.hideButtons()
 
         pen = QPen(self.palette().color(QPalette.Text))
 
@@ -412,11 +415,12 @@ class OWROCAnalysis(widget.OWWidget):
         axis.setLabel("TP Rate (Sensitivity)")
 
         self.plot.showGrid(True, True, alpha=0.1)
-        self.plot.setRange(xRange=(0.0, 1.0), yRange=(0.0, 1.0))
+        self.plot.setRange(xRange=(0.0, 1.0), yRange=(0.0, 1.0), padding=0.05)
 
         self.plotview.setCentralItem(self.plot)
         self.mainArea.layout().addWidget(self.plotview)
 
+    @Inputs.evaluation_results
     def set_results(self, results):
         """Set the input evaluation results."""
         self.clear()
@@ -448,8 +452,10 @@ class OWROCAnalysis(widget.OWWidget):
             names = ["#{}".format(i + 1)
                      for i in range(len(results.predicted))]
 
-        self.colors = colorpalette.ColorPaletteGenerator(
-            len(names), colorbrewer.colorSchemes["qualitative"]["Dark2"])
+        scheme = colorbrewer.colorSchemes["qualitative"]["Dark2"]
+        if len(names) > len(scheme):
+            scheme = colorpalette.DefaultRGBColors
+        self.colors = colorpalette.ColorPaletteGenerator(len(names), scheme)
 
         self.classifier_names = names
         self.selected_classifiers = list(range(len(names)))

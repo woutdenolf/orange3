@@ -3,13 +3,13 @@
 
 import unittest
 import numpy as np
+import scipy.sparse as sp
 from collections import defaultdict
 
 from Orange.data import (Table, Domain, StringVariable,
                          DiscreteVariable, ContinuousVariable)
 from Orange.widgets.tests.base import WidgetTest, WidgetOutputsTestMixin
-from Orange.widgets.utils.annotated_data import (ANNOTATED_DATA_FEATURE_NAME,
-                                                 ANNOTATED_DATA_SIGNAL_NAME)
+from Orange.widgets.utils.annotated_data import (ANNOTATED_DATA_FEATURE_NAME)
 from Orange.widgets.visualize.owvenndiagram import (reshape_wide,
                                                     table_concat,
                                                     varying_between,
@@ -75,8 +75,8 @@ class TestVennDiagram(unittest.TestCase):
                       source_var, item_id_var)
             temp_m = np.array([[cv[0, i], sources[i], table.metas[0 + i, 0]],
                                [cv[1, i], sources[i], table.metas[1 + i, 0]],
-                               [cv[2, i], sources[i], table.metas[2 + i, 0]]
-                               ], dtype=object)
+                               [cv[2, i], sources[i], table.metas[2 + i, 0]]],
+                              dtype=object)
             temp_table = self.add_metas(temp_table, temp_d, temp_m)
             tables.append(temp_table)
 
@@ -109,11 +109,11 @@ class TestOWVennDiagram(WidgetTest, WidgetOutputsTestMixin):
         super().setUpClass()
         WidgetOutputsTestMixin.init(cls)
 
-        cls.signal_name = "Data"
         cls.signal_data = cls.data[:25]
 
     def setUp(self):
         self.widget = self.create_widget(OWVennDiagram)
+        self.signal_name = self.widget.Inputs.data
 
     def _select_data(self):
         self.widget.vennwidget.vennareas()[1].setSelected(True)
@@ -124,11 +124,11 @@ class TestOWVennDiagram(WidgetTest, WidgetOutputsTestMixin):
         self.send_signal(self.signal_name, self.data[50:], 2)
 
         # check selected data output
-        self.assertIsNone(self.get_output("Selected Data"))
+        self.assertIsNone(self.get_output(self.widget.Outputs.selected_data))
 
         # check annotated data output
         feature_name = ANNOTATED_DATA_FEATURE_NAME
-        annotated = self.get_output(ANNOTATED_DATA_SIGNAL_NAME)
+        annotated = self.get_output(self.widget.Outputs.annotated_data)
         self.assertEqual(0, np.sum([i[feature_name] for i in annotated]))
 
         # select data instances
@@ -136,7 +136,7 @@ class TestOWVennDiagram(WidgetTest, WidgetOutputsTestMixin):
         selected_indices = list(range(50, 100))
 
         # check selected data output
-        selected = self.get_output("Selected Data")
+        selected = self.get_output(self.widget.Outputs.selected_data)
         n_sel, n_attr = len(selected), len(self.data.domain.attributes)
         self.assertGreater(n_sel, 0)
         self.assertEqual(selected.domain == self.data.domain,
@@ -145,7 +145,7 @@ class TestOWVennDiagram(WidgetTest, WidgetOutputsTestMixin):
                                       self.data.X[selected_indices])
 
         # check annotated data output
-        annotated = self.get_output(ANNOTATED_DATA_SIGNAL_NAME)
+        annotated = self.get_output(self.widget.Outputs.annotated_data)
         self.assertEqual(n_sel, np.sum([i[feature_name] for i in annotated]))
 
         # compare selected and annotated data domains
@@ -154,8 +154,8 @@ class TestOWVennDiagram(WidgetTest, WidgetOutputsTestMixin):
         # check output when data is removed
         self.send_signal(self.signal_name, None, 1)
         self.send_signal(self.signal_name, None, 2)
-        self.assertIsNone(self.get_output("Selected Data"))
-        self.assertIsNone(self.get_output(ANNOTATED_DATA_SIGNAL_NAME))
+        self.assertIsNone(self.get_output(self.widget.Outputs.selected_data))
+        self.assertIsNone(self.get_output(self.widget.Outputs.annotated_data))
 
     def test_no_data(self):
         """Check that the widget doesn't crash on empty data"""
@@ -179,6 +179,36 @@ class TestOWVennDiagram(WidgetTest, WidgetOutputsTestMixin):
 
 
 class GroupTableIndicesTest(unittest.TestCase):
+
+    def test_varying_between_combined(self):
+        X = np.array([[0, 0, 0, 0, 0, 1,],
+                      [0, 0, 1, 1, 0, 1,],
+                      [0, 0, 0, 2, np.nan, np.nan,],
+                      [0, 1, 0, 0, 0, 0,],
+                      [0, 1, 0, 2, 0, 0,],
+                      [0, 1, 0, 0, np.nan, 0,]])
+
+        M = np.array([["A", 0, 0, 0, 0, 0, 1,],
+                      ["A", 0, 0, 1, 1, 0, 1,],
+                      ["A", 0, 0, 0, 2, np.nan, np.nan,],
+                      ["B", 0, 1, 0, 0, 0, 0,],
+                      ["B", 0, 1, 0, 2, 0, 0,],
+                      ["B", 0, 1, 0, 0, np.nan, 0,]], dtype=str)
+
+        variables = [ContinuousVariable(name="F%d" % j) for j in range(X.shape[1])]
+        metas = [StringVariable(name="M%d" % j) for j in range(M.shape[1])]
+        domain = Domain(attributes=variables, metas=metas)
+
+        data = Table.from_numpy(X=X, domain=domain, metas=M)
+
+        self.assertEqual(varying_between(data, idvar=data.domain.metas[0]),
+                         [variables[2], variables[3], metas[3], metas[4], metas[5], metas[6]])
+
+        data = Table.from_numpy(X=sp.csr_matrix(X), domain=domain, metas=M)
+        self.assertEqual(varying_between(data, idvar=data.domain.metas[0]),
+                         [variables[2], variables[3], metas[3], metas[4], metas[5], metas[6]])
+
+
     def test_group_table_indices(self):
         table = Table(test_filename("test9.tab"))
         dd = defaultdict(list)

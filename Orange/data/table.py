@@ -1,15 +1,14 @@
 import operator
 import os
 import zlib
-
 from collections import MutableSequence, Iterable, Sequence, Sized
+from functools import reduce
 from itertools import chain
 from numbers import Real, Integral
-from functools import reduce
 from threading import Lock, RLock
 
-import numpy as np
 import bottleneck as bn
+import numpy as np
 from scipy import sparse as sp
 
 import Orange.data  # import for io.py
@@ -18,8 +17,9 @@ from Orange.data import (
     Domain, Variable, Storage, StringVariable, Unknown, Value, Instance,
     ContinuousVariable, DiscreteVariable, MISSING_VALUES
 )
-from Orange.data.util import SharedComputeValue
-from Orange.statistics.util import bincount, countnans, contingency, stats as fast_stats
+from Orange.data.util import SharedComputeValue, vstack, hstack
+from Orange.statistics.util import bincount, countnans, contingency, \
+    stats as fast_stats
 from Orange.util import flatten
 
 __all__ = ["dataset_dirs", "get_sample_datasets_dir", "RowInstance", "Table"]
@@ -57,15 +57,15 @@ class RowInstance(Instance):
         self.id = table.ids[row_index]
         self._x = table.X[row_index]
         if sp.issparse(self._x):
-            self.sparse_x = self._x
+            self.sparse_x = sp.csr_matrix(self._x)
             self._x = np.asarray(self._x.todense())[0]
         self._y = table._Y[row_index]
         if sp.issparse(self._y):
-            self.sparse_y = self._y
+            self.sparse_y = sp.csr_matrix(self._y)
             self._y = np.asarray(self._y.todense())[0]
         self._metas = table.metas[row_index]
         if sp.issparse(self._metas):
-            self.sparse_metas = self._metas
+            self.sparse_metas = sp.csr_matrix(self._metas)
             self._metas = np.asarray(self._metas.todense())[0]
 
     @property
@@ -100,11 +100,11 @@ class RowInstance(Instance):
                                 type(value).__name__)
             if key < len(self._x):
                 self._x[key] = value
-                if self.sparse_x:
+                if self.sparse_x is not None:
                     self.table.X[self.row_index, key] = value
             else:
                 self._y[key - len(self._x)] = value
-                if self.sparse_y:
+                if self.sparse_y is not None:
                     self.table._Y[self.row_index, key - len(self._x)] = value
         else:
             self._metas[-1 - key] = value
@@ -312,7 +312,8 @@ class Table(MutableSequence, Storage):
                 elif not isinstance(col, Integral):
                     if isinstance(col, SharedComputeValue):
                         if (id(col.compute_shared), id(source)) not in shared_cache:
-                            shared_cache[id(col.compute_shared), id(source)] = col.compute_shared(source)
+                            shared_cache[id(col.compute_shared), id(source)] = \
+                                col.compute_shared(source)
                         shared = shared_cache[id(col.compute_shared), id(source)]
                         if row_indices is not ...:
                             a[:, i] = match_type(
@@ -564,8 +565,8 @@ class Table(MutableSequence, Storage):
         if not writer:
             desc = FileFormat.names.get(ext)
             if desc:
-                raise IOError("Writing of {}s is not supported".
-                    format(desc.lower()))
+                raise IOError(
+                    "Writing of {}s is not supported".format(desc.lower()))
             else:
                 raise IOError("Unknown file name extension.")
         writer.write_file(filename, self)
@@ -795,19 +796,13 @@ class Table(MutableSequence, Storage):
             if value is None:
                 value = Unknown
 
-            if not isinstance(value, Real) and \
+            if not isinstance(value, (Real, np.ndarray)) and \
                     (len(attr_cols) or len(class_cols)):
                 raise TypeError(
                     "Ordinary attributes can only have primitive values")
             if len(attr_cols):
-                if len(attr_cols) == 1:
-                    # scipy.sparse matrices only allow primitive indices.
-                    attr_cols = attr_cols[0]
                 self.X[row_idx, attr_cols] = value
             if len(class_cols):
-                if len(class_cols) == 1:
-                    # scipy.sparse matrices only allow primitive indices.
-                    class_cols = class_cols[0]
                 self._Y[row_idx, class_cols] = value
             if len(meta_cols):
                 self.metas[row_idx, meta_cols] = value
@@ -898,30 +893,25 @@ class Table(MutableSequence, Storage):
         :param instances: additional instances
         :type instances: Orange.data.Table or a sequence of instances
         """
-        old_length = len(self)
-        self._resize_all(old_length + len(instances))
-        try:
-            # shortcut
-            if isinstance(instances, Table) and instances.domain == self.domain:
-                self.X[old_length:] = instances.X
-                self._Y[old_length:] = instances._Y
-                self.metas[old_length:] = instances.metas
-                if self.W.shape[-1]:
-                    if instances.W.shape[-1]:
-                        self.W[old_length:] = instances.W
-                    else:
-                        self.W[old_length:] = 1
-                self.ids[old_length:] = instances.ids
-            else:
+        if isinstance(instances, Table) and instances.domain == self.domain:
+            self.X = vstack((self.X, instances.X))
+            self._Y = vstack((self._Y, instances._Y))
+            self.metas = vstack((self.metas, instances.metas))
+            self.W = vstack((self.W, instances.W))
+            self.ids = hstack((self.ids, instances.ids))
+        else:
+            try:
+                old_length = len(self)
+                self._resize_all(old_length + len(instances))
                 for i, example in enumerate(instances):
                     self[old_length + i] = example
                     try:
                         self.ids[old_length + i] = example.id
                     except AttributeError:
                         self.ids[old_length + i] = self.new_id()
-        except Exception:
-            self._resize_all(old_length)
-            raise
+            except Exception:
+                self._resize_all(old_length)
+                raise
 
     @staticmethod
     def concatenate(tables, axis=1):
@@ -1504,10 +1494,10 @@ class Table(MutableSequence, Storage):
 
                 for col_i, arr_i, _ in cont_vars:
                     if sp.issparse(arr):
-                        col_data = arr.data[arr.indptr[arr_i]:
-                        arr.indptr[arr_i + 1]]
-                        rows = arr.indices[arr.indptr[arr_i]:
-                        arr.indptr[arr_i + 1]]
+                        col_data = arr.data[
+                                   arr.indptr[arr_i]:arr.indptr[arr_i + 1]]
+                        rows = arr.indices[
+                               arr.indptr[arr_i]:arr.indptr[arr_i + 1]]
                         W_ = None if W is None else W[rows]
                         classes_ = classes[rows]
                     else:

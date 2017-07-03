@@ -26,11 +26,11 @@ from Orange.data import (Table,  Domain, ContinuousVariable, DiscreteVariable,
                          StringVariable)
 from Orange.preprocess import score
 from Orange.canvas import report
-from Orange.widgets import widget, gui
+from Orange.widgets import gui
 from Orange.widgets.settings import (DomainContextHandler, Setting,
                                      ContextSetting)
 from Orange.widgets.utils.sql import check_sql_input
-from Orange.widgets.widget import OWWidget, Msg
+from Orange.widgets.widget import OWWidget, Msg, Input, Output
 
 
 def table(shape, fill=None):
@@ -62,9 +62,13 @@ class OWRank(OWWidget):
 
     buttons_area_orientation = Qt.Vertical
 
-    inputs = [("Data", Table, "setData"),
-              ("Scorer", score.Scorer, "set_learner", widget.Multiple)]
-    outputs = [("Reduced Data", Table, widget.Default), ("Scores", Table)]
+    class Inputs:
+        data = Input("Data", Table)
+        scorer = Input("Scorer", score.Scorer, multiple=True)
+
+    class Outputs:
+        reduced_data = Output("Reduced Data", Table, default=True)
+        scores = Output("Scores", Table)
 
     SelectNone, SelectAll, SelectManual, SelectNBest = range(4)
 
@@ -319,6 +323,7 @@ class OWRank(OWWidget):
         self.score_stack.setCurrentIndex(index)
         self.updateVisibleScoreColumns()
 
+    @Inputs.data
     @check_sql_input
     def setData(self, data):
         self.closeContext()
@@ -362,7 +367,7 @@ class OWRank(OWWidget):
             self.measure_scores = table(shape, None)
             self.updateScores()
         else:
-            self.send("Scores", None)
+            self.Outputs.scores.send(None)
 
         self.selected_rows = []
         self.openContext(data)
@@ -373,6 +378,7 @@ class OWRank(OWWidget):
         selection = self.ranksView.selectionModel().selection()
         return list(set(ind.row() for ind in selection.indexes()))
 
+    @Inputs.scorer
     def set_learner(self, learner, lid=None):
         if learner is None and lid is not None:
             del self.learners[lid]
@@ -473,7 +479,7 @@ class OWRank(OWWidget):
         self.updateRankModel(measuresMask)
         self.ranksProxyModel.invalidate()
         self.selectMethodChanged()
-        self.send("Scores", self.create_scores_table(self.labels))
+        self.Outputs.scores.send(self.create_scores_table(self.labels))
         self.setStatusMessage("")
 
     def updateRankModel(self, measuresMask):
@@ -649,12 +655,13 @@ class OWRank(OWWidget):
             self.selectButtons.button(self.selectMethod).setChecked(True)
         selected = self.selectedAttrs()
         if not self.data or not selected:
-            self.send("Reduced Data", None)
+            self.Outputs.reduced_data.send(None)
             self.out_domain_desc = None
         else:
-            data = Table(Domain(selected, self.data.domain.class_var,
-                                self.data.domain.metas), self.data)
-            self.send("Reduced Data", data)
+            reduced_domain = Domain(
+                selected, self.data.domain.class_var, self.data.domain.metas)
+            data = self.data.transform(reduced_domain)
+            self.Outputs.reduced_data.send(data)
             self.out_domain_desc = report.describe_domain(data.domain)
 
     def selectedAttrs(self):

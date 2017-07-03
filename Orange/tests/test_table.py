@@ -14,21 +14,7 @@ import numpy as np
 from Orange import data
 from Orange.data import (filter, Unknown, Variable, Table, DiscreteVariable,
                          ContinuousVariable, Domain, StringVariable)
-from Orange.tests import test_dirname
-
-
-@np.vectorize
-def naneq(a, b):
-    try:
-        return (isnan(a) and isnan(b)) or a == b
-    except TypeError:
-        return a == b
-
-
-def assert_array_nanequal(*args, **kwargs):
-    # similar as np.testing.assert_array_equal but with better handling of
-    # object arrays
-    return np.testing.utils.assert_array_compare(naneq, *args, **kwargs)
+from Orange.tests import test_dirname, assert_array_nanequal
 
 
 class TableTestCase(unittest.TestCase):
@@ -618,10 +604,6 @@ class TableTestCase(unittest.TestCase):
         for i in range(5):
             self.assertEqual(d[i], d[-5 + i])
 
-        x = d[:5]
-        with self.assertRaises(ValueError):
-            d.extend(x)
-
         y = d[:2, 1]
         x.ensure_copy()
         x.extend(y)
@@ -666,14 +648,17 @@ class TableTestCase(unittest.TestCase):
         d1 = data.Domain([data.ContinuousVariable('a1')])
         t1 = data.Table.from_numpy(d1, [[1],
                                         [2]])
-        d2 = data.Domain([data.ContinuousVariable('a2')], metas=[data.StringVariable('s')])
+        d2 = data.Domain([data.ContinuousVariable('a2')],
+                         metas=[data.StringVariable('s')])
         t2 = data.Table.from_numpy(d2, [[3],
                                         [4]], metas=[['foo'],
                                                      ['fuu']])
-        self.assertRaises(ValueError, lambda: data.Table.concatenate((t1, t2), axis=5))
+        self.assertRaises(ValueError,
+                          lambda: data.Table.concatenate((t1, t2), axis=5))
 
         t3 = data.Table.concatenate((t1, t2))
-        self.assertEqual(t3.domain.attributes, t1.domain.attributes + t2.domain.attributes)
+        self.assertEqual(t3.domain.attributes,
+                         t1.domain.attributes + t2.domain.attributes)
         self.assertEqual(len(t3.domain.metas), 1)
         self.assertEqual(t3.X.shape, (2, 2))
         self.assertRaises(ValueError, lambda: data.Table.concatenate((t3, t1)))
@@ -689,7 +674,15 @@ class TableTestCase(unittest.TestCase):
                                        [1, np.nan],
                                        [2, np.nan]])
 
-
+    def test_sparse_concatenate_rows(self):
+        iris = Table("iris")
+        iris.X = sp.csc_matrix(iris.X)
+        new = Table.concatenate([iris, iris], axis=0)
+        self.assertEqual(len(new), 300)
+        self.assertTrue(sp.issparse(new.X), "Concatenated X is not sparse.")
+        self.assertFalse(sp.issparse(new.Y), "Concatenated Y is not dense.")
+        self.assertFalse(sp.issparse(new.metas), "Concatenated metas is not dense.")
+        self.assertEqual(len(new.ids), 300)
 
     def test_convert_through_append(self):
         d = data.Table("iris")
@@ -773,10 +766,13 @@ class TableTestCase(unittest.TestCase):
         d.save("test-zoo.tab")
         dd = data.Table("test-zoo")
         try:
-            self.assertTupleEqual(d.domain.metas, dd.domain.metas, msg="Meta attributes don't match.")
-            self.assertTupleEqual(d.domain.variables, dd.domain.variables, msg="Attributes don't match.")
+            self.assertTupleEqual(d.domain.metas, dd.domain.metas,
+                                  msg="Meta attributes don't match.")
+            self.assertTupleEqual(d.domain.variables, dd.domain.variables,
+                                  msg="Attributes don't match.")
 
-            np.testing.assert_almost_equal(d.W, dd.W, err_msg="Weights don't match.")
+            np.testing.assert_almost_equal(d.W, dd.W,
+                                           err_msg="Weights don't match.")
             for i in range(10):
                 for j in d.domain.variables:
                     self.assertEqual(d[i][j], dd[i][j])
@@ -788,10 +784,13 @@ class TableTestCase(unittest.TestCase):
         d.save("test-zoo-weights.tab")
         dd = data.Table("test-zoo-weights")
         try:
-            self.assertTupleEqual(d.domain.metas, dd.domain.metas, msg="Meta attributes don't match.")
-            self.assertTupleEqual(d.domain.variables, dd.domain.variables, msg="Attributes don't match.")
+            self.assertTupleEqual(d.domain.metas, dd.domain.metas,
+                                  msg="Meta attributes don't match.")
+            self.assertTupleEqual(d.domain.variables, dd.domain.variables,
+                                  msg="Attributes don't match.")
 
-            np.testing.assert_almost_equal(d.W, dd.W, err_msg="Weights don't match.")
+            np.testing.assert_almost_equal(d.W, dd.W,
+                                           err_msg="Weights don't match.")
             for i in range(10):
                 for j in d.domain.variables:
                     self.assertEqual(d[i][j], dd[i][j])
@@ -1589,7 +1588,8 @@ class CreateTableWithData(TableTests):
         table = data.Table.from_numpy(domain, self.data, W=self.weight_data)
 
         np.testing.assert_equal(table.W.shape, (len(self.data), ))
-        np.testing.assert_almost_equal(table.W.flatten(), self.weight_data.flatten())
+        np.testing.assert_almost_equal(table.W.flatten(),
+                                       self.weight_data.flatten())
 
     def test_splits_X_and_Y_if_given_in_same_array(self):
         joined_data = np.column_stack((self.data, self.class_data))
@@ -1823,8 +1823,9 @@ class CreateTableWithDomainAndTable(TableTests):
     def test_from_table_sparse_move_some_to_empty_metas(self):
         iris = data.Table("iris")
         iris.X = sp.csr_matrix(iris.X)
-        new_domain = data.domain.Domain(iris.domain.attributes[:2], iris.domain.class_vars,
-                                        iris.domain.attributes[2:], source=iris.domain)
+        new_domain = data.domain.Domain(
+            iris.domain.attributes[:2], iris.domain.class_vars,
+            iris.domain.attributes[2:], source=iris.domain)
         new_iris = data.Table.from_table(new_domain, iris)
 
         self.assertTrue(sp.issparse(new_iris.X))
@@ -1843,8 +1844,9 @@ class CreateTableWithDomainAndTable(TableTests):
     def test_from_table_sparse_move_all_to_empty_metas(self):
         iris = data.Table("iris")
         iris.X = sp.csr_matrix(iris.X)
-        new_domain = data.domain.Domain([], iris.domain.class_vars,
-                                        iris.domain.attributes, source=iris.domain)
+        new_domain = data.domain.Domain(
+            [], iris.domain.class_vars, iris.domain.attributes,
+            source=iris.domain)
         new_iris = data.Table.from_table(new_domain, iris)
 
         self.assertTrue(sp.issparse(new_iris.X))
@@ -1865,9 +1867,11 @@ class CreateTableWithDomainAndTable(TableTests):
         brown.X = sp.csr_matrix(brown.X)
         n_attr = len(brown.domain.attributes)
         n_metas = len(brown.domain.metas)
-        new_domain = data.domain.Domain(brown.domain.attributes[:-10], brown.domain.class_vars,
-                                        brown.domain.attributes[-10:] + brown.domain.metas,
-                                        source=brown.domain)
+        new_domain = data.domain.Domain(
+            brown.domain.attributes[:-10],
+            brown.domain.class_vars,
+            brown.domain.attributes[-10:] + brown.domain.metas,
+            source=brown.domain)
         new_brown = data.Table.from_table(new_domain, brown)
 
         self.assertTrue(sp.issparse(new_brown.X))
@@ -2068,8 +2072,9 @@ class InterfaceTest(unittest.TestCase):
     features = (
         data.ContinuousVariable(name="Continuous Feature 1"),
         data.ContinuousVariable(name="Continuous Feature 2"),
-        data.DiscreteVariable(name="Discrete Feature 1", values=[0, 1]),
-        data.DiscreteVariable(name="Discrete Feature 2", values=["value1", "value2"]),
+        data.DiscreteVariable(name="Discrete Feature 1", values=["0", "1"]),
+        data.DiscreteVariable(name="Discrete Feature 2",
+                              values=["value1", "value2"]),
     )
 
     class_vars = (
@@ -2096,7 +2101,8 @@ class InterfaceTest(unittest.TestCase):
     nrows = 4
 
     def setUp(self):
-        self.domain = data.Domain(attributes=self.features, class_vars=self.class_vars)
+        self.domain = data.Domain(attributes=self.features,
+                                  class_vars=self.class_vars)
         self.table = data.Table.from_numpy(
             self.domain,
             np.array(self.feature_data),
@@ -2214,6 +2220,28 @@ class TestRowInstance(unittest.TestCase):
         for i, row in enumerate(table):
             row[0] = i
         np.testing.assert_array_equal(table.X[:, 0], np.arange(len(table)))
+
+    def test_sparse_assignment(self):
+        X = np.eye(4)
+        Y = X[2]
+        table = data.Table(X, Y)
+        row = table[1]
+        self.assertFalse(sp.issparse(row.sparse_x))
+        self.assertEqual(row[0], 0)
+        self.assertEqual(row[1], 1)
+
+        table.X = sp.csr_matrix(table.X)
+        table._Y = sp.csr_matrix(table._Y)
+        sparse_row = table[1]
+        self.assertTrue(sp.issparse(sparse_row.sparse_x))
+        self.assertEqual(sparse_row[0], 0)
+        self.assertEqual(sparse_row[1], 1)
+        sparse_row[1] = 0
+        self.assertEqual(sparse_row[1], 0)
+        self.assertEqual(table.X[1, 1], 0)
+        self.assertEqual(table[2][4], 1)
+        table[2][4] = 0
+        self.assertEqual(table[2][4], 0)
 
 
 class TestTableTranspose(unittest.TestCase):

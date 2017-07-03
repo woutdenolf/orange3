@@ -35,6 +35,7 @@ from Orange.preprocess import Continuize, ProjectPCA, \
 from Orange.widgets import widget, gui, settings
 from Orange.widgets.utils.overlay import OverlayWidget
 from Orange.widgets.utils.sql import check_sql_input
+from Orange.widgets.widget import Input, Output
 
 from Orange.widgets.data.utils.preprocess import (
     BaseEditor, blocked, StandardItemModel, DescriptionRole,
@@ -193,13 +194,16 @@ class DiscretizeEditor(BaseEditor):
 
 
 class ContinuizeEditor(BaseEditor):
-    Continuizers = OrderedDict({
-        Continuize.FrequentAsBase: "Most frequent is base",
-        Continuize.Indicators: "One attribute per value",
-        Continuize.RemoveMultinomial: "Remove multinomial attributes",
-        Continuize.Remove: "Remove all discrete attributes",
-        Continuize.AsOrdinal: "Treat as ordinal",
-        Continuize.AsNormalizedOrdinal: "Divide by number of values"})
+    _Type = type(Continuize.FirstAsBase)
+
+    Continuizers = OrderedDict([
+        (Continuize.FrequentAsBase, "Most frequent is base"),
+        (Continuize.Indicators, "One attribute per value"),
+        (Continuize.RemoveMultinomial, "Remove multinomial attributes"),
+        (Continuize.Remove, "Remove all discrete attributes"),
+        (Continuize.AsOrdinal, "Treat as ordinal"),
+        (Continuize.AsNormalizedOrdinal, "Divide by number of values")
+    ])
 
     def __init__(self, parent=None, **kwargs):
         super().__init__(parent, **kwargs)
@@ -1026,9 +1030,12 @@ class OWPreprocess(widget.OWWidget):
     icon = "icons/Preprocess.svg"
     priority = 2105
 
-    inputs = [("Data", Orange.data.Table, "set_data")]
-    outputs = [("Preprocessor", preprocess.preprocess.Preprocess),
-               ("Preprocessed Data", Orange.data.Table)]
+    class Inputs:
+        data = Input("Data", Orange.data.Table)
+
+    class Outputs:
+        preprocessor = Output("Preprocessor", preprocess.preprocess.Preprocess, dynamic=False)
+        preprocessed_data = Output("Preprocessed Data", Orange.data.Table)
 
     storedsettings = settings.Setting({})
     autocommit = settings.Setting(False)
@@ -1207,6 +1214,7 @@ class OWPreprocess(widget.OWWidget):
         self.__update_overlay()
         self.commit()
 
+    @Inputs.data
     @check_sql_input
     def set_data(self, data=None):
         """Set the input data set."""
@@ -1257,8 +1265,8 @@ class OWPreprocess(widget.OWWidget):
         else:
             data = None
 
-        self.send("Preprocessor", preprocessor)
-        self.send("Preprocessed Data", data)
+        self.Outputs.preprocessor.send(preprocessor)
+        self.Outputs.preprocessed_data.send(data)
 
     def commit(self):
         if not self._invalidated:

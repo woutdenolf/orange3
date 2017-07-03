@@ -18,10 +18,19 @@ from Orange.data import FileFormat, dataset_dirs, StringVariable, Table, \
     Domain, DiscreteVariable
 from Orange.tests import named_file
 from Orange.widgets.data.owfile import OWFile
+from Orange.widgets.utils.filedialogs import dialog_formats
 from Orange.widgets.tests.base import WidgetTest
 from Orange.widgets.utils.domaineditor import ComboDelegate, VarTypeDelegate, VarTableModel
 
 TITANIC_PATH = path.join(path.dirname(Orange.__file__), 'datasets', 'titanic.tab')
+
+
+class AddedFormat(FileFormat):
+    EXTENSIONS = ('.123',)
+    DESCRIPTION = "Test if a dialog format works after reading OWFile"
+
+    def read(self):
+        pass
 
 
 class TestOWFile(WidgetTest):
@@ -88,15 +97,15 @@ class TestOWFile(WidgetTest):
         idx = self.widget.domain_editor.model().createIndex(4, 1)
         self.widget.domain_editor.model().setData(idx, "string", Qt.EditRole)
         self.widget.apply_button.click()
-        data = self.get_output("Data")
+        data = self.get_output(self.widget.Outputs.data)
         self.assertIsInstance(data.domain["iris"], StringVariable)
 
         self.open_dataset("zoo")
-        data = self.get_output("Data")
+        data = self.get_output(self.widget.Outputs.data)
         self.assertEqual(data.name, "zoo")
 
         self.open_dataset("iris")
-        data = self.get_output("Data")
+        data = self.get_output(self.widget.Outputs.data)
         self.assertIsInstance(data.domain["iris"], StringVariable)
 
     def open_dataset(self, name):
@@ -121,14 +130,14 @@ class TestOWFile(WidgetTest):
 
         # Open the file with the widget
         self.open_dataset(file_name)
-        self.assertEqual(self.get_output("Data").domain, dataA.domain)
+        self.assertEqual(self.get_output(self.widget.Outputs.data).domain, dataA.domain)
 
         # Delete the file and try to reload it
         remove(file_name)
         self.widget.load_data()
         self.assertEqual(file_name, path.basename(self.widget.last_path()))
         self.assertTrue(self.widget.Error.file_not_found.is_shown())
-        self.assertIsNone(self.get_output("Data"))
+        self.assertIsNone(self.get_output(self.widget.Outputs.data))
         self.assertEqual(self.widget.info.text(), "No data.")
 
         # Open a sample dataset
@@ -211,7 +220,28 @@ a
         self.widget.add_path(f.name)
         self.widget.load_data()
 
-        output = self.get_output("Data")
+        output = self.get_output(self.widget.Outputs.data)
         self.assertIsInstance(output, Table)
         self.assertEqual(iris.X.shape, output.X.shape)
         self.assertTrue(sp.issparse(output.X))
+
+    def test_drop_data_when_everything_skipped(self):
+        """
+        No data when everything is skipped. Otherwise Select Rows crashes.
+        GH-2237
+        """
+        self.open_dataset("iris")
+        data = self.get_output(self.widget.Outputs.data)
+        self.assertTrue(len(data), 150)
+        self.assertTrue(len(data.domain), 5)
+        for i in range(5):
+            idx = self.widget.domain_editor.model().createIndex(i, 2)
+            self.widget.domain_editor.model().setData(idx, "skip", Qt.EditRole)
+        self.widget.apply_button.click()
+        data = self.get_output(self.widget.Outputs.data)
+        self.assertIsNone(data)
+
+    def test_add_new_format(self):
+        # test adding file formats after registering the widget
+        formats = dialog_formats()
+        self.assertTrue(".123" in formats)

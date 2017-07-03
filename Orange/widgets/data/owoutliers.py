@@ -8,6 +8,7 @@ from Orange.classification import OneClassSVMLearner, EllipticEnvelopeLearner
 from Orange.data import Table, Domain, ContinuousVariable
 from Orange.widgets import widget, gui
 from Orange.widgets.settings import Setting
+from Orange.widgets.widget import Msg, Input, Output
 from Orange.widgets.utils.sql import check_sql_input
 
 
@@ -19,8 +20,12 @@ class OWOutliers(widget.OWWidget):
     category = "Data"
     keywords = ["data", "outlier", "inlier"]
 
-    inputs = [("Data", Table, "set_data")]
-    outputs = [("Inliers", Table), ("Outliers", Table)]
+    class Inputs:
+        data = Input("Data", Table)
+
+    class Outputs:
+        inliers = Output("Inliers", Table)
+        outliers = Output("Outliers", Table)
 
     want_main_area = False
 
@@ -35,6 +40,11 @@ class OWOutliers(widget.OWWidget):
 
     data_info_default = 'No data on input.'
     in_out_info_default = ' '
+
+    class Error(widget.OWWidget.Error):
+        singular_cov = Msg("Singular covariance matrix.")
+        multiclass_error = Msg("Multiple class data is not supported")
+        memory_error = Msg("Not enough memory")
 
     def __init__(self):
         super().__init__()
@@ -116,6 +126,7 @@ class OWOutliers(widget.OWWidget):
         self.support_fraction_spin.setDisabled(False)
         self.warning()
 
+    @Inputs.data
     @check_sql_input
     def set_data(self, dataset):
         self.data = dataset
@@ -132,6 +143,28 @@ class OWOutliers(widget.OWWidget):
 
         self.commit()
 
+    def _get_outliers(self):
+        try:
+            y_pred = self.detect_outliers()
+        except ValueError:
+            self.Error.singular_cov()
+            self.in_out_info_label.setText(self.in_out_info_default)
+        except MemoryError:
+            self.Error.memory_error()
+            return None, None
+        else:
+            inliers_ind = np.where(y_pred == 1)[0]
+            outliers_ind = np.where(y_pred == -1)[0]
+            inliers = self.new_data[inliers_ind]
+            outliers = self.new_data[outliers_ind]
+            self.in_out_info_label.setText(
+                "{} inliers, {} outliers".format(len(inliers),
+                                                 len(outliers)))
+            self.n_inliers = len(inliers)
+            self.n_outliers = len(outliers)
+
+            return inliers, outliers
+
     def commit(self):
         self.error()
         inliers = outliers = None
@@ -143,18 +176,10 @@ class OWOutliers(widget.OWWidget):
                 self.error("Singular covariance matrix.")
                 self.in_out_info_label.setText(self.in_out_info_default)
             else:
-                inliers_ind = np.where(y_pred == 1)[0]
-                outliers_ind = np.where(y_pred == -1)[0]
-                inliers = Table(self.new_domain, self.new_data, inliers_ind)
-                outliers = Table(self.new_domain,
-                                 self.new_data, outliers_ind)
-                self.in_out_info_label.setText('%d inliers, %d outliers' %
-                                               (len(inliers), len(outliers)))
-                self.n_inliers = len(inliers)
-                self.n_outliers = len(outliers)
+                inliers, outliers = self._get_outliers()
 
-        self.send("Inliers", inliers)
-        self.send("Outliers", outliers)
+        self.Outputs.inliers.send(inliers)
+        self.Outputs.outliers.send(outliers)
 
     def detect_outliers(self):
         if self.outlier_method == self.OneClassSVM:
