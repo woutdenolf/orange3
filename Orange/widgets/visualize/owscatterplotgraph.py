@@ -633,6 +633,12 @@ class OWScatterPlotGraph(gui.OWComponent, ScaleScatterPlotData):
         self.master.Information.missing_coords.clear()
         self._clear_plot_widget()
 
+        if self.shown_y != attr_y:
+            # 'reset' the axis text width estimation. Without this the left
+            # axis tick labels space only ever expands
+            yaxis = self.plot_widget.getAxis("left")
+            yaxis.textWidth = 30
+
         self.shown_x, self.shown_y = attr_x, attr_y
 
         if self.jittered_data is None or not len(self.jittered_data):
@@ -935,6 +941,11 @@ class OWScatterPlotGraph(gui.OWComponent, ScaleScatterPlotData):
             ti.setPos(x, y)
             self.labels.append(ti)
 
+    def _create_label_column(self):
+        if self.attr_label in self.data.domain:
+            return self.data.get_column_view(self.attr_label)[0]
+        return self.master.data.get_column_view(self.attr_label)[0]
+
     def update_labels(self):
         if self.attr_label is None or \
                 self.label_only_selected and self.selection is None:
@@ -944,7 +955,7 @@ class OWScatterPlotGraph(gui.OWComponent, ScaleScatterPlotData):
         self.assure_attribute_present(self.attr_label)
         if not self.labels:
             self.create_labels()
-        label_column = self.data.get_column_view(self.attr_label)[0]
+        label_column = self._create_label_column()
         formatter = self.attr_label.str_val
         label_data = map(formatter, label_column)
         black = pg.mkColor(0, 0, 0)
@@ -984,7 +995,7 @@ class OWScatterPlotGraph(gui.OWComponent, ScaleScatterPlotData):
         self.make_legend()
 
     def assure_attribute_present(self, attr):
-        if attr not in self.data.domain:
+        if self.data is not None and attr not in self.data.domain:
             self.master.prepare_data()
 
     def update_grid(self):

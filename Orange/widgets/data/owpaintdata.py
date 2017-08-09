@@ -28,7 +28,7 @@ from Orange.widgets.settings import Setting
 from Orange.widgets.utils import itemmodels, colorpalette
 
 from Orange.util import scale, namegen
-from Orange.widgets.widget import OWWidget, Msg
+from Orange.widgets.widget import OWWidget, Msg, Input, Output
 
 
 def indices_to_mask(indices, size):
@@ -764,8 +764,11 @@ class OWPaintData(OWWidget):
     priority = 15
     keywords = ["data", "paint", "create"]
 
-    outputs = [("Data", Orange.data.Table)]
-    inputs = [("Data", Orange.data.Table, "set_data")]
+    class Inputs:
+        data = Input("Data", Orange.data.Table)
+
+    class Outputs:
+        data = Output("Data", Orange.data.Table)
 
     autocommit = Setting(False)
     table_name = Setting("Painted data")
@@ -811,8 +814,15 @@ class OWPaintData(OWWidget):
         self.class_model.rowsInserted.connect(self._class_count_changed)
         self.class_model.rowsRemoved.connect(self._class_count_changed)
 
-        if self.data is None:
-            self.data = np.zeros((0, 3))
+        if not self.data:
+            self.data = []
+            self.__buffer = np.zeros((0, 3))
+        elif isinstance(self.data, np.ndarray):
+            self.__buffer = self.data.copy()
+            self.data = self.data.tolist()
+        else:
+            self.__buffer = np.array(self.data)
+
         self.colors = colorpalette.ColorPaletteGenerator(
             len(colorpalette.DefaultRGBColors))
         self.tools_cache = {}
@@ -986,6 +996,7 @@ class OWPaintData(OWWidget):
             if tool.only2d:
                 button.setDisabled(not self.hasAttr2)
 
+    @Inputs.data
     def set_data(self, data):
         """Set the input_data and call reset_to_input"""
         def _check_and_set_data(data):
@@ -1033,7 +1044,9 @@ class OWPaintData(OWWidget):
         newindex = min(max(index, 0), len(self.class_model) - 1)
         itemmodels.select_row(self.classValuesView, newindex)
 
-        self.data = self.input_data
+        self.data = self.input_data.tolist()
+        self.__buffer = self.input_data.copy()
+
         prev_attr2 = self.hasAttr2
         self.hasAttr2 = self.input_has_attr2
         if prev_attr2 != self.hasAttr2:
@@ -1235,18 +1248,20 @@ class OWPaintData(OWWidget):
         self.invalidate()
 
     def invalidate(self):
+        self.data = self.__buffer.tolist()
         self.commit()
 
     def commit(self):
-        if len(self.data) == 0:
-            self.send("Data", None)
+        data = np.array(self.data)
+        if len(data) == 0:
+            self.Outputs.data.send(None)
             return
         if self.hasAttr2:
-            X, Y = self.data[:, :2], self.data[:, 2]
+            X, Y = data[:, :2], data[:, 2]
             attrs = (Orange.data.ContinuousVariable(self.attr1),
                      Orange.data.ContinuousVariable(self.attr2))
         else:
-            X, Y = self.data[:, np.newaxis, 0], self.data[:, 2]
+            X, Y = data[:, np.newaxis, 0], data[:, 2]
             attrs = (Orange.data.ContinuousVariable(self.attr1),)
         if len(np.unique(Y)) >= 2:
             domain = Orange.data.Domain(
@@ -1259,7 +1274,7 @@ class OWPaintData(OWWidget):
             domain = Orange.data.Domain(attrs)
             data = Orange.data.Table.from_numpy(domain, X)
         data.name = self.table_name
-        self.send("Data", data)
+        self.Outputs.data.send(data)
 
     def sizeHint(self):
         sh = super().sizeHint()

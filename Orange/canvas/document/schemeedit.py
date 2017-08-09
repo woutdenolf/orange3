@@ -368,10 +368,6 @@ class SchemeEditWidget(QWidget):
         view = CanvasView(scene)
         view.setFrameStyle(CanvasView.NoFrame)
         view.setRenderHint(QPainter.Antialiasing)
-        view.setContextMenuPolicy(Qt.CustomContextMenu)
-        view.customContextMenuRequested.connect(
-            self.__onCustomContextMenuRequested
-        )
 
         self.__view = view
         self.__scene = scene
@@ -815,7 +811,7 @@ class SchemeEditWidget(QWidget):
         selected = self.scene().selectedItems()
         if not selected:
             return
-
+        scene = self.scene()
         self.__undoStack.beginMacro(self.tr("Remove"))
         for item in selected:
             if isinstance(item, items.NodeItem):
@@ -824,6 +820,9 @@ class SchemeEditWidget(QWidget):
                     commands.RemoveNodeCommand(self.__scheme, node)
                 )
             elif isinstance(item, items.annotationitem.Annotation):
+                if item.hasFocus() or item.isAncestorOf(scene.focusItem()):
+                    # Clear input focus from the item to be removed.
+                    scene.focusItem().clearFocus()
                 annot = self.scene().annotation_for_item(item)
                 self.__undoStack.push(
                     commands.RemoveAnnotationCommand(self.__scheme, annot)
@@ -952,7 +951,7 @@ class SchemeEditWidget(QWidget):
         # Filter the scene's drag/drop events.
         if obj is self.scene():
             etype = event.type()
-            if  etype == QEvent.GraphicsSceneDragEnter or \
+            if etype == QEvent.GraphicsSceneDragEnter or \
                     etype == QEvent.GraphicsSceneDragMove:
                 mime_data = event.mimeData()
                 if mime_data.hasFormat(
@@ -1186,6 +1185,32 @@ class SchemeEditWidget(QWidget):
         return False
 
     def sceneContextMenuEvent(self, event):
+        scenePos = event.scenePos()
+        globalPos = event.screenPos()
+
+        item = self.scene().item_at(scenePos, items.NodeItem)
+        if item is not None:
+            self.__widgetMenu.popup(globalPos)
+            return True
+
+        item = self.scene().item_at(scenePos, items.LinkItem,
+                                    buttons=Qt.RightButton)
+        if item is not None:
+            link = self.scene().link_for_item(item)
+            self.__linkEnableAction.setChecked(link.enabled)
+            self.__contextMenuTarget = link
+            self.__linkMenu.popup(globalPos)
+            return True
+
+        item = self.scene().item_at(scenePos)
+        if not item and \
+                self.__quickMenuTriggers & SchemeEditWidget.RightClicked:
+            action = interactions.NewNodeAction(self)
+
+            with disabled(self.__undoAction), disabled(self.__redoAction):
+                action.create_new(globalPos)
+            return True
+
         return False
 
     def _setUserInteractionHandler(self, handler):
@@ -1338,11 +1363,17 @@ class SchemeEditWidget(QWidget):
         Text annotation editing has finished.
         """
         annot = self.__scene.annotation_for_item(item)
-        text = str(item.toPlainText())
-        if annot.text != text:
+
+        content_type = item.contentType()
+        content = item.content()
+
+        if annot.text != content or annot.content_type != content_type:
             self.__undoStack.push(
-                commands.TextChangeCommand(self.scheme(), annot,
-                                           annot.text, text)
+                commands.TextChangeCommand(
+                    self.scheme(), annot,
+                    annot.text, annot.content_type,
+                    content, content_type
+                )
             )
 
     def __toggleNewArrowAnnotation(self, checked):
@@ -1416,33 +1447,6 @@ class SchemeEditWidget(QWidget):
             handler = self.__scene.user_interaction_handler
             if isinstance(handler, interactions.NewArrowAnnotation):
                 handler.setColor(action.data())
-
-    def __onCustomContextMenuRequested(self, pos):
-        scenePos = self.view().mapToScene(pos)
-        globalPos = self.view().mapToGlobal(pos)
-
-        item = self.scene().item_at(scenePos, items.NodeItem)
-        if item is not None:
-            self.__widgetMenu.popup(globalPos)
-            return
-
-        item = self.scene().item_at(scenePos, items.LinkItem,
-                                    buttons=Qt.RightButton)
-        if item is not None:
-            link = self.scene().link_for_item(item)
-            self.__linkEnableAction.setChecked(link.enabled)
-            self.__contextMenuTarget = link
-            self.__linkMenu.popup(globalPos)
-            return
-
-        item = self.scene().item_at(scenePos)
-        if not item and \
-                self.__quickMenuTriggers & SchemeEditWidget.RightClicked:
-            action = interactions.NewNodeAction(self)
-
-            with disabled(self.__undoAction), disabled(self.__redoAction):
-                action.create_new(globalPos)
-            return
 
     def __onRenameAction(self):
         """

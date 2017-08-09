@@ -8,8 +8,10 @@ from AnyQt.QtWidgets import QMenu
 from AnyQt.QtCore import QPoint
 
 from Orange.classification import MajorityLearner
-from Orange.data import Table, Domain
+from Orange.data import Table, Domain, DiscreteVariable, ContinuousVariable
 from Orange.evaluation import Results, TestOnTestData
+from Orange.evaluation.scoring import ClassificationScore, RegressionScore, \
+    Score
 from Orange.modelling import ConstantLearner
 from Orange.regression import MeanLearner
 from Orange.widgets.evaluate.owtestlearners import (
@@ -26,31 +28,31 @@ class TestOWTestLearners(WidgetTest):
 
     def test_basic(self):
         data = Table("iris")[::3]
-        self.send_signal("Data", data)
-        self.send_signal("Learner", MajorityLearner(), 0, wait=5000)
-        res = self.get_output("Evaluation Results")
+        self.send_signal(self.widget.Inputs.train_data, data)
+        self.send_signal(self.widget.Inputs.learner, MajorityLearner(), 0, wait=5000)
+        res = self.get_output(self.widget.Outputs.evaluations_results)
         self.assertIsInstance(res, Results)
         self.assertIsNotNone(res.domain)
         self.assertIsNotNone(res.data)
         self.assertIsNotNone(res.probabilities)
 
-        self.send_signal("Learner", None, 0, wait=5000)
-        res = self.get_output("Evaluation Results")
+        self.send_signal(self.widget.Inputs.learner, None, 0, wait=5000)
+        res = self.get_output(self.widget.Outputs.evaluations_results)
         self.assertIsNone(res)
 
         data = Table("housing")[::10]
-        self.send_signal("Data", data)
-        self.send_signal("Learner", MeanLearner(), 0, wait=5000)
-        res = self.get_output("Evaluation Results")
+        self.send_signal(self.widget.Inputs.train_data, data)
+        self.send_signal(self.widget.Inputs.learner, MeanLearner(), 0, wait=5000)
+        res = self.get_output(self.widget.Outputs.evaluations_results)
         self.assertIsInstance(res, Results)
         self.assertIsNotNone(res.domain)
         self.assertIsNotNone(res.data)
 
     def test_testOnTest(self):
         data = Table("iris")
-        self.send_signal("Data", data)
+        self.send_signal(self.widget.Inputs.train_data, data)
         self.widget.resampling = OWTestLearners.TestOnTest
-        self.send_signal("Test Data", data)
+        self.send_signal(self.widget.Inputs.test_data, data)
 
     def test_CrossValidationByFeature(self):
         data = Table("iris")
@@ -59,12 +61,12 @@ class TestOWTestLearners(WidgetTest):
         data_with_disc_metas = Table.from_table(domain, data)
         rb = self.widget.controls.resampling.buttons[OWTestLearners.FeatureFold]
 
-        self.send_signal("Learner", ConstantLearner(), 0)
-        self.send_signal("Data", data)
+        self.send_signal(self.widget.Inputs.learner, ConstantLearner(), 0)
+        self.send_signal(self.widget.Inputs.train_data, data)
         self.assertFalse(rb.isEnabled())
         self.assertFalse(self.widget.features_combo.isEnabled())
 
-        self.send_signal("Data", data_with_disc_metas)
+        self.send_signal(self.widget.Inputs.train_data, data_with_disc_metas)
         self.assertTrue(rb.isEnabled())
         rb.click()
         self.assertEqual(self.widget.resampling, OWTestLearners.FeatureFold)
@@ -72,7 +74,7 @@ class TestOWTestLearners(WidgetTest):
         self.assertEqual(self.widget.features_combo.currentText(), "iris")
         self.assertEqual(len(self.widget.features_combo.model()), 1)
 
-        self.send_signal("Data", None)
+        self.send_signal(self.widget.Inputs.train_data, None)
         self.assertFalse(rb.isEnabled())
         self.assertEqual(self.widget.resampling, OWTestLearners.KFold)
         self.assertFalse(self.widget.features_combo.isEnabled())
@@ -141,6 +143,79 @@ class TestOWTestLearners(WidgetTest):
         self.widget.migrate_settings(settings, 2)
         self.assertEqual(settings['context_settings'], [context_valid])
 
+    def test_memory_error(self):
+        """
+        Handling memory error.
+        GH-2316
+        """
+        data = Table("iris")[::3]
+        self.send_signal(self.widget.Inputs.train_data, data)
+        self.assertFalse(self.widget.Error.memory_error.is_shown())
+
+        with unittest.mock.patch(
+            "Orange.evaluation.testing.Results.get_augmented_data",
+            side_effect=MemoryError):
+            self.send_signal(self.widget.Inputs.learner, MajorityLearner(), 0, wait=5000)
+            self.assertTrue(self.widget.Error.memory_error.is_shown())
+
+    def test_one_class_value(self):
+        """
+        Data with a class with one value causes widget to crash when that value
+        is selected.
+        GH-2351
+        """
+        table = Table(
+            Domain(
+                [ContinuousVariable("a"), ContinuousVariable("b")],
+                [DiscreteVariable("c", values=["y"])]),
+            list(zip(
+                [42.48, 16.84, 15.23, 23.8],
+                [1., 2., 3., 4.],
+                "yyyy"))
+        )
+        self.widget.n_folds = 0
+        self.widget.class_selection = "y"
+        self.assertFalse(self.widget.Error.only_one_class_var_value.is_shown())
+        self.send_signal("Data", table)
+        self.send_signal("Learner", MajorityLearner(), 0, wait=1000)
+        self.assertTrue(self.widget.Error.only_one_class_var_value.is_shown())
+
+    def test_addon_scorers(self):
+        try:
+            class NewScore(Score):
+                class_types = (DiscreteVariable, ContinuousVariable)
+
+            class NewClassificationScore(ClassificationScore):
+                pass
+
+            class NewRegressionScore(RegressionScore):
+                pass
+
+            builtins = self.widget.BUILTIN_ORDER
+            self.send_signal("Data", Table("iris"))
+            scorer_names = [scorer.name for scorer in self.widget.scorers]
+            self.assertEqual(
+                tuple(scorer_names[:len(builtins[DiscreteVariable])]),
+                builtins[DiscreteVariable])
+            self.assertIn("NewScore", scorer_names)
+            self.assertIn("NewClassificationScore", scorer_names)
+            self.assertNotIn("NewRegressionScore", scorer_names)
+
+            self.send_signal("Data", Table("housing"))
+            scorer_names = [scorer.name for scorer in self.widget.scorers]
+            self.assertEqual(
+                tuple(scorer_names[:len(builtins[ContinuousVariable])]),
+                builtins[ContinuousVariable])
+            self.assertIn("NewScore", scorer_names)
+            self.assertNotIn("NewClassificationScore", scorer_names)
+            self.assertIn("NewRegressionScore", scorer_names)
+
+            self.send_signal("Data", None)
+            self.assertEqual(self.widget.scorers, [])
+        finally:
+            del Score.registry["NewScore"]
+            del Score.registry["NewClassificationScore"]
+            del Score.registry["NewRegressionScore"]
 
 class TestHelpers(unittest.TestCase):
     def test_results_one_vs_rest(self):
@@ -168,3 +243,7 @@ class TestHelpers(unittest.TestCase):
         np.testing.assert_equal(r1.row_indices, res.row_indices)
         np.testing.assert_equal(r2.row_indices, res.row_indices)
         np.testing.assert_equal(r3.row_indices, res.row_indices)
+
+
+if __name__ == "__main__":
+    unittest.main()

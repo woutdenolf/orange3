@@ -5,7 +5,7 @@ from collections import namedtuple, OrderedDict
 from itertools import chain
 from contextlib import contextmanager
 
-import numpy
+import numpy as np
 
 from AnyQt.QtWidgets import (
     QGraphicsWidget, QGraphicsObject, QGraphicsLinearLayout, QGraphicsPathItem,
@@ -34,6 +34,7 @@ from Orange.widgets import widget, gui, settings
 from Orange.widgets.utils import colorpalette, itemmodels
 from Orange.widgets.utils.annotated_data import (create_annotated_table,
                                                  ANNOTATED_DATA_SIGNAL_NAME)
+from Orange.widgets.widget import Input, Output, Msg
 
 __all__ = ["OWHierarchicalClustering"]
 
@@ -604,7 +605,7 @@ class DendrogramWidget(QGraphicsWidget):
         else:
             drect = QSizeF(leaf_count, self._root.value.height)
 
-        eps = numpy.finfo(numpy.float64).eps
+        eps = np.finfo(np.float64).eps
 
         if abs(drect.width()) < eps:
             sx = 1.0
@@ -717,10 +718,12 @@ class OWHierarchicalClustering(widget.OWWidget):
     icon = "icons/HierarchicalClustering.svg"
     priority = 2100
 
-    inputs = [("Distances", Orange.misc.DistMatrix, "set_distances")]
+    class Inputs:
+        distances = Input("Distances", Orange.misc.DistMatrix)
 
-    outputs = [("Selected Data", Orange.data.Table, widget.Default),
-               (ANNOTATED_DATA_SIGNAL_NAME, Orange.data.Table)]
+    class Outputs:
+        selected_data = Output("Selected Data", Orange.data.Table, default=True)
+        annotated_data = Output(ANNOTATED_DATA_SIGNAL_NAME, Orange.data.Table)
 
     settingsHandler = settings.DomainContextHandler()
 
@@ -759,6 +762,9 @@ class OWHierarchicalClustering(widget.OWWidget):
 
     cluster_roles = ["Attribute", "Class variable", "Meta variable"]
     basic_annotations = ["None", "Enumeration"]
+
+    class Error(widget.OWWidget.Error):
+        not_finite_distances = Msg("Some distances are infinite")
 
     def __init__(self):
         super().__init__()
@@ -956,12 +962,18 @@ class OWHierarchicalClustering(widget.OWWidget):
         self.dendrogram.geometryChanged.connect(self._dendrogram_geom_changed)
         self._set_cut_line_visible(self.selection_method == 1)
 
+    @Inputs.distances
     def set_distances(self, matrix):
         self.error()
+        self.Error.clear()
         if matrix is not None:
             N, _ = matrix.shape
             if N < 2:
                 self.error("Empty distance matrix")
+                matrix = None
+        if matrix is not None:
+            if not np.all(np.isfinite(matrix)):
+                self.Error.not_finite_distances()
                 matrix = None
 
         self.matrix = matrix
@@ -1104,8 +1116,8 @@ class OWHierarchicalClustering(widget.OWWidget):
     def commit(self):
         items = getattr(self.matrix, "items", self.items)
         if not items:
-            self.send("Selected Data", None)
-            self.send(ANNOTATED_DATA_SIGNAL_NAME, None)
+            self.Outputs.selected_data.send(None)
+            self.Outputs.annotated_data.send(None)
             return
 
         selection = self.dendrogram.selected_nodes()
@@ -1121,17 +1133,17 @@ class OWHierarchicalClustering(widget.OWWidget):
                                     set(selected_indices))
 
         if not selected_indices:
-            self.send("Selected Data", None)
+            self.Outputs.selected_data.send(None)
             annotated_data = create_annotated_table(items, []) \
                 if self.selection_method == 0 and self.matrix.axis else None
-            self.send(ANNOTATED_DATA_SIGNAL_NAME, annotated_data)
+            self.Outputs.annotated_data.send(annotated_data)
             return
 
         selected_data = None
 
         if isinstance(items, Orange.data.Table) and self.matrix.axis == 1:
             # Select rows
-            c = numpy.zeros(self.matrix.shape[0])
+            c = np.zeros(self.matrix.shape[0])
 
             for i, indices in enumerate(maps):
                 c[indices] = i
@@ -1190,10 +1202,10 @@ class OWHierarchicalClustering(widget.OWWidget):
             selected_data = items.from_table(domain, items)
             data = None
 
-        self.send("Selected Data", selected_data)
+        self.Outputs.selected_data.send(selected_data)
         annotated_data = create_annotated_table(data, selected_indices) if \
             self.selection_method == 0 else None
-        self.send(ANNOTATED_DATA_SIGNAL_NAME, annotated_data)
+        self.Outputs.annotated_data.send(annotated_data)
 
     def sizeHint(self):
         return QSize(800, 500)

@@ -6,6 +6,76 @@ Change Log
 * ...
 
 
+[3.4.4] - 2017-06-16
+--------------------
+##### Enhancements
+* SimpleTreeLearner: Release GIL & thread safety ([#2398](../../pull/2398))
+* Improve support for HiDPI displays ([#2325](../../pull/2325))
+* Add a tutorial section on responsive GUI ([#2318](../../pull/2318))
+* Check if updates are available upon startup ([#2273](../../pull/2273))
+
+##### Bugfixes
+* Vizrank: interact with gui from main thread only ([#2389](../../pull/2389))
+* Some preprocessors couldn not be pickled ([#2409](../../pull/2409))
+* MDS: Support distances without domain information ([#2335](../../pull/2335))
+* Paint Data: Fix crash on empty data ([#2399](../../pull/2399))
+* Distributions: do not crash on empty data ([#2383](../../pull/2383))
+* Update checker: LooseVersion does not handle str parts ([#2401](../../pull/2401))
+* owpreproces: Stable order of continuizers ([#2400](../../pull/2400))
+* owmanifoldlearning: Remove `n_jobs=-2` parameter ([#2371](../../pull/2371))
+* Scatter Plot: features and no data ([#2384](../../pull/2384))
+* tests: Fix test errors when running with numpy 1.13.0 ([#2396](../../pull/2396))
+* OWColor: Use DiscreteVariable values for matching contexts ([#2376](../../pull/2376))
+* Outliers: handling memory error ([#2374](../../pull/2374))
+* score.FCBF: do not segfault on continuous variables w/ <0 values ([#2355](../../pull/2355))
+* Rank widget supports Scorer inputs ([#2350](../../pull/2350))
+* Silhouette Plot: handling memory error ([#2336](../../pull/2336))
+* Distances: handling errors due to too large arrays ([#2315](../../pull/2315))
+* Confusion Matrix: do not append extra column if empty ([#2386](../../pull/2386))
+
+
+[3.4.3] - 2017-06-03
+--------------------
+##### Enhancements
+* Venn diagram: Support sparse data ([#2334](../../pull/2334))
+* PCA: Support sparse data ([#2313](../../pull/2313))
+* Impute: Support sparse data ([#2357](../../pull/2357))
+* Merge: Support sparse data ([#2305](../../pull/2305))
+* Scatter Plot: Support sparse data ([#2152](../../pull/2152))
+* Manifold: Support t-SNE on sparse data ([#2281](../../pull/2281))
+* Mosaic: Selectable color variable ([#2133](../../pull/2133))
+* Test & Score: Allow choosing columns ([#2257](../../pull/2257))
+* Preprocess: Add all available methods to feature selection ([#2205](../../pull/2205))
+* Scatter Plot: Support string metas labels ([#2360](../../pull/2360))
+
+##### Bugfixes
+* Fix and improve Precision, Recall, F1 ([#2369](../../pull/2369))
+* Paint Data: Stores data in list and not np.array ([#2314](../../pull/2314))
+* Paint Data: Save and load labels ([#2259](../../pull/2259))
+* File: No domain or empty domain -> no data ([#2337](../../pull/2337))
+* File: Support sparse data in Domain Editor ([#2245](../../pull/2245))
+* File: Raise and handle Exc. when file bad pickle ([#2232](../../pull/2232))
+* Test & Score: Fix migration of old settings ([#2254](../../pull/2254))
+* Test & Score: Show correct error ([#2263](../../pull/2263))
+* Test & Score: Instantly recognize new input ([#2247](../../pull/2247))
+* Test & Score: Handling memory errors ([#2316](../../pull/2316))
+* Tree Viewer: Check if there is selected class value ([#2224](../../pull/2224))
+* CredentialManager: Handling password credentials error ([#2354](../../pull/2354))
+* RowInstance: Fix sparse check ([#2362](../../pull/2362))
+* Cross Validation: Cast fold number to string ([#2348](../../pull/2348))
+* Silhouette Plot: Elide hover labels if labels are long ([#2278](../../pull/2278))
+* Select Rows, Table: Filtering string values ([#2176](../../pull/2176))
+* Report: Handle PermissionError when trying to save ([#2225](../../pull/2225))
+* Continuize: Prevent crashing - column with equal and NaN values ([#2144](../../pull/2144))
+* Add-ons: Handling ValueError due to connection problems ([#2239](../../pull/2239))
+* Correspondence: Prevent crashing when cont attr has one value ([#2149](../../pull/2149))
+* WebEngineView: Insert JS if loading already started ([#2230](../../pull/2230))
+* Manifold Learning: handling numpy LinAlgError ([#2228](../../pull/2228))
+* MDS: Fix widget update scheduling ([#2211](../../pull/2211))
+* Settings: Handle permission errors when saving settings ([#2147](../../pull/2147))
+* Map: Minor fixes ([#2356](../../pull/2356))
+
+
 [3.4.2] - 2017-04-19
 --------------------
 ##### Enhancements
@@ -476,7 +546,9 @@ Change Log
 * Initial version based on Python 1.5.2 and Qt 2.3
 
 
-[next]: https://github.com/biolab/orange3/compare/3.4.2...HEAD
+[next]: https://github.com/biolab/orange3/compare/3.4.4...HEAD
+[3.4.4]: https://github.com/biolab/orange3/compare/3.4.3...3.4.4
+[3.4.3]: https://github.com/biolab/orange3/compare/3.4.2...3.4.3
 [3.4.2]: https://github.com/biolab/orange3/compare/3.4.1...3.4.2
 [3.4.1]: https://github.com/biolab/orange3/compare/3.4.0...3.4.1
 [3.4.0]: https://github.com/biolab/orange3/compare/3.3.12...3.4.0

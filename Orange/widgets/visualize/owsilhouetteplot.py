@@ -8,7 +8,7 @@ from types import SimpleNamespace as namespace
 if sys.version_info > (3, 5):
     from typing import Optional
 
-import numpy
+import numpy as np
 import sklearn.metrics
 
 from AnyQt.QtWidgets import (
@@ -16,7 +16,7 @@ from AnyQt.QtWidgets import (
     QGraphicsProxyWidget, QGraphicsItemGroup, QGraphicsSimpleTextItem,
     QGraphicsRectItem, QFrame, QSizePolicy
 )
-from AnyQt.QtGui import QColor, QPen, QBrush, QPainter, QFont, QFontMetrics
+from AnyQt.QtGui import QColor, QPen, QBrush, QPainter, QFontMetrics
 from AnyQt.QtCore import Qt, QEvent, QRectF, QSizeF, QSize, QPointF
 from AnyQt.QtCore import pyqtSignal as Signal
 
@@ -32,7 +32,10 @@ from Orange.widgets.utils.annotated_data import (create_annotated_table,
 from Orange.widgets.utils.sql import check_sql_input
 from Orange.widgets.unsupervised.owhierarchicalclustering import \
     WrapperLayoutItem
-from Orange.widgets.widget import Msg
+from Orange.widgets.widget import Msg, Input, Output
+
+
+ROW_NAMES_WIDTH = 200
 
 
 class OWSilhouettePlot(widget.OWWidget):
@@ -43,9 +46,12 @@ class OWSilhouettePlot(widget.OWWidget):
     icon = "icons/SilhouettePlot.svg"
     priority = 300
 
-    inputs = [("Data", Orange.data.Table, "set_data")]
-    outputs = [("Selected Data", Orange.data.Table, widget.Default),
-               (ANNOTATED_DATA_SIGNAL_NAME, Orange.data.Table)]
+    class Inputs:
+        data = Input("Data", Orange.data.Table)
+
+    class Outputs:
+        selected_data = Output("Selected Data", Orange.data.Table, default=True)
+        annotated_data = Output(ANNOTATED_DATA_SIGNAL_NAME, Orange.data.Table)
 
     replaces = [
         "orangecontrib.prototypes.widgets.owsilhouetteplot.OWSilhouettePlot",
@@ -77,6 +83,7 @@ class OWSilhouettePlot(widget.OWWidget):
     class Error(widget.OWWidget.Error):
         need_two_clusters = Msg("Need at least two non-empty clusters")
         singleton_clusters_all = Msg("All clusters are singletons")
+        memory_error = Msg("Not enough memory")
 
     class Warning(widget.OWWidget.Warning):
         missing_cluster_assignment = Msg(
@@ -92,13 +99,13 @@ class OWSilhouettePlot(widget.OWWidget):
         self._matrix = None      # type: Optional[Orange.misc.DistMatrix]
         #: An bool mask (size == len(data)) indicating missing group/cluster
         #: assignments
-        self._mask = None        # type: Optional[numpy.ndarray]
+        self._mask = None        # type: Optional[np.ndarray]
         #: An array of cluster/group labels for instances with valid group
         #: assignment
-        self._labels = None      # type: Optional[numpy.ndarray]
+        self._labels = None      # type: Optional[np.ndarray]
         #: An array of silhouette scores for instances with valid group
         #: assignment
-        self._silhouette = None  # type: Optional[numpy.ndarray]
+        self._silhouette = None  # type: Optional[np.ndarray]
         self._silplot = None     # type: Optional[SilhouettePlot]
 
         gui.comboBox(
@@ -156,6 +163,7 @@ class OWSilhouettePlot(widget.OWWidget):
         sh = self.controlArea.sizeHint()
         return sh.expandedTo(QSize(600, 720))
 
+    @Inputs.data
     @check_sql_input
     def set_data(self, data):
         """
@@ -246,30 +254,44 @@ class OWSilhouettePlot(widget.OWWidget):
 
     def _update(self):
         # Update/recompute the distances/scores as required
+        self._clear_messages()
+
         if self.data is None or not len(self.data):
-            self._mask = None
-            self._silhouette = None
-            self._labels = None
-            self._matrix = None
-            self._clear_scene()
+            self._reset_all()
             return
 
         if self._matrix is None and self._effective_data is not None:
             _, metric = self.Distances[self.distance_idx]
-            self._matrix = numpy.asarray(metric(self._effective_data))
+            try:
+                self._matrix = np.asarray(metric(self._effective_data))
+            except MemoryError:
+                self.Error.memory_error()
+                return
 
-        labelvar = self.cluster_var_model[self.cluster_var_idx]
-        labels, _ = self.data.get_column_view(labelvar)
-        labels = numpy.asarray(labels, dtype=float)
-        mask = numpy.isnan(labels)
-        labels = labels.astype(int)
-        labels = labels[~mask]
+        self._update_labels()
 
-        labels_unq, counts = numpy.unique(labels, return_counts=True)
+    def _reset_all(self):
+        self._mask = None
+        self._silhouette = None
+        self._labels = None
+        self._matrix = None
+        self._clear_scene()
 
+    def _clear_messages(self):
+        self.Error.memory_error.clear()
         self.Error.singleton_clusters_all.clear()
         self.Error.need_two_clusters.clear()
         self.Warning.missing_cluster_assignment.clear()
+
+    def _update_labels(self):
+        labelvar = self.cluster_var_model[self.cluster_var_idx]
+        labels, _ = self.data.get_column_view(labelvar)
+        labels = np.asarray(labels, dtype=float)
+        mask = np.isnan(labels)
+        labels = labels.astype(int)
+        labels = labels[~mask]
+
+        labels_unq, _ = np.unique(labels, return_counts=True)
 
         if len(labels_unq) < 2:
             self.Error.need_two_clusters()
@@ -285,7 +307,7 @@ class OWSilhouettePlot(widget.OWWidget):
         self._silhouette = silhouette
 
         if labels is not None:
-            count_missing = numpy.count_nonzero(mask)
+            count_missing = np.count_nonzero(mask)
             if count_missing:
                 self.Warning.missing_cluster_assignment(
                     count_missing, s="s" if count_missing > 1 else "")
@@ -311,8 +333,8 @@ class OWSilhouettePlot(widget.OWWidget):
             else:
                 silplot.setScores(
                     self._silhouette,
-                    numpy.zeros(len(self._silhouette), dtype=int),
-                    [""], numpy.array([[63, 207, 207]])
+                    np.zeros(len(self._silhouette), dtype=int),
+                    [""], np.array([[63, 207, 207]])
                 )
 
             self.scene.addItem(silplot)
@@ -357,17 +379,17 @@ class OWSilhouettePlot(widget.OWWidget):
         """
         selected = indices = data = None
         if self.data is not None:
-            selectedmask = numpy.full(len(self.data), False, dtype=bool)
+            selectedmask = np.full(len(self.data), False, dtype=bool)
             if self._silplot is not None:
                 indices = self._silplot.selection()
-                assert (numpy.diff(indices) > 0).all(), "strictly increasing"
+                assert (np.diff(indices) > 0).all(), "strictly increasing"
                 if self._mask is not None:
-                    indices = numpy.flatnonzero(~self._mask)[indices]
+                    indices = np.flatnonzero(~self._mask)[indices]
                 selectedmask[indices] = True
 
             if self._mask is not None:
-                scores = numpy.full(shape=selectedmask.shape,
-                                    fill_value=numpy.nan)
+                scores = np.full(shape=selectedmask.shape,
+                                 fill_value=np.nan)
                 scores[~self._mask] = self._silhouette
             else:
                 scores = self._silhouette
@@ -386,18 +408,17 @@ class OWSilhouettePlot(widget.OWWidget):
                 domain = self.data.domain
                 data = self.data
 
-            if numpy.count_nonzero(selectedmask):
+            if np.count_nonzero(selectedmask):
                 selected = self.data.from_table(
-                    domain, self.data, numpy.flatnonzero(selectedmask))
+                    domain, self.data, np.flatnonzero(selectedmask))
 
             if self.add_scores:
                 if selected is not None:
-                    selected[:, silhouette_var] = numpy.c_[scores[selectedmask]]
-                data[:, silhouette_var] = numpy.c_[scores]
+                    selected[:, silhouette_var] = np.c_[scores[selectedmask]]
+                data[:, silhouette_var] = np.c_[scores]
 
-        self.send("Selected Data", selected)
-        self.send(ANNOTATED_DATA_SIGNAL_NAME,
-                  create_annotated_table(data, indices))
+        self.Outputs.selected_data.send(selected)
+        self.Outputs.annotated_data.send(create_annotated_table(data, indices))
 
     def send_report(self):
         if not len(self.cluster_var_model):
@@ -435,7 +456,7 @@ class SilhouettePlot(QGraphicsWidget):
         self.__rowNamesVisible = True
         self.__barHeight = 3
         self.__selectionRect = None
-        self.__selection = numpy.asarray([], dtype=int)
+        self.__selection = np.asarray([], dtype=int)
         self.__selstate = None
         self.__pen = QPen(Qt.NoPen)
         self.__layout = QGraphicsGridLayout()
@@ -461,10 +482,10 @@ class SilhouettePlot(QGraphicsWidget):
         rownames : list of str, optional
             A list (len == N) of row names.
         """
-        scores = numpy.asarray(scores, dtype=float)
-        labels = numpy.asarray(labels, dtype=int)
+        scores = np.asarray(scores, dtype=float)
+        labels = np.asarray(labels, dtype=int)
         if rownames is not None:
-            rownames = numpy.asarray(rownames, dtype=object)
+            rownames = np.asarray(rownames, dtype=object)
 
         if not scores.ndim == labels.ndim == 1:
             raise ValueError("scores and labels must be 1 dimensional")
@@ -473,13 +494,13 @@ class SilhouettePlot(QGraphicsWidget):
         if rownames is not None and rownames.shape != scores.shape:
             raise ValueError("rownames must have the same size as scores")
 
-        Ck = numpy.unique(labels)
+        Ck = np.unique(labels)
         if not Ck[0] >= 0 and Ck[-1] < len(values):
             raise ValueError(
                 "All indices in `labels` must be in `range(len(values))`")
-        cluster_indices = [numpy.flatnonzero(labels == i)
+        cluster_indices = [np.flatnonzero(labels == i)
                            for i in range(len(values))]
-        cluster_indices = [indices[numpy.argsort(scores[indices])[::-1]]
+        cluster_indices = [indices[np.argsort(scores[indices])[::-1]]
                            for indices in cluster_indices]
         groups = [
             namespace(scores=scores[indices], indices=indices, label=label,
@@ -494,7 +515,7 @@ class SilhouettePlot(QGraphicsWidget):
 
     def setRowNames(self, names):
         if names is not None:
-            names = numpy.asarray(names, dtype=object)
+            names = np.asarray(names, dtype=object)
 
         layout = self.layout()
 
@@ -506,7 +527,10 @@ class SilhouettePlot(QGraphicsWidget):
             item = layout.itemAt(i + 1, 3)
 
             if grp.rownames is not None:
-                item.setItems(grp.rownames)
+                metrics = QFontMetrics(self.font())
+                rownames = [metrics.elidedText(rowname, Qt.ElideRight, ROW_NAMES_WIDTH)
+                            for rowname in grp.rownames]
+                item.setItems(rownames)
                 item.setVisible(self.__rowNamesVisible)
             else:
                 item.setItems([])
@@ -520,8 +544,8 @@ class SilhouettePlot(QGraphicsWidget):
             else:
                 tooltips = grp.rownames
 
-            for bar, tooltip in zip(baritems, tooltips):
-                bar.setToolTip(tooltip)
+            for baritem, tooltip in zip(baritems, tooltips):
+                baritem.setToolTip(tooltip)
 
         self.layout().activate()
 
@@ -565,13 +589,15 @@ class SilhouettePlot(QGraphicsWidget):
 
     def __setup(self):
         # Setup the subwidgets/groups/layout
-        smax = max((numpy.max(g.scores) for g in self.__groups
+        smax = max((np.nanmax(g.scores) for g in self.__groups
                     if g.scores.size),
                    default=1)
+        smax = 1 if np.isnan(smax) else smax
 
-        smin = min((numpy.min(g.scores) for g in self.__groups
+        smin = min((np.nanmin(g.scores) for g in self.__groups
                     if g.scores.size),
                    default=-1)
+        smin = -1 if np.isnan(smin) else smin
         smin = min(smin, 0)
 
         font = self.font()
@@ -680,7 +706,7 @@ class SilhouettePlot(QGraphicsWidget):
                 rect=None,
             )
             if saction & SelectAction.Clear:
-                self.__selstate.selection = numpy.array([], dtype=int)
+                self.__selstate.selection = np.array([], dtype=int)
                 self.setSelection(self.__selstate.selection)
             event.accept()
 
@@ -737,9 +763,9 @@ class SilhouettePlot(QGraphicsWidget):
             self.__selstate = None
 
     def __move_selection(self, selection, offset):
-        ids = numpy.asarray([pi.data(0) for pi in self.__plotItems()]).ravel()
-        indices = [numpy.where(ids == i)[0] for i in selection]
-        indices = numpy.asarray(indices) + offset
+        ids = np.asarray([pi.data(0) for pi in self.__plotItems()]).ravel()
+        indices = [np.where(ids == i)[0] for i in selection]
+        indices = np.asarray(indices) + offset
         if min(indices) >= 0 and max(indices) < len(ids):
             self.setSelection(ids[indices])
 
@@ -762,18 +788,18 @@ class SilhouettePlot(QGraphicsWidget):
             selection = self.__selection
 
         if action & SelectAction.Toogle:
-            selection = numpy.setxor1d(selection, indices)
+            selection = np.setxor1d(selection, indices)
         elif action & SelectAction.Deselect:
-            selection = numpy.setdiff1d(selection, indices)
+            selection = np.setdiff1d(selection, indices)
         elif action & SelectAction.Select:
-            selection = numpy.union1d(selection, indices)
+            selection = np.union1d(selection, indices)
 
         self.setSelection(selection)
 
     def __selectionIndices(self, rect):
         items = [item for item in self.__plotItems()
                  if item.geometry().intersects(rect)]
-        selection = [numpy.array([], dtype=int)]
+        selection = [np.array([], dtype=int)]
         for item in items:
             indices = item.data(0)
             itemrect = item.geometry().intersected(rect)
@@ -782,10 +808,10 @@ class SilhouettePlot(QGraphicsWidget):
                         .intersected(crect))
             assert itemrect.top() >= 0
             rowh = crect.height() / item.count()
-            indextop = numpy.floor(itemrect.top() / rowh)
-            indexbottom = numpy.ceil(itemrect.bottom() / rowh)
+            indextop = np.floor(itemrect.top() / rowh)
+            indexbottom = np.ceil(itemrect.bottom() / rowh)
             selection.append(indices[int(indextop): int(indexbottom)])
-        return numpy.hstack(selection)
+        return np.hstack(selection)
 
     def itemAtPos(self, pos):
         items = [item for item in self.__plotItems()
@@ -801,7 +827,7 @@ class SilhouettePlot(QGraphicsWidget):
 
         assert pos.x() >= 0
         rowh = crect.height() / item.count()
-        index = int(numpy.floor(pos.y() / rowh))
+        index = int(np.floor(pos.y() / rowh))
         index = min(index, item.count() - 1)
         if index >= 0:
             return item.items()[index]
@@ -816,7 +842,7 @@ class SilhouettePlot(QGraphicsWidget):
         else:
             item = items[0]
         indices = item.data(0)
-        assert (isinstance(indices, numpy.ndarray) and
+        assert (isinstance(indices, np.ndarray) and
                 indices.shape == (item.count(),))
         crect = item.contentsRect()
         pos = item.mapFromParent(pos)
@@ -825,7 +851,7 @@ class SilhouettePlot(QGraphicsWidget):
 
         assert pos.x() >= 0
         rowh = crect.height() / item.count()
-        index = numpy.floor(pos.y() / rowh)
+        index = np.floor(pos.y() / rowh)
         index = min(index, indices.size - 1)
 
         if index >= 0:
@@ -835,16 +861,16 @@ class SilhouettePlot(QGraphicsWidget):
 
     def __selectionChanged(self, selected, deselected):
         for item, grp in zip(self.__plotItems(), self.__groups):
-            select = numpy.flatnonzero(
-                numpy.in1d(grp.indices, selected, assume_unique=True))
+            select = np.flatnonzero(
+                np.in1d(grp.indices, selected, assume_unique=True))
             items = item.items()
             if select.size:
                 for i in select:
-                    color = numpy.hstack((grp.color, numpy.array([130])))
+                    color = np.hstack((grp.color, np.array([130])))
                     items[i].setBrush(QBrush(QColor(*color)))
 
-            deselect = numpy.flatnonzero(
-                numpy.in1d(grp.indices, deselected, assume_unique=True))
+            deselect = np.flatnonzero(
+                np.in1d(grp.indices, deselected, assume_unique=True))
             if deselect.size:
                 for i in deselect:
                     items[i].setBrush(QBrush(QColor(*grp.color)))
@@ -864,9 +890,9 @@ class SilhouettePlot(QGraphicsWidget):
                 yield item
 
     def setSelection(self, indices):
-        indices = numpy.unique(numpy.asarray(indices, dtype=int))
-        select = numpy.setdiff1d(indices, self.__selection)
-        deselect = numpy.setdiff1d(self.__selection, indices)
+        indices = np.unique(np.asarray(indices, dtype=int))
+        select = np.setdiff1d(indices, self.__selection)
+        deselect = np.setdiff1d(self.__selection, indices)
 
         self.__selectionChanged(select, deselect)
 
@@ -876,7 +902,7 @@ class SilhouettePlot(QGraphicsWidget):
             self.selectionChanged.emit()
 
     def selection(self):
-        return numpy.asarray(self.__selection, dtype=int)
+        return np.asarray(self.__selection, dtype=int)
 
 
 class BarPlotItem(QGraphicsWidget):
@@ -887,7 +913,7 @@ class BarPlotItem(QGraphicsWidget):
         self.__pen = QPen(Qt.NoPen)
         self.__brush = QBrush(QColor("#3FCFCF"))
         self.__range = (0., 1.)
-        self.__data = numpy.array([], dtype=float)
+        self.__data = np.array([], dtype=float)
         self.__items = []
 
     def count(self):
@@ -906,8 +932,7 @@ class BarPlotItem(QGraphicsWidget):
         return super().event(event)
 
     def sizeHint(self, which, constraint=QSizeF()):
-        spacing = max(self.__spacing * (self.count() - 1), 0)
-        return QSizeF(300, self.__barsize * self.count() + spacing)
+        return QSizeF(300, (self.__barsize + self.__spacing) * self.count())
 
     def setPreferredBarSize(self, size):
         if self.__barsize != size:
@@ -916,11 +941,6 @@ class BarPlotItem(QGraphicsWidget):
 
     def spacing(self):
         return self.__spacing
-
-    def setSpacing(self, spacing):
-        if self.__spacing != spacing:
-            self.__spacing = spacing
-            self.updateGeometry()
 
     def setPen(self, pen):
         pen = QPen(pen)
@@ -943,7 +963,7 @@ class BarPlotItem(QGraphicsWidget):
         return QBrush(self.__brush)
 
     def setPlotData(self, values):
-        self.__data = numpy.array(values, copy=True)
+        self.__data = np.array(values, copy=True)
         self.__update()
         self.updateGeometry()
 
@@ -966,7 +986,7 @@ class BarPlotItem(QGraphicsWidget):
 
         pen = self.pen()
         brush = self.brush()
-        for i in range(self.count()):
+        for _ in range(self.count()):
             item = QGraphicsRectItem(self)
             item.setPen(pen)
             item.setBrush(brush)
@@ -1014,7 +1034,7 @@ class TextListWidget(QGraphicsWidget):
         self.__spacing = 0
 
         sp = QSizePolicy(QSizePolicy.Preferred,
-                               QSizePolicy.Preferred)
+                         QSizePolicy.Preferred)
         sp.setWidthForHeight(True)
         self.setSizePolicy(sp)
 
@@ -1110,8 +1130,10 @@ class TextListWidget(QGraphicsWidget):
         self.__textitems = []
 
 
-def main(argv=sys.argv):
+def main(argv=None):
     from AnyQt.QtWidgets import QApplication
+    if argv is None:
+        argv = sys.argv
     app = QApplication(list(argv))
     argv = app.arguments()
     if len(argv) > 1:

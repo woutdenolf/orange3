@@ -14,6 +14,7 @@ from Orange.widgets import widget, settings, gui
 from Orange.widgets.gui import HorizontalGridDelegate
 from Orange.widgets.utils.colorpalette import \
     ContinuousPaletteGenerator, ColorPaletteDlg
+from Orange.widgets.widget import Input, Output
 
 ColorRole = next(gui.OrangeUserRole)
 
@@ -283,10 +284,15 @@ class OWColor(widget.OWWidget):
     name = "Color"
     description = "Set color legend for variables."
     icon = "icons/Colors.svg"
-    inputs = [("Data", Orange.data.Table, "set_data")]
-    outputs = [("Data", Orange.data.Table)]
 
-    settingsHandler = settings.PerfectDomainContextHandler()
+    class Inputs:
+        data = Input("Data", Orange.data.Table)
+
+    class Outputs:
+        data = Output("Data", Orange.data.Table)
+
+    settingsHandler = settings.PerfectDomainContextHandler(
+        match_values=settings.PerfectDomainContextHandler.MATCH_VALUES_ALL)
     disc_data = settings.ContextSetting([])
     cont_data = settings.ContextSetting([])
     color_settings = settings.Setting(None)
@@ -336,6 +342,7 @@ class OWColor(widget.OWWidget):
             part_vars.append(var)
         return part_vars
 
+    @Inputs.data
     def set_data(self, data):
         """Handle data input signal"""
         self.closeContext()
@@ -384,7 +391,7 @@ class OWColor(widget.OWWidget):
         self.commit()
 
     def commit(self):
-        self.send("Data", self.data)
+        self.Outputs.data.send(self.data)
 
     def send_report(self):
         """Send report"""

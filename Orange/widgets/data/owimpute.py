@@ -14,7 +14,7 @@ from Orange.base import Learner
 from Orange.widgets import gui, settings
 from Orange.widgets.utils import itemmodels
 from Orange.widgets.utils.sql import check_sql_input
-from Orange.widgets.widget import OWWidget
+from Orange.widgets.widget import OWWidget, Msg, Input, Output
 from Orange.classification import SimpleTreeLearner
 
 
@@ -57,9 +57,16 @@ class OWImpute(OWWidget):
     icon = "icons/Impute.svg"
     priority = 2130
 
-    inputs = [("Data", Orange.data.Table, "set_data"),
-              ("Learner", Learner, "set_learner")]
-    outputs = [("Data", Orange.data.Table)]
+    class Inputs:
+        data = Input("Data", Orange.data.Table)
+        learner = Input("Learner", Learner)
+
+    class Outputs:
+        data = Output("Data", Orange.data.Table)
+
+    class Error(OWWidget.Error):
+        imputation_failed = Msg("Imputation failed for '{}'")
+        model_based_imputer_sparse = Msg("Model based imputer does not work for sparse data")
 
     DEFAULT_LEARNER = SimpleTreeLearner()
     METHODS = [AsDefault(), impute.DoNotImpute(), impute.Average(),
@@ -192,6 +199,7 @@ class OWImpute(OWWidget):
         """
         self.default_method_index = index
 
+    @Inputs.data
     @check_sql_input
     def set_data(self, data):
         self.closeContext()
@@ -207,6 +215,7 @@ class OWImpute(OWWidget):
         self.update_varview()
         self.unconditional_commit()
 
+    @Inputs.learner
     def set_learner(self, learner):
         self.learner = learner or self.DEFAULT_LEARNER
         imputer = self.METHODS[self.MODEL_BASED_IMPUTER]
@@ -240,15 +249,25 @@ class OWImpute(OWWidget):
         data = self.data
 
         if self.data is not None:
+            if not len(self.data):
+                self.Outputs.data.send(self.data)
+                self.modified = False
+                return
+
             drop_mask = np.zeros(len(self.data), bool)
 
             attributes = []
             class_vars = []
 
             self.warning()
+            self.Error.imputation_failed.clear()
+            self.Error.model_based_imputer_sparse.clear()
             with self.progressBar(len(self.varmodel)) as progress:
                 for i, var in enumerate(self.varmodel):
                     method = self.variable_methods.get(i, self.default_method)
+                    if isinstance(method, impute.Model) and data.is_sparse():
+                        self.Error.model_based_imputer_sparse()
+                        continue
 
                     if not method.supports_variable(var):
                         self.warning("Default method can not handle '{}'".
@@ -272,7 +291,7 @@ class OWImpute(OWWidget):
                                         self.data.domain.metas)
             data = self.data.from_table(domain, self.data[~drop_mask])
 
-        self.send("Data", data)
+        self.Outputs.data.send(data)
         self.modified = False
 
     def send_report(self):
