@@ -12,8 +12,14 @@ import functools
 import builtins
 import math
 import random
+import logging
+import ast
+
+from traceback import format_exception_only
 from collections import namedtuple, OrderedDict
 from itertools import chain, count
+
+import numpy as np
 
 from AnyQt.QtWidgets import (
     QSizePolicy, QAbstractItemView, QComboBox, QFormLayout, QLineEdit,
@@ -338,7 +344,8 @@ class OWFeatureConstructor(OWWidget):
     ]
 
     class Error(OWWidget.Error):
-        more_values_needed = Msg("Discrete feature {} needs more values.")
+        more_values_needed = Msg("Categorical feature {} needs more values.")
+        invalid_expressions = Msg("Invalid expressions: {}.")
 
     def __init__(self):
         super().__init__()
@@ -554,11 +561,7 @@ class OWFeatureConstructor(OWWidget):
                     return var.name
         return None
 
-    def apply(self):
-        if self.data is None:
-            return
-
-        desc = list(self.featuremodel)
+    def _validate_descriptors(self, desc):
 
         def validate(source):
             try:
@@ -566,11 +569,28 @@ class OWFeatureConstructor(OWWidget):
             except Exception:
                 return False
 
-        def remove_invalid_expression(desc):
-            return (desc if validate(desc.expression)
-                    else desc._replace(expression=""))
+        final = []
+        invalid = []
+        for d in desc:
+            if validate(d.expression):
+                final.append(d)
+            else:
+                final.append(d._replace(expression=""))
+                invalid.append(d)
 
-        desc = map(remove_invalid_expression, desc)
+        if invalid:
+            self.Error.invalid_expressions(", ".join(s.name for s in invalid))
+
+        return final
+
+    def apply(self):
+        self.Error.clear()
+
+        if self.data is None:
+            return
+
+        desc = list(self.featuremodel)
+        desc = self._validate_descriptors(desc)
         source_vars = tuple(self.data.domain) + self.data.domain.metas
         new_variables = construct_variables(desc, source_vars)
 
@@ -582,11 +602,12 @@ class OWFeatureConstructor(OWWidget):
             metas=self.data.domain.metas + tuple(metas)
         )
 
-        self.Error.clear()
         try:
-            data = Orange.data.Table(new_domain, self.data)
+            data = self.data.transform(new_domain)
         except Exception as err:
-            self.error(err.args[0])
+            log = logging.getLogger(__name__)
+            log.error("", exc_info=True)
+            self.error("".join(format_exception_only(type(err), err)).rstrip())
             return
         disc_attrs_not_ok = self.check_attrs_values(
             [var for var in attrs if var.is_discrete], data)
@@ -600,7 +621,7 @@ class OWFeatureConstructor(OWWidget):
         items = OrderedDict()
         for feature in self.featuremodel:
             if isinstance(feature, DiscreteDescriptor):
-                items[feature.name] = "{} (discrete with values {}{})".format(
+                items[feature.name] = "{} (categorical with values {}{})".format(
                     feature.expression, feature.values,
                     "; ordered" * feature.ordered)
             elif isinstance(feature, ContinuousDescriptor):
@@ -612,7 +633,6 @@ class OWFeatureConstructor(OWWidget):
 
 
 
-import ast
 
 
 def freevars(exp, env):
@@ -806,7 +826,10 @@ def construct_variables(descriptions, source_vars):
 
 
 def sanitized_name(name):
-    return re.sub(r"\W", "_", name)
+    sanitized = re.sub(r"\W", "_", name)
+    if sanitized[0].isdigit():
+        sanitized = "_" + sanitized
+    return sanitized
 
 
 def bind_variable(descriptor, env):
@@ -862,9 +885,9 @@ __ALLOWED = [
     "bin", "bool", "bytearray", "bytes", "chr", "complex", "dict",
     "divmod", "enumerate", "filter", "float", "format", "frozenset",
     "getattr", "hasattr", "hash", "hex", "id", "int", "iter", "len",
-    "list", "map", "max", "memoryview", "min", "next", "object",
+    "list", "map", "memoryview", "next", "object",
     "oct", "ord", "pow", "range", "repr", "reversed", "round",
-    "set", "slice", "sorted", "str", "sum", "tuple", "type",
+    "set", "slice", "sorted", "str", "tuple", "type",
     "zip"
 ]
 
@@ -885,8 +908,29 @@ __GLOBALS.update({
     "vonmisesvariate": random.vonmisesvariate,
     "weibullvariate": random.weibullvariate,
     "triangular": random.triangular,
-    "uniform": random.uniform}
-                )
+    "uniform": random.uniform,
+    "nanmean": lambda *args: np.nanmean(args),
+    "nanmin": lambda *args: np.nanmin(args),
+    "nanmax": lambda *args: np.nanmax(args),
+    "nansum": lambda *args: np.nansum(args),
+    "nanstd": lambda *args: np.nanstd(args),
+    "nanmedian": lambda *args: np.nanmedian(args),
+    "nancumsum": lambda *args: np.nancumsum(args),
+    "nancumprod": lambda *args: np.nancumprod(args),
+    "nanargmax": lambda *args: np.nanargmax(args),
+    "nanargmin": lambda *args: np.nanargmin(args),
+    "nanvar": lambda *args: np.nanvar(args),
+    "mean": lambda *args: np.mean(args),
+    "min": lambda *args: np.min(args),
+    "max": lambda *args: np.max(args),
+    "sum": lambda *args: np.sum(args),
+    "std": lambda *args: np.std(args),
+    "median": lambda *args: np.median(args),
+    "cumsum": lambda *args: np.cumsum(args),
+    "cumprod": lambda *args: np.cumprod(args),
+    "argmax": lambda *args: np.argmax(args),
+    "argmin": lambda *args: np.argmin(args),
+    "var": lambda *args: np.var(args)})
 
 
 class FeatureFunc:

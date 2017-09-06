@@ -1,22 +1,21 @@
 import os
 import logging
-from itertools import chain, count
 from warnings import catch_warnings
+from urllib.parse import urlparse
 
 import numpy as np
 from AnyQt.QtWidgets import \
     QStyle, QComboBox, QMessageBox, QFileDialog, QGridLayout, QLabel, \
-    QLineEdit
-from AnyQt.QtWidgets import QSizePolicy as Policy
+    QLineEdit, QSizePolicy as Policy
 from AnyQt.QtCore import Qt, QTimer, QSize
 
 from Orange.canvas.gui.utils import OSX_NSURL_toLocalFile
-from Orange.data import Domain, DiscreteVariable, StringVariable
+from Orange.data import StringVariable
 from Orange.data.table import Table, get_sample_datasets_dir
 from Orange.data.io import FileFormat, UrlReader
 from Orange.widgets import widget, gui
-from Orange.widgets.settings import Setting, ContextHandler, ContextSetting, \
-    PerfectDomainContextHandler
+from Orange.widgets.settings import Setting, ContextSetting, \
+    PerfectDomainContextHandler, SettingProvider
 from Orange.widgets.utils.domaineditor import DomainEditor
 from Orange.widgets.utils.itemmodels import PyListModel
 from Orange.widgets.utils.filedialogs import RecentPathsWComboMixin, dialog_formats
@@ -63,22 +62,6 @@ class NamedURLModel(PyListModel):
         self.modelReset.emit()
 
 
-class XlsContextHandler(ContextHandler):
-    def new_context(self, filename, sheet):
-        context = super().new_context()
-        context.filename = filename
-        return context
-
-    # noinspection PyMethodOverriding
-    def match(self, context, filename, sheets):
-        context_sheet = context.values.get("xls_sheet")
-        if context.filename == filename and context_sheet in sheets:
-            return ContextHandler.PERFECT_MATCH
-        if context_sheet in sheets:
-            return 1
-        return ContextHandler.NO_MATCH
-
-
 class LineEditSelectOnFocus(QLineEdit):
     def focusInEvent(self, event):
         super().focusInEvent(event)
@@ -105,7 +88,9 @@ class OWFile(widget.OWWidget, RecentPathsWComboMixin):
     SIZE_LIMIT = 1e7
     LOCAL_FILE, URL = range(2)
 
-    settingsHandler = PerfectDomainContextHandler()
+    settingsHandler = PerfectDomainContextHandler(
+        match_values=PerfectDomainContextHandler.MATCH_VALUES_ALL
+    )
 
     # Overload RecentPathsWidgetMixin.recent_paths to set defaults
     recent_paths = Setting([
@@ -127,6 +112,9 @@ class OWFile(widget.OWWidget, RecentPathsWComboMixin):
     class Warning(widget.OWWidget.Warning):
         file_too_big = widget.Msg("The file is too large to load automatically."
                                   " Press Reload to load.")
+
+    class Error(widget.OWWidget.Error):
+        file_not_found = widget.Msg("File not found.")
 
     def __init__(self):
         super().__init__()
@@ -167,7 +155,7 @@ class OWFile(widget.OWWidget, RecentPathsWComboMixin):
         self.sheet_box = gui.hBox(None, addToLayout=False, margin=0)
         self.sheet_combo = gui.comboBox(None, self, "xls_sheet",
                                         callback=self.select_sheet,
-                                        sendSelectedValue=True)
+                                        sendSelectedValue=True,)
         self.sheet_combo.setSizePolicy(
             Policy.MinimumExpanding, Policy.Fixed)
         self.sheet_label = QLabel()
@@ -203,9 +191,9 @@ class OWFile(widget.OWWidget, RecentPathsWComboMixin):
         self.warnings = gui.widgetLabel(box, '')
 
         box = gui.widgetBox(self.controlArea, "Columns (Double click to edit)")
-        domain_editor = DomainEditor(self.variables)
-        self.editor_model = domain_editor.model()
-        box.layout().addWidget(domain_editor)
+        self.domain_editor = DomainEditor(self)
+        self.editor_model = self.domain_editor.model()
+        box.layout().addWidget(self.domain_editor)
 
         box = gui.hBox(self.controlArea)
         gui.button(
@@ -228,10 +216,12 @@ class OWFile(widget.OWWidget, RecentPathsWComboMixin):
 
         self.setAcceptDrops(True)
 
-        if self.source == self.LOCAL_FILE and \
-                        os.path.getsize(self.last_path()) > self.SIZE_LIMIT:
-            self.Warning.file_too_big()
-            return
+        if self.source == self.LOCAL_FILE:
+            last_path = self.last_path()
+            if last_path and os.path.exists(last_path) and \
+                    os.path.getsize(last_path) > self.SIZE_LIMIT:
+                self.Warning.file_too_big()
+                return
 
         QTimer.singleShot(0, self.load_data)
 
@@ -251,6 +241,15 @@ class OWFile(widget.OWWidget, RecentPathsWComboMixin):
         self.load_data()
 
     def _url_set(self):
+        url = self.url_combo.currentText()
+        pos = self.recent_urls.index(url)
+        url = url.strip()
+
+        if not urlparse(url).scheme:
+            url = 'http://' + url
+            self.url_combo.setItemText(pos, url)
+            self.recent_urls[pos] = url
+
         self.source = self.URL
         self.load_data()
 
@@ -269,7 +268,6 @@ class OWFile(widget.OWWidget, RecentPathsWComboMixin):
             self, 'Open Orange Data File', start_file, dialog_formats())
         if not filename:
             return
-        self.loaded_file = filename
         self.add_path(filename)
         self.source = self.LOCAL_FILE
         self.load_data()
@@ -279,7 +277,8 @@ class OWFile(widget.OWWidget, RecentPathsWComboMixin):
         # We need to catch any exception type since anything can happen in
         # file readers
         # pylint: disable=broad-except
-        self.editor_model.set_domain(None)
+        self.closeContext()
+        self.domain_editor.set_domain(None)
         self.apply_button.setEnabled(False)
         self.clear_messages()
         self.set_file_list()
@@ -315,16 +314,16 @@ class OWFile(widget.OWWidget, RecentPathsWComboMixin):
             self.data = None
             self.Outputs.data.send(None)
             self.info.setText("An error occurred:\n{}".format(error))
-            self.editor_model.reset()
             self.sheet_box.hide()
             return
 
         self.info.setText(self._describe(data))
 
-        add_origin(data, self.loaded_file or self.last_path())
-        self.send("Data", data)
-        self.editor_model.set_domain(data.domain)
+        self.loaded_file = self.last_path()
+        add_origin(data, self.loaded_file)
         self.data = data
+        self.openContext(data.domain)
+        self.apply_domain_edit()  # sends data
 
     def _get_reader(self):
         """
@@ -382,7 +381,7 @@ class OWFile(widget.OWWidget, RecentPathsWComboMixin):
         if domain.has_continuous_class:
             text += "<br/>Regression; numerical class."
         elif domain.has_discrete_class:
-            text += "<br/>Classification; discrete class with {} values.".\
+            text += "<br/>Classification; categorical class with {} values.".\
                 format(len(domain.class_var.values))
         elif table.domain.class_vars:
             text += "<br/>Multi-target; {} target variables.".format(
@@ -440,7 +439,7 @@ class OWFile(widget.OWWidget, RecentPathsWComboMixin):
             home = os.path.expanduser("~")
             if self.loaded_file.startswith(home):
                 # os.path.join does not like ~
-                name = "~/" + \
+                name = "~" + os.path.sep + \
                        self.loaded_file[len(home):].lstrip("/").lstrip("\\")
             else:
                 name = self.loaded_file

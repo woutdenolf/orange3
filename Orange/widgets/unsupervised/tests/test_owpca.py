@@ -103,3 +103,22 @@ class TestOWPCA(WidgetTest):
         self.assertTrue(all(type(a) is ContinuousVariable   # pylint: disable=unidiomatic-typecheck
                             for a in components.domain.attributes),
                         "Some variables aren't of type ContinuousVariable")
+
+    def test_normalization(self):
+        data = Table("iris.tab")
+        self.widget.ncomponents = 2
+        self.assertTrue(self.widget.normalize)
+        self.widget.set_data(data)
+        varnorm = self.widget.variance_covered
+        self.widget.controls.normalize.toggle()
+        varnonnorm = self.widget.variance_covered
+        # normalized data will have lower covered variance
+        self.assertLess(varnorm, varnonnorm)
+
+    def test_do_not_mask_features(self):
+        # the widget used to replace cached variables when creating the
+        # components output (until 20170726)
+        data = Table("iris.tab")
+        self.widget.set_data(data)
+        ndata = Table("iris.tab")
+        self.assertIs(data.domain[0], ndata.domain[0])

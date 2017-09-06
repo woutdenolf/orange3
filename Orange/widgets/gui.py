@@ -1024,9 +1024,9 @@ class __AttributeIconDict(dict):
     def __getitem__(self, key):
         if not self:
             for tpe, char, col in ((vartype(ContinuousVariable()),
-                                    "C", (202, 0, 32)),
+                                    "N", (202, 0, 32)),
                                    (vartype(DiscreteVariable()),
-                                    "D", (26, 150, 65)),
+                                    "C", (26, 150, 65)),
                                    (vartype(StringVariable()),
                                     "S", (0, 0, 0)),
                                    (vartype(TimeVariable()),
@@ -1973,7 +1973,7 @@ def auto_commit(widget, master, value, label, auto_label=None, box=True,
     :param label: The button label
     :type label: str
     :param auto_label: The label used when auto-commit is on; default is
-        `"Auto " + label`
+        `label + " Automatically"`
     :type auto_label: str
     :param commit: master's method to override ('commit' by default)
     :type commit: function

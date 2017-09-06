@@ -188,7 +188,7 @@ class OWScatterPlot(OWWidget):
             "None" if x == 0 else ("%.1f %%" if x < 1 else "%d %%") % x)
         gui.checkBox(
             gui.indentedBox(box), self, 'graph.jitter_continuous',
-            'Jitter continuous values', callback=self.reset_graph_data)
+            'Jitter numeric values', callback=self.reset_graph_data)
 
         self.sampling = gui.auto_commit(
             self.controlArea, self, "auto_sample", "Sample", box="Sampling",
@@ -577,12 +577,6 @@ class OWScatterPlot(OWWidget):
         self.report_plot()
         if caption:
             self.report_caption(caption)
-
-    def closeContext(self):
-        if self.current_context is not None:
-            # When dataset changes, forget selection
-            self.selection = None
-        super().closeContext()
 
     def onDeleteWidget(self):
         super().onDeleteWidget()
