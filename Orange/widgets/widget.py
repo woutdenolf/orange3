@@ -240,7 +240,8 @@ class OWWidget(QDialog, OWComponent, Report, ProgressBarMixin,
         properties = {name: getattr(cls, name) for name in
                       ("name", "icon", "description", "priority", "keywords",
                        "help", "help_ref", "url",
-                       "version", "background", "replaces")}
+                       "version", "background", "replaces", "allows_cycle",
+                       "compress_received_signals")}
         properties["id"] = cls.id or cls.__module__
         properties["inputs"] = cls.get_signals("inputs")
         properties["outputs"] = cls.get_signals("outputs")

@@ -236,8 +236,6 @@ class WidgetDescription(object):
         self.allows_cycle = allows_cycle
         self.compress_received_signals = compress_received_signals
 
-        print('allows cycle is %s'% allows_cycle)
-
     def __str__(self):
         return ("WidgetDescription(name=%(name)r, id=%(id)r), "
                 "category=%(category)r, ...)") % self.__dict__
