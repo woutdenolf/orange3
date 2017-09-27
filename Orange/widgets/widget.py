@@ -163,6 +163,9 @@ class OWWidget(QDialog, OWComponent, Report, ProgressBarMixin,
     #: static size contents.
     resizing_enabled = True
 
+    #: Is the widget allowing connections bringing cycling in the workflow.
+    allows_cycle = False
+
     blockingStateChanged = Signal(bool)
     processingStateChanged = Signal(int)
 
