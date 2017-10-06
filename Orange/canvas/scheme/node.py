@@ -76,12 +76,12 @@ class SchemeNode(QObject):
         """
         return self.description.allows_cycle
 
-    def compress_received_signals(self):
+    def compress_signal(self):
         """
         Return if the node request the call to compress_signal before
         processing
         """
-        return self.description.compress_received_signals
+        return self.description.compress_signal
 
     def input_channels(self):
         """

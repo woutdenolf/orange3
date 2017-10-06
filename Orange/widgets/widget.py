@@ -118,7 +118,7 @@ class OWWidget(QDialog, OWComponent, Report, ProgressBarMixin,
     # can we create loop/cycle on this widget
     allows_cycle = False
     # should the input signals be compressed for the widget
-    compress_received_signals = True
+    compress_signal = True
 
 
     #: A list of published input definitions
@@ -165,6 +165,9 @@ class OWWidget(QDialog, OWComponent, Report, ProgressBarMixin,
 
     #: Is the widget allowing connections bringing cycling in the workflow.
     allows_cycle = False
+
+    #: Is the signals received by the widget should be compressed
+    compress_signal = True
 
     blockingStateChanged = Signal(bool)
     processingStateChanged = Signal(int)
@@ -303,7 +306,7 @@ class OWWidget(QDialog, OWComponent, Report, ProgressBarMixin,
                       ("name", "icon", "description", "priority", "keywords",
                        "help", "help_ref", "url",
                        "version", "background", "replaces", "allows_cycle",
-                       "compress_received_signals")}
+                       "compress_signal")}
         properties["id"] = cls.id or cls.__module__
         properties["inputs"] = cls.get_signals("inputs")
         properties["outputs"] = cls.get_signals("outputs")
