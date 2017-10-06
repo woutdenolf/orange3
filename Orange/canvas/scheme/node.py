@@ -73,6 +73,9 @@ class SchemeNode(QObject):
     def allows_cycle(self):
         return self.description.allows_cycle
 
+    def compress_signal(self):
+        return self.description.compress_signal
+
     def input_channels(self):
         """
         Return a list of input channels (:class:`InputSignal`) for the node.

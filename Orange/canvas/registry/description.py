@@ -196,6 +196,7 @@ class WidgetDescription(object):
     replaces : list-of-str, optional
         A list of `id`s this widget replaces (optional).
     allows_cycle: True if the widget allows cycle creation on her
+    compress_signal: True if we want to compress the input of the node.
 
     """
     def __init__(self, name, id, category=None, version=None,
@@ -206,7 +207,8 @@ class WidgetDescription(object):
                  priority=sys.maxsize,
                  icon=None, background=None,
                  replaces=None,
-                 allows_cycle=False):
+                 allows_cycle=False,
+                 compress_signal=True):
 
         if not qualified_name:
             # TODO: Should also check that the name is real.
@@ -231,6 +233,7 @@ class WidgetDescription(object):
         self.background = background
         self.replaces = replaces
         self.allows_cycle = allows_cycle
+        self.compress_signal = compress_signal
 
     def __str__(self):
         return ("WidgetDescription(name=%(name)r, id=%(id)r), "
