@@ -5,7 +5,7 @@ from AnyQt.QtWidgets import QFormLayout, QApplication
 from AnyQt.QtCore import Qt
 
 import numpy as np
-import sklearn.model_selection as skl
+import sklearn.cross_validation as skl_cross_validation
 
 from Orange.widgets import widget, gui
 from Orange.widgets.settings import Setting
@@ -50,14 +50,10 @@ class OWDataSampler(OWWidget):
     number_of_folds = Setting(10)
     selectedFold = Setting(1)
 
-    class Warning(OWWidget.Warning):
-        could_not_stratify = Msg("Stratification failed\n{}")
-
     class Error(OWWidget.Error):
         too_many_folds = Msg("Number of folds exceeds data size")
         sample_larger_than_data = Msg("Sample must be smaller than data")
         not_enough_to_stratify = Msg("Data is too small to stratify")
-        no_data = Msg("Data set is empty")
 
     def __init__(self):
         super().__init__()
@@ -114,7 +110,7 @@ class OWDataSampler(OWWidget):
             addToLayout=False, callback=self.fold_changed)
         form.addRow("Selected fold:", self.selected_fold_spin)
 
-        gui.appendRadioButton(sampling, "Bootstrap")
+        gui.appendRadioButton(sampling, "Boostrap")
 
         self.sql_box = gui.vBox(self.controlArea, "Sampling Type")
         sampling = gui.radioButtons(self.sql_box, self, "sampling_type",
@@ -237,9 +233,7 @@ class OWDataSampler(OWWidget):
             if self.data.domain.has_discrete_class else 0
 
         size = None
-        if not data_length:
-            self.Error.no_data()
-        elif self.sampling_type == self.FixedSize:
+        if self.sampling_type == self.FixedSize:
             size = self.sampleSizeNumber
             repl = self.replacement
         elif self.sampling_type == self.FixedProportion:
@@ -260,30 +254,25 @@ class OWDataSampler(OWWidget):
             self.indices = None
             return
 
+        rnd = self.RandomSeed if self.use_seed else None
         stratified = (self.stratify and
                       type(self.data) == Table and
                       self.data.domain.has_discrete_class)
-        try:
-            self.indices = self.sample(data_length, size, stratified)
-        except ValueError as ex:
-            self.Warning.could_not_stratify(str(ex))
-            self.indices = self.sample(data_length, size, stratified=False)
-
-    def sample(self, data_length, size, stratified):
-        rnd = self.RandomSeed if self.use_seed else None
         if self.sampling_type == self.FixedSize:
-            self.indice_gen = SampleRandomN(
-                size, stratified=stratified, replace=self.replacement,
+            self.indices = sample_random_n(
+                self.data, size,
+                stratified=stratified, replace=self.replacement,
                 random_state=rnd)
         elif self.sampling_type == self.FixedProportion:
-            self.indice_gen = SampleRandomP(
-                self.sampleSizePercentage / 100, stratified=stratified, random_state=rnd)
+            self.indices = sample_random_p(
+                self.data, self.sampleSizePercentage / 100,
+                stratified=stratified, random_state=rnd)
         elif self.sampling_type == self.Bootstrap:
-            self.indice_gen = SampleBootstrap(data_length, random_state=rnd)
+            self.indices = sample_bootstrap(data_length, random_state=rnd)
         else:
-            self.indice_gen = SampleFoldIndices(
-                self.number_of_folds, stratified=stratified, random_state=rnd)
-        return self.indice_gen(self.data)
+            self.indices = sample_fold_indices(
+                self.data, self.number_of_folds, stratified=stratified,
+                random_state=rnd)
 
     def send_report(self):
         if self.sampling_type == self.FixedProportion:
@@ -316,101 +305,62 @@ class OWDataSampler(OWWidget):
         self.report_items(items)
 
 
-class SampleFoldIndices(Reprable):
-    def __init__(self, folds=10, stratified=False, random_state=None):
-        """Samples data based on a number of folds.
-
-        Args:
-            folds (int): Number of folds
-            stratified (bool): Return stratified indices (if applicable).
-            random_state (Random): An initial state for replicable random behavior
-
-        Returns:
-            tuple-of-arrays: A tuple of array indices one for each fold.
-
-        """
-        self.folds = folds
-        self.stratified = stratified
-        self.random_state = random_state
-
-    def __call__(self, table):
-        if self.stratified and table.domain.has_discrete_class:
-            splitter = skl.StratifiedKFold(
-                self.folds, random_state=self.random_state)
-            splitter.get_n_splits(table.X, table.Y)
-            ind = splitter.split(table.X, table.Y)
-        else:
-            splitter = skl.KFold(
-                self.folds, random_state=self.random_state)
-            splitter.get_n_splits(table)
-            ind = splitter.split(table)
-        return tuple(ind)
+def sample_fold_indices(table, folds=10, stratified=False, random_state=None):
+    """
+    :param Orange.data.Table table:
+    :param int folds: Number of folds
+    :param bool stratified: Return stratified indices (if applicable).
+    :param Random random_state:
+    :rval tuple-of-arrays: A tuple of array indices one for each fold.
+    """
+    if stratified and table.domain.has_discrete_class:
+        # XXX: StratifiedKFold does not support random_state
+        ind = skl_cross_validation.StratifiedKFold(
+            table.Y.ravel(), folds, random_state=random_state)
+    else:
+        ind = skl_cross_validation.KFold(
+            len(table), folds, shuffle=True, random_state=random_state)
+    return tuple(ind)
 
 
-class SampleRandomN(Reprable):
-    def __init__(self, n=0, stratified=False, replace=False,
+def sample_random_n(table, n, stratified=False, replace=False,
                     random_state=None):
-        self.n = n
-        self.stratified = stratified
-        self.replace = replace
-        self.random_state = random_state
-
-    def __call__(self, table):
-        if self.replace:
-            rgen = np.random.RandomState(self.random_state)
-            sample = rgen.random_integers(0, len(table) - 1, self.n)
-            o = np.ones(len(table))
-            o[sample] = 0
-            others = np.nonzero(o)[0]
-            return others, sample
-        if self.stratified and table.domain.has_discrete_class:
-            test_size = max(len(table.domain.class_var.values), self.n)
-            splitter = skl.StratifiedShuffleSplit(
-                n_splits=1, test_size=test_size,
-                train_size=len(table) - test_size,
-                random_state=self.random_state)
-            splitter.get_n_splits(table.X, table.Y)
-            ind = splitter.split(table.X, table.Y)
+    if replace:
+        if random_state is None:
+            rgen = np.random
         else:
-            splitter = skl.ShuffleSplit(
-                n_splits=1, test_size=self.n, random_state=self.random_state)
-            splitter.get_n_splits(table)
-            ind = splitter.split(table)
-        return next(iter(ind))
+            rgen = np.random.mtrand.RandomState(random_state)
+        sample = rgen.randint(len(table), size=n)
+        o = np.ones(len(table))
+        o[sample] = 0
+        others = np.nonzero(o)[0]
+        return others, sample
+    if stratified and table.domain.has_discrete_class:
+        test_size = max(len(table.domain.class_var.values), n)
+        ind = skl_cross_validation.StratifiedShuffleSplit(
+            table.Y.ravel(), n_iter=1,
+            test_size=test_size, train_size=len(table) - test_size,
+            random_state=random_state)
+    else:
+        ind = skl_cross_validation.ShuffleSplit(
+            len(table), n_iter=1,
+            test_size=n, random_state=random_state)
+    return next(iter(ind))
 
 
-class SampleRandomP(Reprable):
-    def __init__(self, p=0, stratified=False, random_state=None):
-        self.p = p
-        self.stratified = stratified
-        self.random_state = random_state
-
-    def __call__(self, table):
-        n = int(math.ceil(len(table) * self.p))
-        return SampleRandomN(n, self.stratified,
-                             random_state=self.random_state)(table)
+def sample_random_p(table, p, stratified=False, random_state=None):
+    n = int(math.ceil(len(table) * p))
+    return sample_random_n(table, n, stratified, False, random_state)
 
 
-class SampleBootstrap(Reprable):
-    def __init__(self, size=0, random_state=None):
-        self.size = size
-        self.random_state = random_state
-
-    def __call__(self, table=None):
-        """Bootstrap indices
-
-        Args:
-            table: Not used (but part of the signature)
-        Returns:
-            tuple (out_of_sample, sample) indices
-        """
-        rgen = np.random.RandomState(self.random_state)
-        sample = rgen.randint(0, self.size, self.size)
-        sample.sort()  # not needed for the code below, just for the user
-        insample = np.ones((self.size,), dtype=np.bool)
-        insample[sample] = False
-        remaining = np.flatnonzero(insample)
-        return remaining, sample
+def sample_bootstrap(size, random_state=None):
+    rgen = np.random.RandomState(random_state)
+    sample = rgen.randint(0, size, size)
+    sample.sort()  # not needed for the code below, just for the user
+    insample = np.ones((size,), dtype=np.bool)
+    insample[sample] = False
+    remaining = np.flatnonzero(insample)
+    return remaining, sample
 
 
 def test_main():

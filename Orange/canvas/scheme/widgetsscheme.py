@@ -269,6 +269,7 @@ class WidgetManager(QObject):
         """
         state = self.__initstate_for_node[node]
         if isinstance(state, WidgetManager.Materialized):
+            state.widget.updateProperties()
             return state.widget.settingsHandler.pack_data(state.widget)
         else:
             return node.properties
@@ -439,7 +440,8 @@ class WidgetManager(QObject):
                 stored_settings=node.properties,
                 # NOTE: env is a view of the real env and reflects
                 # changes to the environment.
-                env=self.scheme().runtime_env()
+                env=self.scheme().runtime_env(),
+                scheme_title="" if self.__scheme is None else self.__scheme.title
             )
             initialized = False
 

@@ -98,6 +98,11 @@ class OWWidget(QDialog, OWComponent, Report, ProgressBarMixin,
     keywords = []
     background = None
     replaces = None
+    # can we create loop/cycle on this widget
+    allows_cycle = False
+    # should the input signals be compressed for the widget
+    compress_received_signals = True
+
 
     #: A list of published input definitions
     inputs = []
@@ -191,6 +196,7 @@ class OWWidget(QDialog, OWComponent, Report, ProgressBarMixin,
 
         self.signalManager = kwargs.get('signal_manager', None)
         self.__env = _asmappingproxy(kwargs.get("env", {}))
+        self._scheme_title = _asmappingproxy(kwargs.get("scheme_title", ""))
 
         self.graphButton = None
         self.report_button = None
@@ -465,6 +471,11 @@ class OWWidget(QDialog, OWComponent, Report, ProgressBarMixin,
             if graph_obj is None:
                 return
             ClipboardFormat.write_image(None, graph_obj)
+
+    def updateProperties(self):
+        """Function called when the properties are requested to the scheme.
+        This can be usefull to synchronize the properties"""
+        pass
 
     def __restoreWidgetGeometry(self):
 

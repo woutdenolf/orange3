@@ -166,7 +166,7 @@ class OWOutliers(widget.OWWidget):
             return inliers, outliers
 
     def commit(self):
-        self.clear_messages()
+        self.error()
         inliers = outliers = None
         self.n_inliers = self.n_outliers = None
         if self.data is not None and len(self.data) > 0:
@@ -200,7 +200,7 @@ class OWOutliers(widget.OWWidget):
             new_metas = list(self.data.domain.metas) + \
                         [ContinuousVariable(name="Mahalanobis")]
             self.new_domain = Domain(attrs, classes, new_metas)
-            self.new_data = self.data.transform(self.new_domain)
+            self.new_data = Table(self.new_domain, self.data)
             self.new_data.metas = np.hstack((self.data.metas, mahal))
         else:
             self.new_domain = self.data.domain

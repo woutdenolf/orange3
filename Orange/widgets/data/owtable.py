@@ -321,8 +321,8 @@ def table_selection_to_mime_data(table):
     """
     lines = table_selection_to_list(table)
 
-    csv = lines_to_csv_string(lines, dialect="excel").encode("utf-8")
-    tsv = lines_to_csv_string(lines, dialect="excel-tab").encode("utf-8")
+    csv = lines_to_csv_string(lines, dialect="excel")
+    tsv = lines_to_csv_string(lines, dialect="excel-tab")
 
     mime = QMimeData()
     mime.setData("text/csv", QByteArray(csv))
@@ -436,8 +436,9 @@ class OWDataTable(widget.OWWidget):
         self.tabs = gui.tabWidget(self.mainArea)
         self.tabs.currentChanged.connect(self._on_current_tab_changed)
 
-    def copy_to_clipboard(self):
-        self.copy()
+        copy = QAction("Copy", self, shortcut=QKeySequence.Copy,
+                             triggered=self.copy)
+        self.addAction(copy)
 
     def sizeHint(self):
         return QSize(800, 500)

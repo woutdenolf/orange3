@@ -232,7 +232,7 @@ class SchemeNode(QObject):
 
     def __str__(self):
         return "SchemeNode(description_id=%s, title=%r, ...)" % \
-                (str(self.description.id), self.title)
+               (str(self.description.id), self.title)
 
     def __repr__(self):
         return str(self)

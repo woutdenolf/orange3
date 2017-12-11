@@ -71,7 +71,7 @@ def variable_from_description(description, compute_value=None):
     module, type_name, name, kwargs, attrs = description
     try:
         constructor = get_qualified(module, type_name)
-    except (ImportError, AttributeError):
+    except (ImportError, AttributeError) as ex:
         raise ValueError("Invalid descriptor type '{}.{}"
                          "".format(module, type_name))
 
@@ -138,14 +138,7 @@ class VariableEditor(QWidget):
         self._setup_gui_labels()
 
     def _setup_gui_name(self):
-        class OrangeLineEdit(QLineEdit):
-            def keyPressEvent(self, event):
-                if event.key() in [Qt.Key_Return, Qt.Key_Enter]:
-                    self.parent().on_name_changed()
-                else:
-                    super().keyPressEvent(event)
-
-        self.name_edit = OrangeLineEdit()
+        self.name_edit = QLineEdit()
         self.main_form.addRow("Name:", self.name_edit)
         self.name_edit.editingFinished.connect(self.on_name_changed)
 
@@ -221,7 +214,7 @@ class VariableEditor(QWidget):
     def get_data(self):
         """Retrieve the modified variable.
         """
-        name = str(self.name_edit.text()).strip()
+        name = str(self.name_edit.text())
         labels = self.labels_model.get_dict()
 
         # Is the variable actually changed.
@@ -234,15 +227,12 @@ class VariableEditor(QWidget):
 
         return var
 
-    def is_legal(self):
-        name = str(self.name_edit.text()).strip()
-        return not len(name) == 0
-
     def is_same(self):
         """Is the current model state the same as the input.
         """
-        name = str(self.name_edit.text()).strip()
+        name = str(self.name_edit.text())
         labels = self.labels_model.get_dict()
+
         return (self.var is not None and name == self.var.name and
                 labels == self.var.attributes)
 
@@ -254,7 +244,7 @@ class VariableEditor(QWidget):
         self.labels_model.set_dict({})
 
     def maybe_commit(self):
-        if not self.is_same() and self.is_legal():
+        if not self.is_same():
             self.commit()
 
     def commit(self):
@@ -328,7 +318,7 @@ class DiscreteVariableEditor(VariableEditor):
     def get_data(self):
         """Retrieve the modified variable
         """
-        name = str(self.name_edit.text()).strip()
+        name = str(self.name_edit.text())
         labels = self.labels_model.get_dict()
         values = map(str, self.values_model)
 
@@ -381,7 +371,7 @@ class OWEditDomain(widget.OWWidget):
     domain_change_hints = settings.ContextSetting({})
     selected_index = settings.ContextSetting({})
 
-    autocommit = settings.Setting(True)
+    autocommit = settings.Setting(False)
 
     def __init__(self):
         super().__init__()
@@ -533,9 +523,7 @@ class OWEditDomain(widget.OWWidget):
 
         # Replace the variable in the 'Domain Features' view/model
         old_var = self.input_vars[self.selected_index]
-        new_var = editor.get_data().copy(
-            compute_value=Orange.preprocess.transformation.Identity(old_var)
-        )
+        new_var = editor.get_data().copy(compute_value=Orange.preprocess.transformation.Identity(old_var))
         self.domain_model[self.selected_index] = new_var
 
 
@@ -551,21 +539,17 @@ class OWEditDomain(widget.OWWidget):
     def commit(self):
         """Send the changed data to output."""
         new_data = None
-        var_names = [vn.name for vn in self.domain_model]
-        self.Error.duplicate_var_name.clear()
         if self.data is not None:
-            if len(var_names) == len(set(var_names)):
-                input_domain = self.data.domain
-                n_attrs = len(input_domain.attributes)
-                n_class_vars = len(input_domain.class_vars)
-                all_new_vars = list(self.domain_model)
-                attrs = all_new_vars[: n_attrs]
-                class_vars = all_new_vars[n_attrs: n_attrs + n_class_vars]
-                new_metas = all_new_vars[n_attrs + n_class_vars:]
-                new_domain = Orange.data.Domain(attrs, class_vars, new_metas)
-                new_data = self.data.transform(new_domain)
-            else:
-                self.Error.duplicate_var_name()
+            input_domain = self.data.domain
+            n_attrs = len(input_domain.attributes)
+            n_vars = len(input_domain.variables)
+            n_class_vars = len(input_domain.class_vars)
+            all_new_vars = list(self.domain_model)
+            attrs = all_new_vars[: n_attrs]
+            class_vars = all_new_vars[n_attrs: n_attrs + n_class_vars]
+            new_metas = all_new_vars[n_attrs + n_class_vars:]
+            new_domain = Orange.data.Domain(attrs, class_vars, new_metas)
+            new_data = self.data.from_table(new_domain, self.data)
 
         self.Outputs.data.send(new_data)
 

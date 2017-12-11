@@ -877,7 +877,7 @@ class OWImageViewer(widget.OWWidget):
     titleAttr = settings.ContextSetting(0)
 
     imageSize = settings.Setting(100)
-    autoCommit = settings.Setting(True)
+    autoCommit = settings.Setting(False)
 
     buttons_area_orientation = Qt.Vertical
     graph_name = "scene"
@@ -997,12 +997,12 @@ class OWImageViewer(widget.OWWidget):
         if self.data:
             attr = self.stringAttrs[self.imageAttr]
             titleAttr = self.allAttrs[self.titleAttr]
+            instances = [inst for inst in self.data
+                         if numpy.isfinite(inst[attr])]
             assert self.thumbnailView.count() == 0
             size = QSizeF(self.imageSize, self.imageSize)
 
-            for i, inst in enumerate(self.data):
-                if not numpy.isfinite(inst[attr]):  # skip missing
-                    continue
+            for i, inst in enumerate(instances):
                 url = self.urlFromValue(inst[attr])
                 title = str(inst[titleAttr])
 
@@ -1075,11 +1075,8 @@ class OWImageViewer(widget.OWWidget):
         if base.strip() and not base.endswith("/"):
             origin.setPath(base + "/")
 
-        if os.path.exists(str(value)):
-            url = QUrl.fromLocalFile(str(value))
-        else:
-            name = QUrl(str(value))
-            url = origin.resolved(name)
+        name = QUrl(str(value))
+        url = origin.resolved(name)
         if not url.scheme():
             url.setScheme("file")
         return url

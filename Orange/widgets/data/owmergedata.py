@@ -1,5 +1,6 @@
-from enum import IntEnum
-from itertools import chain, product, tee
+import math
+import itertools
+from collections import defaultdict
 
 from AnyQt.QtWidgets import QApplication, QStyle, QSizePolicy
 
@@ -15,16 +16,12 @@ from Orange.widgets.utils.sql import check_sql_input
 from Orange.widgets.widget import Input, Output
 
 
-class MergeType(IntEnum):
-    LEFT_JOIN, INNER_JOIN, OUTER_JOIN = 0, 1, 2
-
 INSTANCEID = "Source position (index)"
 INDEX = "Position (index)"
 
-
 class OWMergeData(widget.OWWidget):
     name = "Merge Data"
-    description = "Merge data sets based on the values of selected features."
+    description = "Merge data sets based on the values of selected data features."
     icon = "icons/MergeData.svg"
     priority = 1110
 
@@ -45,11 +42,10 @@ class OWMergeData(widget.OWWidget):
     attr_combine_extra = settings.Setting('', schema_only=True)
     merging = settings.Setting(0)
 
-    want_main_area = False
-    resizing_enabled = False
+    attr_a = settings.Setting('', schema_only=True)
+    attr_b = settings.Setting('', schema_only=True)
 
-    class Warning(widget.OWWidget.Warning):
-        duplicate_names = widget.Msg("Duplicate variable names in output.")
+    want_main_area = False
 
     def __init__(self):
         super().__init__()
@@ -193,40 +189,47 @@ class OWMergeData(widget.OWWidget):
 
     @Inputs.data
     @check_sql_input
-    def setData(self, data):
-        self.data = data
-        self._set_model(data, self.model)
-        self._set_unique_model(data, self.model_unique_with_id)
-        self._add_instanceid_to_models()
-        self._init_combo_current_items(
-            ("attr_augment_data", "attr_merge_data", "attr_combine_data"),
-            (self.model, self.model_unique_with_id, self.model_unique_with_id))
-        self.infoBoxData.setText(self.dataInfoText(data))
-        self._find_best_match()
+    def setDataA(self, data):
+        self.dataA = data
+        self._setAttrs(self.attrModelA, data, self.attrModelB, self.dataB)
+        curr_index = -1
+        if self.attr_a:
+            curr_index = next((i for i, val in enumerate(self.attrModelA)
+                               if str(val) == self.attr_a), -1)
+        if curr_index != -1:
+            self.attrViewA.setCurrentIndex(curr_index)
+        else:
+            self.attr_a = INDEX
+        self.infoBoxDataA.setText(self.dataInfoText(data))
 
     @Inputs.extra_data
     @check_sql_input
-    def setExtraData(self, data):
-        self.extra_data = data
-        self._set_unique_model(data, self.extra_model_unique)
-        self._set_unique_model(data, self.extra_model_unique_with_id)
-        self._add_instanceid_to_models()
-        self._init_combo_current_items(
-            ("attr_augment_extra", "attr_merge_extra", "attr_combine_extra"),
-            (self.extra_model_unique, self.extra_model_unique_with_id,
-             self.extra_model_unique_with_id))
-        self.infoBoxExtraData.setText(self.dataInfoText(data))
-        self._find_best_match()
+    def setDataB(self, data):
+        self.dataB = data
+        self._setAttrs(self.attrModelB, data, self.attrModelA, self.dataA)
+        curr_index = -1
+        if self.attr_b:
+            curr_index = next((i for i, val in enumerate(self.attrModelB)
+                               if str(val) == self.attr_b), -1)
+        if curr_index != -1:
+            self.attrViewB.setCurrentIndex(curr_index)
+        else:
+            self.attr_b = INDEX
+        self.infoBoxDataB.setText(self.dataInfoText(data))
 
     def handleNewSignals(self):
         self._invalidate()
 
     def dataInfoText(self, data):
-        if data is None:
-            return "No data."
-        else:
-            return "{}\n{} instances\n{} variables".format(
-                data.name, len(data), len(data.domain) + len(data.domain.metas))
+        ninstances = 0
+        nvariables = 0
+        if data is not None:
+            ninstances = len(data)
+            nvariables = len(data.domain)
+
+        instances = self.tr("%n instance(s)", None, ninstances)
+        attributes = self.tr("%n variable(s)", None, nvariables)
+        return "\n".join([instances, attributes])
 
     def commit(self):
         self.Warning.duplicate_names.clear()
@@ -247,57 +250,81 @@ class OWMergeData(widget.OWWidget):
         self.commit()
 
     def send_report(self):
-        # pylint: disable=invalid-sequence-index
-        attr = (self.attr_augment_data, self.attr_merge_data,
-                self.attr_combine_data)
-        extra_attr = (self.attr_augment_extra, self.attr_merge_extra,
-                      self.attr_combine_extra)
-        merging_types = ("Append columns from Extra Data", "Find matching rows",
-                         "Concatenate tables, merge rows")
+        attr_a = None
+        attr_b = None
+        if self.dataA is not None:
+            attr_a = self.attr_a
+            if attr_a in self.dataA.domain:
+                attr_a = self.dataA.domain[attr_a]
+        if self.dataB is not None:
+            attr_b = self.attr_b
+            if attr_b in self.dataB.domain:
+                attr_b = self.dataB.domain[attr_b]
         self.report_items((
-            ("Merging", merging_types[self.merging]),
-            ("Data attribute", attr[self.merging]),
-            ("Extra data attribute", extra_attr[self.merging])))
+            ("Attribute A", attr_a),
+            ("Attribute B", attr_b),
+        ))
 
-    def merge(self):
-        # pylint: disable=invalid-sequence-index
-        operation = ["augment", "merge", "combine"][self.merging]
-        var_data = getattr(self, "attr_{}_data".format(operation))
-        var_extra_data = getattr(self, "attr_{}_extra".format(operation))
-        merge_method = getattr(self, "_{}_indices".format(operation))
 
-        as_string = not (isinstance(var_data, ContinuousVariable) and
-                         isinstance(var_extra_data, ContinuousVariable))
-        extra_map = self._get_keymap(self.extra_data, var_extra_data, as_string)
-        match_indices = merge_method(var_data, extra_map, as_string)
-        reduced_extra_data = self._compute_reduced_extra_data(var_extra_data)
-        return self._join_table_by_indices(reduced_extra_data, match_indices)
+def allvars(data):
+    return (INDEX,) + data.domain.attributes + data.domain.class_vars + data.domain.metas
 
-    def _compute_reduced_extra_data(self, var_extra_data):
-        """Prepare a table with extra columns that will appear in the merged
-        table"""
-        domain = self.data.domain
-        extra_domain = self.extra_data.domain
-        all_vars = set(chain(domain.variables, domain.metas))
-        if self.merging != MergeType.OUTER_JOIN:
-            all_vars.add(var_extra_data)
-        extra_vars = chain(extra_domain.variables, extra_domain.metas)
-        return self.extra_data[:, [var for var in extra_vars
-                                   if var not in all_vars]]
 
-    @staticmethod
-    def _values(data, var, as_string):
-        """Return an iterotor over keys for rows of the table."""
-        if var == INSTANCEID:
-            return (inst.id for inst in data)
-        if var == INDEX:
-            return range(len(data))
-        col = data.get_column_view(var)[0]
-        if not as_string:
-            return col
-        if var.is_primitive():
-            return (var.str_val(val) if not np.isnan(val) else np.nan
-                    for val in col)
+def merge(A, varA, B, varB):
+    join_indices = left_join_indices(A, B, (varA,), (varB,))
+    seen_set = set()
+
+    def seen(val):
+        return val in seen_set or bool(seen_set.add(val))
+
+    merge_indices = [(i, j) for i, j in join_indices if not seen(i)]
+
+    all_vars_A = set(A.domain.variables + A.domain.metas)
+    iter_vars_B = itertools.chain(
+        enumerate(B.domain.variables),
+        ((-i, m) for i, m in enumerate(B.domain.metas, start=1))
+    )
+    reduced_indices_B = [i for i, var in iter_vars_B if not var in all_vars_A]
+    reduced_B = B[:, list(reduced_indices_B)]
+
+    return join_table_by_indices(A, reduced_B, merge_indices)
+
+
+def group_table_indices(table, key_vars, exclude_unknown=False):
+    """
+    Group table indices based on values of selected columns (`key_vars`).
+
+    Return a dictionary mapping all unique value combinations (keys)
+    into a list of indices in the table where they are present.
+
+    :param Orange.data.Table table:
+    :param list-of-Orange.data.FeatureDescriptor] key_vars:
+    :param bool exclude_unknown:
+
+    """
+    groups = defaultdict(list)
+    for i, inst in enumerate(table):
+        key = [inst.id if a == INSTANCEID else
+               i if a == INDEX else inst[a]
+                   for a in key_vars]
+        if exclude_unknown and any(math.isnan(k) for k in key):
+            continue
+        key = tuple([str(k) for k in key])
+        groups[key].append(i)
+    return groups
+
+
+def left_join_indices(table1, table2, vars1, vars2):
+    key_map1 = group_table_indices(table1, vars1)
+    key_map2 = group_table_indices(table2, vars2)
+    indices = []
+    for i, inst in enumerate(table1):
+        key = tuple([str(inst.id if v == INSTANCEID else
+                         i if v == INDEX else inst[v])
+                            for v in vars1])
+        if key in key_map1 and key in key_map2:
+            for j in key_map2[key]:
+                indices.append((i, j))
         else:
             return (str(val) if val else np.nan for val in col)
 
@@ -392,11 +419,13 @@ class OWMergeData(widget.OWWidget):
 
 def main():
     app = QApplication([])
+
     w = OWMergeData()
-    data = Orange.data.Table("tests/data-gender-region")
-    extra_data = Orange.data.Table("tests/data-regions")
-    w.setData(data)
-    w.setExtraData(extra_data)
+    zoo = Orange.data.Table("zoo")
+    A = zoo[:, [0, 1, 2, "type", -1]]
+    B = zoo[:, [3, 4, 5, "type", -1]]
+    w.setDataA(A)
+    w.setDataB(B)
     w.handleNewSignals()
     w.show()
     app.exec_()

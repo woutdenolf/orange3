@@ -23,7 +23,12 @@ from AnyQt.QtCore import (
     Qt, QItemSelection, QItemSelectionRange, QItemSelectionModel,
 )
 
+<<<<<<< HEAD
+from Orange.base import Learner
+from Orange.data import (Table,  Domain, ContinuousVariable, DiscreteVariable,
+=======
 from Orange.data import (Table, Domain, ContinuousVariable, DiscreteVariable,
+>>>>>>> 03ee289be2d350cc2d1faeb746fa7a84da1266c8
                          StringVariable)
 from Orange.misc.cache import memoize_method
 from Orange.preprocess import score

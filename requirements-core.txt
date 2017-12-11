@@ -9,8 +9,8 @@ xlrd>=0.9.2
 chardet>=3.0.2
 # Multiprocessing abstraction
 joblib>=0.9.4
-keyring
-keyrings.alt    # for alternative keyring implementations
+# keyring
+# keyrings.alt    # for alternative keyring implementations
 dill
 setuptools>=36.3
 serverfiles		# for Data Sets synchronization

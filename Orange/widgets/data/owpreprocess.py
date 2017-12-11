@@ -1,22 +1,27 @@
 import sys
+import bisect
+import contextlib
+import warnings
 from collections import OrderedDict
 import pkg_resources
 
 import numpy
 
 from AnyQt.QtWidgets import (
-    QWidget, QButtonGroup, QGroupBox, QRadioButton, QSlider,
-    QDoubleSpinBox, QComboBox, QSpinBox, QListView, QLabel,
-    QScrollArea, QVBoxLayout, QHBoxLayout, QFormLayout,
-    QSizePolicy, QApplication, QCheckBox
+    QWidget, QButtonGroup, QGroupBox, QRadioButton, QSlider, QFocusFrame,
+    QDoubleSpinBox, QComboBox, QSpinBox, QListView, QDockWidget, QLabel,
+    QScrollArea, QVBoxLayout, QHBoxLayout, QFormLayout, QSpacerItem,
+    QSizePolicy, QStyle, QStylePainter, QAction, QLabel,
+    QApplication, QCheckBox
 )
 
 from AnyQt.QtGui import (
-    QIcon, QStandardItemModel, QStandardItem
+    QCursor, QIcon, QPainter, QPixmap, QStandardItemModel, QStandardItem,
+    QDrag, QKeySequence
 )
 
 from AnyQt.QtCore import (
-    Qt, QEvent, QSize, QMimeData, QTimer
+    Qt, QObject, QEvent, QSize, QModelIndex, QMimeData, QTimer
 )
 
 from AnyQt.QtCore import pyqtSignal as Signal, pyqtSlot as Slot
@@ -24,8 +29,9 @@ from AnyQt.QtCore import pyqtSignal as Signal, pyqtSlot as Slot
 
 import Orange.data
 from Orange import preprocess
+from Orange.statistics import distribution
 from Orange.preprocess import Continuize, ProjectPCA, \
-    ProjectCUR, Scale as _Scale, Randomize as _Randomize
+    ProjectCUR, Randomize as Random
 from Orange.widgets import widget, gui, settings
 from Orange.widgets.utils.overlay import OverlayWidget
 from Orange.widgets.utils.sql import check_sql_input
@@ -44,8 +50,6 @@ class _NoneDisc(preprocess.discretize.Discretization):
     all discrete features from the domain.
 
     """
-    _reprable_module = True
-
     def __call__(self, data, variable):
         return None
 
@@ -204,6 +208,7 @@ class ContinuizeEditor(BaseEditor):
     def __init__(self, parent=None, **kwargs):
         super().__init__(parent, **kwargs)
         self.setLayout(QVBoxLayout())
+
         self.__treatment = Continuize.Indicators
         self.__group = group = QButtonGroup(exclusive=True)
         group.buttonClicked.connect(self.__on_buttonClicked)
@@ -212,15 +217,13 @@ class ContinuizeEditor(BaseEditor):
             rb = QRadioButton(
                 text=text,
                 checked=self.__treatment == treatment)
-            group.addButton(rb, _enum_to_index(ContinuizeEditor._Type,
-                                               treatment))
+            group.addButton(rb, int(treatment))
             self.layout().addWidget(rb)
 
         self.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
 
     def setTreatment(self, treatment):
-        buttonid = _enum_to_index(ContinuizeEditor._Type, treatment)
-        b = self.__group.button(buttonid)
+        b = self.__group.button(treatment)
         if b is not None:
             b.setChecked(True)
             self.__treatment = treatment
@@ -237,8 +240,7 @@ class ContinuizeEditor(BaseEditor):
         return {"multinomial_treatment": self.__treatment}
 
     def __on_buttonClicked(self):
-        self.__treatment = _index_to_enum(
-            ContinuizeEditor._Type, self.__group.checkedId())
+        self.__treatment = self.__group.checkedId()
         self.changed.emit()
         self.edited.emit()
 
@@ -253,8 +255,6 @@ class ContinuizeEditor(BaseEditor):
 
 
 class _RemoveNaNRows(preprocess.preprocess.Preprocess):
-    _reprable_module = True
-
     def __call__(self, data):
         mask = numpy.isnan(data.X)
         mask = numpy.any(mask, axis=1)
@@ -267,9 +267,9 @@ class ImputeEditor(BaseEditor):
 
     Imputers = {
         NoImputation: (None, {}),
-        #         Constant: (None, {"value": 0})
+#         Constant: (None, {"value": 0})
         Average: (preprocess.impute.Average(), {}),
-        #         Model: (preprocess.impute.Model, {}),
+#         Model: (preprocess.impute.Model, {}),
         Random: (preprocess.impute.Random(), {}),
         DropRows: (None, {})
     }
@@ -473,11 +473,7 @@ class FeatureSelectEditor(BaseEditor):
         ("Gain ratio", preprocess.score.GainRatio),
         ("Gini index", preprocess.score.Gini),
         ("ReliefF", preprocess.score.ReliefF),
-        ("Fast Correlation Based Filter", preprocess.score.FCBF),
-        ("ANOVA", preprocess.score.ANOVA),
-        ("Chi2", preprocess.score.Chi2),
-        ("RReliefF", preprocess.score.RReliefF),
-        ("Univariate Linear Regression", preprocess.score.UnivariateLinearRegression)
+        ("Fast Correlation Based Filter", preprocess.score.FCBF)
     ]
 
     def __init__(self, parent=None):
@@ -494,11 +490,7 @@ class FeatureSelectEditor(BaseEditor):
              {"text": "Gain Ratio"},
              {"text": "Gini Index"},
              {"text": "ReliefF"},
-             {"text": "Fast Correlation Based Filter"},
-             {"text": "ANOVA"},
-             {"text": "Chi2"},
-             {"text": "RReliefF"},
-             {"text": "Univariate Linear Regression"}
+             {"text": "Fast Correlation Based Filter"}
             ]
         )
         self.layout().addWidget(self.__uni_fs)
@@ -635,17 +627,72 @@ class RandomFeatureSelectEditor(BaseEditor):
             # further implementations
             raise NotImplementedError
 
+class _Scaling(preprocess.preprocess.Preprocess):
+    """
+    Scale data preprocessor.
+    """
+    @staticmethod
+    def mean(dist):
+        values, counts = numpy.array(dist)
+        return numpy.average(values, weights=counts)
 
-def _index_to_enum(enum, i):
-    """Enums, by default, are not int-comparable, so use an ad-hoc mapping of
-    int to enum value at that position"""
-    return list(enum)[i]
+    @staticmethod
+    def median(dist):
+        values, counts = numpy.array(dist)
+        cumdist = numpy.cumsum(counts)
+        if cumdist[-1] > 0:
+            cumdist /= cumdist[-1]
 
+        return numpy.interp(0.5, cumdist, values)
 
-def _enum_to_index(enum, key):
-    """Enums, by default, are not int-comparable, so use an ad-hoc mapping of
-    enum key to its int position"""
-    return list(enum).index(key)
+    @staticmethod
+    def span(dist):
+        values = numpy.array(dist[0])
+        minval = numpy.min(values)
+        maxval = numpy.max(values)
+        return maxval - minval
+
+    @staticmethod
+    def std(dist):
+        values, counts = numpy.array(dist)
+        mean = numpy.average(values, weights=counts)
+        diff = values - mean
+        return numpy.sqrt(numpy.average(diff ** 2, weights=counts))
+
+    def __init__(self, center=mean, scale=std):
+        self.center = center
+        self.scale = scale
+
+    def __call__(self, data):
+        if self.center is None and self.scale is None:
+            return data
+
+        def transform(var):
+            dist = distribution.get_distribution(data, var)
+            if self.center:
+                c = self.center(dist)
+                dist[0, :] -= c
+            else:
+                c = 0
+
+            if self.scale:
+                s = self.scale(dist)
+                if s < 1e-15:
+                    s = 1
+            else:
+                s = 1
+            factor = 1 / s
+            return var.copy(compute_value=preprocess.transformation.Normalizer(var, c, factor))
+
+        newvars = []
+        for var in data.domain.attributes:
+            if var.is_continuous:
+                newvars.append(transform(var))
+            else:
+                newvars.append(var)
+        domain = Orange.data.Domain(newvars, data.domain.class_vars,
+                                    data.domain.metas)
+        return data.from_table(domain, data)
 
 
 class Scale(BaseEditor):
@@ -674,30 +721,61 @@ class Scale(BaseEditor):
         self.__scalecb.activated.connect(self.edited)
 
     def setParameters(self, params):
-        center = params.get("center", _Scale.CenteringType.Mean)
-        scale = params.get("scale", _Scale.ScalingType.Std)
-        self.__centercb.setCurrentIndex(_enum_to_index(_Scale.CenteringType, center))
-        self.__scalecb.setCurrentIndex(_enum_to_index(_Scale.ScalingType, scale))
+        center = params.get("center", Scale.CenterMean)
+        scale = params.get("scale", Scale.ScaleBySD)
+        self.__centercb.setCurrentIndex(center)
+        self.__scalecb.setCurrentIndex(scale)
 
     def parameters(self):
-        return {"center": _index_to_enum(_Scale.CenteringType,
-                                         self.__centercb.currentIndex()),
-                "scale": _index_to_enum(_Scale.ScalingType,
-                                        self.__scalecb.currentIndex())}
+        return {"center": self.__centercb.currentIndex(),
+                "scale": self.__scalecb.currentIndex()}
 
     @staticmethod
     def createinstance(params):
-        center = params.get("center", _Scale.CenteringType.Mean)
-        scale = params.get("scale", _Scale.ScalingType.Std)
-        return _Scale(center=center, scale=scale)
+        center = params.get("center", Scale.CenterMean)
+        scale = params.get("scale", Scale.ScaleBySD)
+
+        if center == Scale.NoCentering:
+            center = None
+        elif center == Scale.CenterMean:
+            center = _Scaling.mean
+        elif center == Scale.CenterMedian:
+            center = _Scaling.median
+        else:
+            assert False
+
+        if scale == Scale.NoScaling:
+            scale = None
+        elif scale == Scale.ScaleBySD:
+            scale = _Scaling.std
+        elif scale == Scale.ScaleBySpan:
+            scale = _Scaling.span
+        else:
+            assert False
+
+        return _Scaling(center=center, scale=scale)
 
     def __repr__(self):
         return "{}, {}".format(self.__centercb.currentText(),
                                self.__scalecb.currentText())
 
 
+class _Randomize(preprocess.preprocess.Preprocess):
+    """
+    Randomize data preprocessor.
+    """
+
+    def __init__(self, rand_type=Random.RandomizeClasses, rand_seed=None):
+        self.rand_type = rand_type
+        self.rand_seed = rand_seed
+
+    def __call__(self, data):
+        randomizer = Random(rand_type=self.rand_type, rand_seed=self.rand_seed)
+        return randomizer(data)
+
+
 class Randomize(BaseEditor):
-    RandomizeClasses, RandomizeAttributes, RandomizeMetas = _Randomize.Type
+    RandomizeClasses, RandomizeAttributes, RandomizeMetas = Random.RandTypes
 
     def __init__(self, parent=None, **kwargs):
         super().__init__(parent, **kwargs)
@@ -721,12 +799,11 @@ class Randomize(BaseEditor):
 
     def setParameters(self, params):
         rand_type = params.get("rand_type", Randomize.RandomizeClasses)
-        self.__rand_type_cb.setCurrentIndex(_enum_to_index(_Randomize.Type, rand_type))
+        self.__rand_type_cb.setCurrentIndex(rand_type)
         self.__rand_seed_ch.setChecked(params.get("rand_seed", 1) or 0)
 
     def parameters(self):
-        return {"rand_type": _index_to_enum(_Randomize.Type,
-                                            self.__rand_type_cb.currentIndex()),
+        return {"rand_type": self.__rand_type_cb.currentIndex(),
                 "rand_seed": 1 if self.__rand_seed_ch.isChecked() else None}
 
     @staticmethod
@@ -902,7 +979,7 @@ PREPROCESSORS = [
         RandomFeatureSelectEditor
     ),
     PreprocessAction(
-        "Normalize", "orange.preprocess.scale", "Scale",
+        "Normalize", "orange.preprocess.scale", "Scaling",
         Description("Normalize Features",
                     icon_path("Normalize.svg")),
         Scale
@@ -961,7 +1038,7 @@ class OWPreprocess(widget.OWWidget):
         preprocessed_data = Output("Preprocessed Data", Orange.data.Table)
 
     storedsettings = settings.Setting({})
-    autocommit = settings.Setting(True)
+    autocommit = settings.Setting(False)
 
     def __init__(self):
         super().__init__()
@@ -1106,7 +1183,6 @@ class OWPreprocess(widget.OWWidget):
         d["preprocessors"] = preprocessors
         return d
 
-
     def set_model(self, ppmodel):
         if self.preprocessormodel:
             self.preprocessormodel.dataChanged.disconnect(self.__on_modelchanged)
@@ -1183,7 +1259,7 @@ class OWPreprocess(widget.OWWidget):
             self.error()
             try:
                 data = preprocessor(self.data)
-            except (ValueError, ZeroDivisionError) as e:
+            except ValueError as e:
                 self.error(str(e))
                 return
         else:
@@ -1266,3 +1342,4 @@ def test_main(argv=sys.argv):
 
 if __name__ == "__main__":
     sys.exit(test_main())
+

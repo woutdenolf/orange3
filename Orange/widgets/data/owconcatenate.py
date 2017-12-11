@@ -69,9 +69,9 @@ class OWConcatenate(widget.OWWidget):
         self.primary_data = None
         self.more_data = OrderedDict()
 
-        self.mergebox = gui.vBox(self.controlArea, "Domain Merging")
+        mergebox = gui.vBox(self.controlArea, "Domain Merging")
         box = gui.radioButtons(
-            self.mergebox, self, "merge_type",
+            mergebox, self, "merge_type",
             callback=self._merge_type_changed)
 
         gui.widgetLabel(
@@ -96,8 +96,7 @@ class OWConcatenate(widget.OWWidget):
 
         cb = gui.checkBox(
             box, self, "append_source_column",
-            self.tr("Append data source IDs"),
-            callback=self._source_changed)
+            self.tr("Append data source IDs"))
 
         ibox = gui.indentedBox(box, sep=gui.checkButtonOffsetHint(cb))
 
@@ -110,13 +109,12 @@ class OWConcatenate(widget.OWWidget):
 
         form.addRow(
             self.tr("Feature name:"),
-            gui.lineEdit(ibox, self, "source_attr_name", valueType=str,
-                         callback=self._source_changed))
+            gui.lineEdit(ibox, self, "source_attr_name", valueType=str))
 
         form.addRow(
             self.tr("Place:"),
-            gui.comboBox(ibox, self, "source_column_role", items=self.id_roles,
-                         callback=self._source_changed))
+            gui.comboBox(ibox, self, "source_column_role", items=self.id_roles)
+        )
 
         ibox.layout().addLayout(form)
         mleft, mtop, mright, _ = ibox.layout().getContentsMargins()
@@ -145,7 +143,6 @@ class OWConcatenate(widget.OWWidget):
             del self.more_data[id]
 
     def handleNewSignals(self):
-        self.mergebox.setDisabled(self.primary_data is not None)
         self.apply()
 
     def apply(self):
@@ -194,9 +191,6 @@ class OWConcatenate(widget.OWWidget):
         if self.primary_data is None and self.more_data:
             self.apply()
 
-    def _source_changed(self):
-        self.apply()
-
     def send_report(self):
         items = OrderedDict()
         if self.primary_data is not None:
@@ -230,7 +224,7 @@ def domain_union(A, B):
 def domain_intersection(A, B):
     def tuple_intersection(t1, t2):
         inters = set(t1) & set(t2)
-        return tuple(unique(el for el in t1 + t2 if el in inters))
+        return tuple(el for el in t1 + t2 if el in inters)
 
     intersection = Orange.data.Domain(
         tuple_intersection(A.attributes, B.attributes),

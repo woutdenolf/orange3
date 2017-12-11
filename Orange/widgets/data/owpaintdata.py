@@ -4,7 +4,6 @@ import sys
 import unicodedata
 import itertools
 from functools import partial
-from collections import namedtuple
 
 import numpy as np
 
@@ -13,7 +12,7 @@ from AnyQt.QtGui import (
     QPalette
 )
 from AnyQt.QtWidgets import (
-    QSizePolicy, QAction, QUndoCommand, QUndoStack, QGridLayout,
+    QListView, QSizePolicy, QAction, QUndoCommand, QUndoStack, QGridLayout,
     QFormLayout, QToolButton, QActionGroup
 )
 
@@ -72,6 +71,7 @@ def stack_on_condition(a, b, condition):
 # Data manipulation operators
 # ###########################
 
+from collections import namedtuple
 if sys.version_info < (3, 4):
     # use singledispatch backports from pypi
     from singledispatch import singledispatch
@@ -273,7 +273,8 @@ class PutInstanceTool(DataTool):
             event.accept()
             self.editingFinished.emit()
             return True
-        return super().mousePressEvent(event)
+        else:
+            return super().mousePressEvent(event)
 
 
 class PenTool(DataTool):
@@ -285,19 +286,22 @@ class PenTool(DataTool):
             self.editingStarted.emit()
             self.__handleEvent(event)
             return True
-        return super().mousePressEvent()
+        else:
+            return super().mousePressEvent()
 
     def mouseMoveEvent(self, event):
         if event.buttons() & Qt.LeftButton:
             self.__handleEvent(event)
             return True
-        return super().mouseMoveEvent()
+        else:
+            return super().mouseMoveEvent()
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
             self.editingFinished.emit()
             return True
-        return super().mouseReleaseEvent()
+        else:
+            return super().mouseReleaseEvent()
 
     def __handleEvent(self, event):
         pos = self.mapToPlot(event.pos())
@@ -324,20 +328,23 @@ class AirBrushTool(DataTool):
             self.__pos = self.mapToPlot(event.pos())
             self.__timer.start()
             return True
-        return super().mousePressEvent(event)
+        else:
+            return super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
         if event.buttons() & Qt.LeftButton:
             self.__pos = self.mapToPlot(event.pos())
             return True
-        return super().mouseMoveEvent(event)
+        else:
+            return super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
             self.__timer.stop()
             self.editingFinished.emit()
             return True
-        return super().mouseReleaseEvent(event)
+        else:
+            return super().mouseReleaseEvent(event)
 
     def __timout(self):
         self.issueCommand.emit(
@@ -348,7 +355,8 @@ class AirBrushTool(DataTool):
 def random_state(rstate):
     if isinstance(rstate, np.random.RandomState):
         return rstate
-    return np.random.RandomState(rstate)
+    else:
+        return np.random.RandomState(rstate)
 
 
 def create_data(x, y, radius, size, rstate):
@@ -376,20 +384,23 @@ class MagnetTool(DataTool):
             self._pos = self.mapToPlot(event.pos())
             self.__timer.start()
             return True
-        return super().mousePressEvent(event)
+        else:
+            return super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
         if event.buttons() & Qt.LeftButton:
             self._pos = self.mapToPlot(event.pos())
             return True
-        return super().mouseMoveEvent(event)
+        else:
+            return super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
             self.__timer.stop()
             self.editingFinished.emit()
             return True
-        return super().mouseReleaseEvent(event)
+        else:
+            return super().mouseReleaseEvent(event)
 
     def __timeout(self):
         self.issueCommand.emit(
@@ -416,20 +427,23 @@ class JitterTool(DataTool):
             self._pos = self.mapToPlot(event.pos())
             self.__timer.start()
             return True
-        return super().mousePressEvent(event)
+        else:
+            return super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
         if event.buttons() & Qt.LeftButton:
             self._pos = self.mapToPlot(event.pos())
             return True
-        return super().mouseMoveEvent(event)
+        else:
+            return super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
             self.__timer.stop()
             self.editingFinished.emit()
             return True
-        return super().mouseReleaseEvent(event)
+        else:
+            return super().mouseReleaseEvent(event)
 
     def _do(self):
         self.issueCommand.emit(
@@ -493,7 +507,8 @@ class SelectTool(DataTool):
             self.setSelectionRect(QRectF(pos, pos))
             event.accept()
             return True
-        return super().mousePressEvent(event)
+        else:
+            return super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
         if event.buttons() & Qt.LeftButton:
@@ -501,7 +516,8 @@ class SelectTool(DataTool):
             self.setSelectionRect(QRectF(self._start_pos, pos).normalized())
             event.accept()
             return True
-        return super().mouseMoveEvent(event)
+        else:
+            return super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -512,7 +528,8 @@ class SelectTool(DataTool):
             self._item.setCursor(Qt.OpenHandCursor)
             self._mouse_dragging = False
             return True
-        return super().mouseReleaseEvent(event)
+        else:
+            return super().mouseReleaseEvent(event)
 
     def activate(self):
         if self._item is None:
@@ -566,7 +583,6 @@ class ClearTool(DataTool):
     only2d = False
 
     def activate(self):
-        self.editingStarted.emit()
         self.issueCommand.emit(SelectRegion(self._plot.rect()))
         self.issueCommand.emit(DeleteSelection())
         self.editingFinished.emit()
@@ -630,7 +646,8 @@ def indices_eq(ind1, ind2):
     if isinstance(ind1, tuple) and isinstance(ind2, tuple):
         if len(ind1) != len(ind2):
             return False
-        return all(indices_eq(i1, i2) for i1, i2 in zip(ind1, ind2))
+        else:
+            return all(indices_eq(i1, i2) for i1, i2 in zip(ind1, ind2))
     elif isinstance(ind1, slice) and isinstance(ind2, slice):
         return ind1 == ind2
     elif ind1 is ... and ind2 is ...:
@@ -640,7 +657,8 @@ def indices_eq(ind1, ind2):
 
     if ind1.shape != ind2.shape or ind1.dtype != ind2.dtype:
         return False
-    return (ind1 == ind2).all()
+    else:
+        return (ind1 == ind2).all()
 
 
 def merge_cmd(composit):
@@ -720,23 +738,24 @@ class ColoredListModel(itemmodels.PyListModel):
                 role == Qt.DecorationRole and \
                 0 <= index.row() < self.colors.number_of_colors:
             return gui.createAttributePixmap("", self.colors[index.row()])
-        return super().data(index, role)
+        else:
+            return super().data(index, role)
 
 
-def _icon(name, icon_path="icons/paintdata",
-        widg_path=os.path.dirname(os.path.abspath(__file__))):
+def _i(name, icon_path="icons/paintdata",
+       widg_path=os.path.dirname(os.path.abspath(__file__))):
     return os.path.join(widg_path, icon_path, name)
 
 
 class OWPaintData(OWWidget):
     TOOLS = [
-        ("Brush", "Create multiple instances", AirBrushTool, _icon("brush.svg")),
-        ("Put", "Put individual instances", PutInstanceTool, _icon("put.svg")),
+        ("Brush", "Create multiple instances", AirBrushTool, _i("brush.svg")),
+        ("Put", "Put individual instances", PutInstanceTool, _i("put.svg")),
         ("Select", "Select and move instances", SelectTool,
-         _icon("select-transparent_42px.png")),
-        ("Jitter", "Jitter instances", JitterTool, _icon("jitter.svg")),
-        ("Magnet", "Attract multiple instances", MagnetTool, _icon("magnet.svg")),
-        ("Clear", "Clear the plot", ClearTool, _icon("../../../icons/Dlg_clear.png"))
+            _i("select-transparent_42px.png")),
+        ("Jitter", "Jitter instances", JitterTool, _i("jitter.svg")),
+        ("Magnet", "Attract multiple instances", MagnetTool, _i("magnet.svg")),
+        ("Clear", "Clear the plot", ClearTool, _i("../../../icons/Dlg_clear.png"))
     ]
 
     name = "Paint Data"
@@ -751,7 +770,7 @@ class OWPaintData(OWWidget):
     class Outputs:
         data = Output("Data", Orange.data.Table)
 
-    autocommit = Setting(True)
+    autocommit = Setting(False)
     table_name = Setting("Painted data")
     attr1 = Setting("x")
     attr2 = Setting("y")
@@ -759,16 +778,14 @@ class OWPaintData(OWWidget):
 
     brushRadius = Setting(75)
     density = Setting(7)
-    #: current data array (shape=(N, 3)) as presented on the output
+
     data = Setting(None, schema_only=True)
-    labels = Setting(["C1", "C2"], schema_only=True)
 
     graph_name = "plot"
 
     class Warning(OWWidget.Warning):
         no_input_variables = Msg("Input data has no variables")
         continuous_target = Msg("Continuous target value can not be used.")
-        sparse_not_supported = Msg("Sparse data is ignored.")
 
     class Information(OWWidget.Information):
         use_first_two = \
@@ -779,22 +796,19 @@ class OWPaintData(OWWidget):
 
         self.input_data = None
         self.input_classes = []
-        self.input_colors = None
         self.input_has_attr2 = True
         self.current_tool = None
         self._selected_indices = None
         self._scatter_item = None
-        #: A private data buffer (can be modified in place). `self.data` is
-        #: a copy of this array (as seen when the `invalidate` method is
-        #: called
-        self.__buffer = None
+
+        self.labels = ["C1", "C2"]
 
         self.undo_stack = QUndoStack(self)
 
         self.class_model = ColoredListModel(
             self.labels, self,
             flags=Qt.ItemIsSelectable | Qt.ItemIsEnabled |
-            Qt.ItemIsEditable)
+                  Qt.ItemIsEditable)
 
         self.class_model.dataChanged.connect(self._class_value_changed)
         self.class_model.rowsInserted.connect(self._class_count_changed)
@@ -835,8 +849,11 @@ class OWPaintData(OWWidget):
         gui.separator(namesBox)
 
         gui.widgetLabel(namesBox, "Labels")
-        self.classValuesView = listView = gui.ListViewWithSizeHint(
-            preferred_size=(-1, 30))
+        self.classValuesView = listView = QListView(
+            selectionMode=QListView.SingleSelection,
+            sizePolicy=QSizePolicy(QSizePolicy.Ignored,
+                                   QSizePolicy.Maximum)
+        )
         listView.setModel(self.class_model)
         itemmodels.select_row(listView, 0)
         namesBox.layout().addWidget(listView)
@@ -926,6 +943,7 @@ class OWPaintData(OWWidget):
             tBox, self, "Reset to Input Data", self.reset_to_input)
         self.btResetToInput.setDisabled(True)
 
+        gui.rubber(self.controlArea)
         gui.auto_commit(self.left_side, self, "autocommit",
                         "Send")
 
@@ -983,10 +1001,7 @@ class OWPaintData(OWWidget):
         """Set the input_data and call reset_to_input"""
         def _check_and_set_data(data):
             self.clear_messages()
-            if data and data.is_sparse():
-                self.Warning.sparse_not_supported()
-                return False
-            if data is not None and len(data):
+            if data is not None:
                 if not data.domain.attributes:
                     self.Warning.no_input_variables()
                     data = None
@@ -994,7 +1009,7 @@ class OWPaintData(OWWidget):
                     self.Information.use_first_two()
             self.input_data = data
             self.btResetToInput.setDisabled(data is None)
-            return data is not None and len(data)
+            return data is not None
 
         if not _check_and_set_data(data):
             return
@@ -1006,12 +1021,9 @@ class OWPaintData(OWWidget):
             if data.domain.class_vars:
                 self.Warning.continuous_target()
             self.input_classes = ["C1"]
-            self.input_colors = None
             y = np.zeros(len(data))
         else:
             self.input_classes = y.values
-            self.input_colors = y.colors
-
             y = data[:, y].Y
 
         self.input_has_attr2 = len(data.domain.attributes) >= 2
@@ -1020,7 +1032,6 @@ class OWPaintData(OWWidget):
         else:
             self.input_data = np.column_stack((X, y))
         self.reset_to_input()
-        self.unconditional_commit()
 
     def reset_to_input(self):
         """Reset the painting to input data if present."""
@@ -1029,16 +1040,7 @@ class OWPaintData(OWWidget):
         self.undo_stack.clear()
 
         index = self.selected_class_label()
-        if self.input_colors is not None:
-            colors = self.input_colors
-        else:
-            colors = colorpalette.DefaultRGBColors
-        palette = colorpalette.ColorPaletteGenerator(
-            number_of_colors=len(colors), rgb_colors=colors)
-        self.colors = palette
-        self.class_model.colors = palette
         self.class_model[:] = self.input_classes
-
         newindex = min(max(index, 0), len(self.class_model) - 1)
         itemmodels.select_row(self.classValuesView, newindex)
 
@@ -1073,8 +1075,8 @@ class OWPaintData(OWWidget):
             return
 
         label = self.class_model[index]
-        mask = self.__buffer[:, 2] == index
-        move_mask = self.__buffer[~mask][:, 2] > index
+        mask = self.data[:, 2] == index
+        move_mask = self.data[~mask][:, 2] > index
 
         self.undo_stack.beginMacro("Delete class label")
         self.undo_stack.push(UndoCommand(DeleteIndices(mask), self))
@@ -1111,7 +1113,8 @@ class OWPaintData(OWWidget):
         rows = self.classValuesView.selectedIndexes()
         if rows:
             return rows[0].row()
-        return None
+        else:
+            return None
 
     def set_current_tool(self, tool):
         prev_tool = self.current_tool.__class__
@@ -1154,7 +1157,7 @@ class OWPaintData(OWWidget):
                 if isinstance(self.current_tool, SelectTool):
                     self.current_tool._reset()
 
-            self.__buffer, undo = transform(command, self.__buffer)
+            self.data, undo = transform(command, self.data)
             self._replot()
             return undo
         else:
@@ -1164,19 +1167,19 @@ class OWPaintData(OWWidget):
         name = "Name"
 
         if (not self.hasAttr2 and
-                isinstance(cmd, (Move, MoveSelection, Jitter, Magnet))):
+            isinstance(cmd, (Move, MoveSelection, Jitter, Magnet))):
             # tool only supported if both x and y are enabled
             return
 
         if isinstance(cmd, Append):
             cls = self.selected_class_label()
             points = np.array([(p.x(), p.y() if self.hasAttr2 else 0, cls)
-                               for p in cmd.points])
+                                  for p in cmd.points])
             self.undo_stack.push(UndoCommand(Append(points), self, text=name))
         elif isinstance(cmd, Move):
             self.undo_stack.push(UndoCommand(cmd, self, text=name))
         elif isinstance(cmd, SelectRegion):
-            indices = [i for i, (x, y) in enumerate(self.__buffer[:, :2])
+            indices = [i for i, (x, y) in enumerate(self.data[:, :2])
                        if cmd.region.contains(QPointF(x, y))]
             indices = np.array(indices, dtype=int)
             self._selected_indices = indices
@@ -1206,12 +1209,12 @@ class OWPaintData(OWWidget):
             self._add_command(Append([QPointF(*p) for p in zip(*data.T)]))
         elif isinstance(cmd, Jitter):
             point = np.array([cmd.pos.x(), cmd.pos.y()])
-            delta = - apply_jitter(self.__buffer[:, :2], point,
+            delta = - apply_jitter(self.data[:, :2], point,
                                    self.density / 100.0, 0, cmd.rstate)
             self._add_command(Move((..., slice(0, 2)), delta))
         elif isinstance(cmd, Magnet):
             point = np.array([cmd.pos.x(), cmd.pos.y()])
-            delta = - apply_attractor(self.__buffer[:, :2], point,
+            delta = - apply_attractor(self.data[:, :2], point,
                                       self.density / 100.0, 0)
             self._add_command(Move((..., slice(0, 2)), delta))
         else:
@@ -1227,17 +1230,16 @@ class OWPaintData(OWWidget):
             self.plot.removeItem(self._scatter_item)
             self._scatter_item = None
 
-        x = self.__buffer[:, 0].copy()
-        if self.hasAttr2:
-            y = self.__buffer[:, 1].copy()
-        else:
-            y = np.zeros(self.__buffer.shape[0])
+        nclasses = len(self.class_model)
+        pens = [pen(self.colors[i]) for i in range(nclasses)]
 
-        colors = self.colors[self.__buffer[:, 2]]
-        pens = [pen(c) for c in colors]
         self._scatter_item = pg.ScatterPlotItem(
-            x, y, symbol="+", pen=pens
+            self.data[:, 0],
+            self.data[:, 1] if self.hasAttr2 else np.zeros(self.data.shape[0]),
+            symbol="+",
+            pen=[pens[int(ci)] for ci in self.data[:, 2]]
         )
+
         self.plot.addItem(self._scatter_item)
 
     def _attr_name_changed(self):
@@ -1276,7 +1278,7 @@ class OWPaintData(OWWidget):
 
     def sizeHint(self):
         sh = super().sizeHint()
-        return sh.expandedTo(QSize(570, 690))
+        return sh.expandedTo(QSize(1200, 800))
 
     def onDeleteWidget(self):
         self.plot.clear()
@@ -1291,7 +1293,7 @@ class OWPaintData(OWWidget):
         self.report_items("Painted data", settings)
         self.report_plot()
 
-def main():
+def test():
     from AnyQt.QtWidgets import QApplication
     import gc
     import sip
@@ -1310,4 +1312,4 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(test())
