@@ -439,6 +439,7 @@ class DendrogramWidget(QGraphicsWidget):
         if item in self._selection:
             if state == False:
                 self._remove_selection(item)
+                self._re_enumerate_selections()
                 self.selectionChanged.emit()
         else:
             # If item is already inside another selected item,
@@ -455,11 +456,11 @@ class DendrogramWidget(QGraphicsWidget):
 
             if state:
                 self._add_selection(item)
-                self._re_enumerate_selections()
 
             elif item in self._selection:
                 self._remove_selection(item)
 
+            self._re_enumerate_selections()
             self.selectionChanged.emit()
 
     def _add_selection(self, item):
@@ -498,8 +499,6 @@ class DendrogramWidget(QGraphicsWidget):
             self.scene().removeItem(selection_item)
 
         del self._selection[item]
-
-        self._re_enumerate_selections()
 
     def _selected_sub_items(self, item):
         """Return all selected subclusters under item."""
@@ -675,11 +674,11 @@ class DendrogramWidget(QGraphicsWidget):
         if self._root and which == Qt.PreferredSize:
             nleaves = len([node for node in self._items.keys()
                            if not node.branches])
-
+            base = max(10, min(spacing * 16, 250))
             if self.orientation in [self.Left, self.Right]:
-                return QSizeF(250, spacing * nleaves + mleft + mright)
+                return QSizeF(base, spacing * nleaves + mleft + mright)
             else:
-                return QSizeF(spacing * nleaves + mtop + mbottom, 250)
+                return QSizeF(spacing * nleaves + mtop + mbottom, base)
 
         elif which == Qt.MinimumSize:
             return QSizeF(mleft + mright + 10, mtop + mbottom + 10)
@@ -773,7 +772,7 @@ class OWHierarchicalClustering(widget.OWWidget):
     #: Selected linkage
     linkage = settings.Setting(1)
     #: Index of the selected annotation item (variable, ...)
-    annotation = settings.ContextSetting("Enumeration", exclude_metas=False)
+    annotation = settings.ContextSetting("Enumeration")
     #: Out-of-context setting for the case when the "Name" option is available
     annotation_if_names = settings.Setting("Name")
     #: Out-of-context setting for the case with just "Enumerate" and "None"
@@ -886,7 +885,7 @@ class OWHierarchicalClustering(widget.OWWidget):
         self.zoom_slider = gui.hSlider(
             self.controlArea, self, "zoom_factor", box="Zoom",
             minValue=-6, maxValue=3, step=1, ticks=True, createLabel=False,
-            callback=self.__zoom_factor_changed)
+            callback=self.__update_font_scale)
 
         zoom_in = QAction(
             "Zoom in", self, shortcut=QKeySequence.ZoomIn,
@@ -977,7 +976,7 @@ class OWHierarchicalClustering(widget.OWWidget):
         self.dendrogram.selectionEdited.connect(self._selection_edited)
 
         self.labels = GraphicsSimpleTextList()
-        self.labels.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        self.labels.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Preferred)
         self.labels.setAlignment(Qt.AlignLeft)
         self.labels.setMaximumWidth(200)
         self.labels.layout().setSpacing(0)
@@ -1004,6 +1003,7 @@ class OWHierarchicalClustering(widget.OWWidget):
         self.top_axis.line.valueChanged.connect(self._axis_slider_changed)
         self.dendrogram.geometryChanged.connect(self._dendrogram_geom_changed)
         self._set_cut_line_visible(self.selection_method == 1)
+        self.__update_font_scale()
 
     @Inputs.distances
     def set_distances(self, matrix):
@@ -1255,10 +1255,21 @@ class OWHierarchicalClustering(widget.OWWidget):
 
     def eventFilter(self, obj, event):
         if obj is self.view.viewport() and event.type() == QEvent.Resize:
-            width = self.view.viewport().width() - 2
-            self._main_graphics.setMaximumWidth(width)
-            self._main_graphics.setMinimumWidth(width)
-            self._main_graphics.layout().activate()
+            # NOTE: not using viewport.width(), due to 'transient' scroll bars
+            # (macOS). Viewport covers the whole view, but QGraphicsView still
+            # scrolls left, right with scroll bar extent (other
+            # QAbstractScrollArea widgets behave as expected).
+            w_frame = self.view.frameWidth()
+            margin = self.view.viewportMargins()
+            w_scroll = self.view.verticalScrollBar().width()
+            width = (self.view.width() - w_frame * 2 -
+                     margin.left() - margin.right() - w_scroll)
+            # layout with new width constraint
+            self.__layout_main_graphics(width=width)
+        elif obj is self._main_graphics and \
+                event.type() == QEvent.LayoutRequest:
+            # layout preserving the width (vertical re layout)
+            self.__layout_main_graphics()
         elif event.type() == QEvent.MouseButtonPress and \
                 (obj is self.top_axis_view.viewport() or
                  obj is self.bottom_axis_view.viewport()):
@@ -1269,10 +1280,6 @@ class OWHierarchicalClustering(widget.OWWidget):
             self.top_axis.line.setValue(cut.x())
             # update the line visibility, output, ...
             self._selection_method_changed()
-        elif obj is self._main_graphics and \
-                event.type() == QEvent.LayoutRequest:
-            self.__update_size_constraints()
-
         return super().eventFilter(obj, event)
 
     def onDeleteWidget(self):
@@ -1320,16 +1327,16 @@ class OWHierarchicalClustering(widget.OWWidget):
 
     def _set_slider_value(self, value, span):
         with blocked(self.cut_line):
-            self.cut_line.setValue(value)
             self.cut_line.setRange(0, span)
+            self.cut_line.setValue(value)
 
         with blocked(self.top_axis.line):
-            self.top_axis.line.setValue(value)
             self.top_axis.line.setRange(0, span)
+            self.top_axis.line.setValue(value)
 
         with blocked(self.bottom_axis.line):
-            self.bottom_axis.line.setValue(value)
             self.bottom_axis.line.setRange(0, span)
+            self.bottom_axis.line.setValue(value)
 
     def set_cutoff_height(self, height):
         self.cutoff_height = height
@@ -1386,7 +1393,7 @@ class OWHierarchicalClustering(widget.OWWidget):
         self.zoom_factor = clip(self.zoom_slider.minimum(),
                                 self.zoom_slider.maximum(),
                                 self.zoom_factor + 1)
-        self.__zoom_factor_changed()
+        self.__update_font_scale()
 
     def __zoom_out(self):
         def clip(minval, maxval, val):
@@ -1394,26 +1401,27 @@ class OWHierarchicalClustering(widget.OWWidget):
         self.zoom_factor = clip(self.zoom_slider.minimum(),
                                 self.zoom_slider.maximum(),
                                 self.zoom_factor - 1)
-        self.__zoom_factor_changed()
+        self.__update_font_scale()
 
     def __zoom_reset(self):
         self.zoom_factor = 0
-        self.__zoom_factor_changed()
+        self.__update_font_scale()
 
-    def __update_size_constraints(self):
-        size = self._main_graphics.size()
-        preferred = self._main_graphics.sizeHint(
-            Qt.PreferredSize, constraint=QSizeF(size.width(), -1))
-        self._main_graphics.resize(QSizeF(size.width(), preferred.height()))
-        self._main_graphics.layout().activate()
+    def __layout_main_graphics(self, width=-1):
+        if width < 0:
+            # Preserve current width.
+            width = self._main_graphics.size().width()
+        preferred = self._main_graphics.effectiveSizeHint(
+            Qt.PreferredSize, constraint=QSizeF(width, -1))
+        self._main_graphics.resize(QSizeF(width, preferred.height()))
+        mw = self._main_graphics.minimumWidth() + 4
+        self.view.setMinimumWidth(mw + self.view.verticalScrollBar().width())
 
-    def __zoom_factor_changed(self):
+    def __update_font_scale(self):
         font = self.scene.font()
         factor = (1.25 ** self.zoom_factor)
         font = qfont_scaled(font, factor)
-        self.labels.setFont(font)
-        self.dendrogram.setFont(font)
-        self.__update_size_constraints()
+        self._main_graphics.setFont(font)
 
     def send_report(self):
         annot = self.label_cb.currentText()

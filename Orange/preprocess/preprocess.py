@@ -4,8 +4,8 @@ Preprocess
 
 """
 import numpy as np
+import scipy.sparse as sp
 import sklearn.preprocessing as skl_preprocessing
-from sklearn.utils import shuffle as skl_shuffle
 import bottleneck as bn
 
 import Orange.data
@@ -354,16 +354,32 @@ class Randomize(Preprocess):
             Randomized data table.
         """
         new_data = data.copy()
+        rstate = np.random.RandomState(self.rand_seed)
+        # ensure the same seed is not used to shuffle X and Y at the same time
+        r1, r2, r3 = rstate.randint(0, 2 ** 32 - 1, size=3, dtype=np.int64)
         if self.rand_type & Randomize.RandomizeClasses:
-            new_data.Y = self.randomize(new_data.Y)
+            new_data.Y = self.randomize(new_data.Y, r1)
         if self.rand_type & Randomize.RandomizeAttributes:
-            new_data.X = self.randomize(new_data.X)
+            new_data.X = self.randomize(new_data.X, r2)
         if self.rand_type & Randomize.RandomizeMetas:
-            new_data.metas = self.randomize(new_data.metas)
+            new_data.metas = self.randomize(new_data.metas, r3)
         return new_data
 
-    def randomize(self, table):
-        return skl_shuffle(table, random_state=self.rand_seed)
+    def randomize(self, table, rand_state=None):
+        rstate = np.random.RandomState(rand_state)
+        if sp.issparse(table):
+            table = table.tocsc()  # type: sp.spmatrix
+            for i in range(table.shape[1]):
+                permutation = rstate.permutation(table.shape[0])
+                col_indices = \
+                    table.indices[table.indptr[i]: table.indptr[i + 1]]
+                col_indices[:] = permutation[col_indices]
+        elif len(table.shape) > 1:
+            for i in range(table.shape[1]):
+                rstate.shuffle(table[:, i])
+        else:
+            rstate.shuffle(table)
+        return table
 
 
 class ProjectPCA(Preprocess):
@@ -472,7 +488,7 @@ class Scale(Preprocess):
         return data.transform(domain)
 
 
-class PreprocessorList(Reprable):
+class PreprocessorList(Preprocess):
     """
     Store a list of preprocessors and on call apply them to the data set.
 

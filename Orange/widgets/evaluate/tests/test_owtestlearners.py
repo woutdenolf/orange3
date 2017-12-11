@@ -52,6 +52,15 @@ class TestOWTestLearners(WidgetTest):
         self.assertIsNotNone(res.domain)
         self.assertIsNotNone(res.data)
 
+    def test_more_learners(self):
+        data = Table("iris")[::15]
+        self.send_signal(self.widget.Inputs.train_data, data)
+        self.send_signal(self.widget.Inputs.learner, MajorityLearner(), 0)
+        self.get_output(self.widget.Outputs.evaluations_results, wait=5000)
+        self.send_signal(self.widget.Inputs.learner, MajorityLearner(), 1)
+        res = self.get_output(self.widget.Outputs.evaluations_results, wait=5000)
+        np.testing.assert_equal(res.probabilities[0], res.probabilities[1])
+
     def test_testOnTest(self):
         data = Table("iris")
         self.send_signal(self.widget.Inputs.train_data, data)
@@ -185,6 +194,21 @@ class TestOWTestLearners(WidgetTest):
         self.send_signal("Data", table)
         self.send_signal("Learner", MajorityLearner(), 0, wait=1000)
         self.assertTrue(self.widget.Error.only_one_class_var_value.is_shown())
+
+    def test_nan_class(self):
+        """
+        Do not crash on a data with only nan class values.
+        GH-2751
+        """
+        def assertErrorShown(data, is_shown):
+            self.send_signal("Data", data)
+            self.assertEqual(is_shown, self.widget.Error.no_class_values.is_shown())
+
+        data = Table("iris")[::30]
+        data.Y[:] = np.nan
+
+        for data, is_shown in zip([None, data, Table("iris")[:30]], [False, True, False]):
+            assertErrorShown(data, is_shown)
 
     def test_addon_scorers(self):
         try:

@@ -36,7 +36,7 @@ class TestTabReader(unittest.TestCase):
         file = io.StringIO(simplefile)
         table = read_tab_file(file)
 
-        f1, f2, c1, c2 = table.domain
+        f1, f2, c1, c2 = table.domain.variables
         self.assertIsInstance(f1, DiscreteVariable)
         self.assertEqual(f1.name, "Feature 1")
         self.assertIsInstance(f2, DiscreteVariable)
@@ -247,3 +247,13 @@ class TestTabReader(unittest.TestCase):
             self.assertFalse(path.isfile(fname + ".metadata"))
         finally:
             shutil.rmtree(tempdir)
+
+    def test_number_of_decimals(self):
+        data = Table("heart_disease")
+        self.assertEqual(data.domain["age"].number_of_decimals, 0)
+        self.assertEqual(data.domain["ST by exercise"].number_of_decimals, 1)
+
+        data = Table("glass")
+        self.assertEqual(data.domain["RI"].number_of_decimals, 5)
+        self.assertEqual(data.domain["Na"].number_of_decimals, 2)
+        self.assertEqual(data.domain["Fe"].number_of_decimals, 2)

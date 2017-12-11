@@ -22,7 +22,7 @@ from Orange.statistics import contingency, distribution
 from Orange.widgets import widget, gui
 from Orange.widgets.settings import (Setting, DomainContextHandler,
                                      ContextSetting)
-from Orange.widgets.utils.itemmodels import VariableListModel
+from Orange.widgets.utils.itemmodels import DomainModel
 from Orange.widgets.utils.annotated_data import (create_annotated_table,
                                                  ANNOTATED_DATA_SIGNAL_NAME)
 from Orange.widgets.widget import Input, Output
@@ -139,6 +139,7 @@ class OWBoxPlot(widget.OWWidget):
     stattest = Setting(0)
     sig_threshold = Setting(0.05)
     stretched = Setting(True)
+    show_labels = Setting(True)
     auto_commit = Setting(True)
 
     _sorting_criteria_attrs = {
@@ -182,7 +183,10 @@ class OWBoxPlot(widget.OWWidget):
         self.scale_x = self.scene_min_x = self.scene_width = 0
         self.label_width = 0
 
-        self.attrs = VariableListModel()
+        order = (DomainModel.CLASSES, DomainModel.METAS, DomainModel.ATTRIBUTES)
+        self.attrs = DomainModel(
+            order=order,
+            valid_types=DomainModel.PRIMITIVE)
         view = gui.listView(
             self.controlArea, self, "attribute", box="Variable",
             model=self.attrs, callback=self.attr_changed)
@@ -197,7 +201,11 @@ class OWBoxPlot(widget.OWWidget):
             "Order by relevance",
             tooltip="Order by 𝜒² or ANOVA over the subgroups",
             callback=self.apply_sorting)
-        self.group_vars = VariableListModel()
+        self.group_vars = DomainModel(
+            order=order,
+            placeholder="None",
+            valid_types=Orange.data.DiscreteVariable)
+        self.group_vars.clear()  # Remove 'None' from the list view
         view = gui.listView(
             self.controlArea, self, "group_var", box="Subgroups",
             model=self.group_vars, callback=self.grouping_changed)
@@ -219,10 +227,15 @@ class OWBoxPlot(widget.OWWidget):
             callback=self.layout_changed)
 
         # The vertical size policy is needed to let only the list views expand
-        self.stretching_box = gui.checkBox(
-            self.controlArea, self, 'stretched', "Stretch bars", box='Display',
-            callback=self.display_changed,
-            sizePolicy=(QSizePolicy.Minimum, QSizePolicy.Maximum)).box
+        self.stretching_box = box = gui.vBox(
+            self.controlArea, box="Display",
+            sizePolicy=(QSizePolicy.Minimum, QSizePolicy.Maximum))
+        gui.checkBox(
+            box, self, 'stretched', "Stretch bars",
+            callback=self.display_changed)
+        gui.checkBox(
+            box, self, 'show_labels', "Show box labels",
+            callback=self.display_changed)
 
         gui.auto_commit(self.controlArea, self, "auto_commit",
                         "Send Selection", "Send Automatically")
@@ -270,23 +283,26 @@ class OWBoxPlot(widget.OWWidget):
         self.attribute = None
         if dataset:
             domain = dataset.domain
-            self.group_vars[:] = \
-                [None] + \
-                [a for a in chain(domain.variables, domain.metas)
-                 if a.is_discrete]
-            self.attrs[:] = chain(domain.variables,
-                                  (a for a in domain.metas if a.is_primitive()))
-            if self.attrs:
-                self.attribute = self.attrs[0]
-            if domain.class_var and domain.class_var.is_discrete:
-                self.group_var = domain.class_var
-            else:
-                self.group_var = None  # Reset to trigger selection via callback
+            self.group_vars.set_domain(domain)
+            self.attrs.set_domain(domain)
+            self.select_default_variables(domain)
             self.openContext(self.dataset)
             self.grouping_changed()
         else:
             self.reset_all_data()
         self.commit()
+
+    def select_default_variables(self, domain):
+        # visualize first non-class variable, group by class (if present)
+        if len(self.attrs) > len(domain.class_vars):
+            self.attribute = self.attrs[len(domain.class_vars)]
+        elif self.attrs:
+            self.attribute = self.attrs[0]
+
+        if domain.class_var and domain.class_var.is_discrete:
+            self.group_var = domain.class_var
+        else:
+            self.group_var = None  # Reset to trigger selection via callback
 
     def apply_sorting(self):
         def compute_score(attr):
@@ -332,16 +348,15 @@ class OWBoxPlot(widget.OWWidget):
                     include_class=True, include_metas=True) else None
             self.attrs.sort(key=compute_score)
         else:
-            self.attrs[:] = chain(
-                domain.variables,
-                (a for a in data.domain.metas if a.is_primitive()))
+            self.attrs.set_domain(domain)
         self.attribute = attribute
 
     def reset_all_data(self):
         self.clear_scene()
         self.infot1.setText("")
-        self.attrs[:] = []
-        self.group_vars[:] = []
+        self.attrs.set_domain(None)
+        self.group_vars.set_domain(None)
+        self.group_vars.clear()  # Remove 'None' from the list view
         self.is_continuous = False
         self.update_display_box()
 
@@ -535,7 +550,7 @@ class OWBoxPlot(widget.OWWidget):
                 label.setPos(right + 10, y - b.height() / 2)
                 self.box_scene.addItem(label)
 
-            if self.attribute is not self.group_var:
+            if self.show_labels and self.attribute is not self.group_var:
                 for text_item, bar_part in zip(box[1::2], box[::2]):
                     label = QGraphicsSimpleTextItem(
                         text_item.toPlainText())
@@ -876,10 +891,11 @@ class OWBoxPlot(widget.OWWidget):
         selected, selection = None, []
         if self.conditions:
             selected = Values(self.conditions, conjunction=False)(self.dataset)
-            selection = [i for i, inst in enumerate(self.dataset)
-                         if inst in selected]
+            selection = np.in1d(
+                self.dataset.ids, selected.ids, assume_unique=True).nonzero()[0]
         self.Outputs.selected_data.send(selected)
-        self.Outputs.annotated_data.send(create_annotated_table(self.dataset, selection))
+        self.Outputs.annotated_data.send(
+            create_annotated_table(self.dataset, selection))
 
     def show_posthoc(self):
         def line(y0, y1):

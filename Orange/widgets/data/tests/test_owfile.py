@@ -4,7 +4,7 @@ from os import path, remove
 from unittest.mock import Mock, patch
 import pickle
 import tempfile
-
+import warnings
 
 import numpy as np
 import scipy.sparse as sp
@@ -12,13 +12,15 @@ import scipy.sparse as sp
 from AnyQt.QtCore import QMimeData, QPoint, Qt, QUrl
 from AnyQt.QtGui import QDragEnterEvent, QDropEvent
 from AnyQt.QtWidgets import QComboBox
+from os.path import dirname
 
 import Orange
 from Orange.data import FileFormat, dataset_dirs, StringVariable, Table, \
     Domain, DiscreteVariable
+from Orange.data.io import TabReader
 from Orange.tests import named_file
 from Orange.widgets.data.owfile import OWFile
-from Orange.widgets.utils.filedialogs import dialog_formats
+from Orange.widgets.utils.filedialogs import dialog_formats, format_filter, RecentPath
 from Orange.widgets.tests.base import WidgetTest
 from Orange.widgets.utils.domaineditor import ComboDelegate, VarTypeDelegate, VarTableModel
 
@@ -33,6 +35,35 @@ class AddedFormat(FileFormat):
         pass
 
 
+class FailedSheetsFormat(FileFormat):
+    EXTENSIONS = ('.failed_sheet',)
+    DESCRIPTION = "Make a sheet function that fails"
+
+    def read(self):
+        pass
+
+    def sheets(self):
+        raise Exception("Not working")
+
+
+class WithWarnings(FileFormat):
+    EXTENSIONS = ('.with_warning',)
+    DESCRIPTION = "Warning"
+
+    def read(self):
+        warnings.warn("Some warning")
+        return Orange.data.Table("iris")
+
+
+class MyCustomTabReader(FileFormat):
+    EXTENSIONS = ('.tab',)
+    DESCRIPTION = "Always return iris"
+    PRIORITY = 999999
+
+    def read(self):
+        return Orange.data.Table("iris")
+
+
 class TestOWFile(WidgetTest):
     # Attribute used to store event data so it does not get garbage
     # collected before event is processed.
@@ -40,6 +71,10 @@ class TestOWFile(WidgetTest):
 
     def setUp(self):
         self.widget = self.create_widget(OWFile)  # type: OWFile
+        dataset_dirs.append(dirname(__file__))
+
+    def tearDown(self):
+        dataset_dirs.pop()
 
     def test_dragEnterEvent_accepts_urls(self):
         event = self._drag_enter_event(QUrl.fromLocalFile(TITANIC_PATH))
@@ -95,7 +130,7 @@ class TestOWFile(WidgetTest):
 
         self.open_dataset("iris")
         idx = self.widget.domain_editor.model().createIndex(4, 1)
-        self.widget.domain_editor.model().setData(idx, "string", Qt.EditRole)
+        self.widget.domain_editor.model().setData(idx, "text", Qt.EditRole)
         self.widget.apply_button.click()
         data = self.get_output(self.widget.Outputs.data)
         self.assertIsInstance(data.domain["iris"], StringVariable)
@@ -209,9 +244,71 @@ a
                 vartype_delegate.setEditorData(combo, idx(i))
                 self.assertEqual(combo.count(), counts[i])
 
-    def test_domain_edit_on_sparse_data(self):
+    def test_reader_custom_tab(self):
+        with named_file("", suffix=".tab") as fn:
+            qname = MyCustomTabReader.qualified_name()
+            reader = RecentPath(fn, None, None, file_format=qname)
+            self.widget = self.create_widget(OWFile,
+                                             stored_settings={"recent_paths": [reader]})
+            self.widget.load_data()
+        self.assertFalse(self.widget.Error.missing_reader.is_shown())
+        outdata = self.get_output(self.widget.Outputs.data)
+        self.assertEqual(len(outdata), 150)  # loaded iris
+
+    def test_no_reader_extension(self):
+        with named_file("", suffix=".xyz_unknown") as fn:
+            no_reader = RecentPath(fn, None, None)
+            self.widget = self.create_widget(OWFile,
+                                             stored_settings={"recent_paths": [no_reader]})
+            self.widget.load_data()
+        self.assertTrue(self.widget.Error.missing_reader.is_shown())
+
+    def test_fail_sheets(self):
+        with named_file("", suffix=".failed_sheet") as fn:
+            self.open_dataset(fn)
+        self.assertTrue(self.widget.Error.sheet_error.is_shown())
+
+    def test_with_warnings(self):
+        with named_file("", suffix=".with_warning") as fn:
+            self.open_dataset(fn)
+        self.assertTrue(self.widget.Warning.load_warning.is_shown())
+
+    def test_fail(self):
+        with named_file("name\nc\n\nstring", suffix=".tab") as fn:
+            self.open_dataset(fn)
+        self.assertTrue(self.widget.Error.unknown.is_shown())
+
+    def test_read_format(self):
         iris = Table("iris")
-        iris.X = sp.csr_matrix(iris.X)
+
+        def open_iris_with_no_specific_format(a, b, c, filters, e):
+            return iris.__file__, filters.split(";;")[0]
+
+        with patch("AnyQt.QtWidgets.QFileDialog.getOpenFileName",
+                   open_iris_with_no_specific_format):
+            self.widget.browse_file()
+
+        self.assertIsNone(self.widget.recent_paths[0].file_format)
+
+        def open_iris_with_tab(a, b, c, filters, e):
+            return iris.__file__, format_filter(TabReader)
+
+        with patch("AnyQt.QtWidgets.QFileDialog.getOpenFileName",
+                   open_iris_with_tab):
+            self.widget.browse_file()
+
+        self.assertEqual(self.widget.recent_paths[0].file_format, "Orange.data.io.TabReader")
+
+    def test_no_specified_reader(self):
+        with named_file("", suffix=".tab") as fn:
+            no_class = RecentPath(fn, None, None, file_format="not.a.file.reader.class")
+            self.widget = self.create_widget(OWFile,
+                                             stored_settings={"recent_paths": [no_class]})
+            self.widget.load_data()
+        self.assertTrue(self.widget.Error.missing_reader.is_shown())
+
+    def test_domain_edit_on_sparse_data(self):
+        iris = Table("iris").to_sparse()
 
         f = tempfile.NamedTemporaryFile(suffix='.pickle', delete=False)
         pickle.dump(iris, f)
@@ -247,13 +344,13 @@ a
         self.assertTrue(".123" in formats)
 
     def test_domain_editor_conversions(self):
-        dat = """V0\tV1\tV2\tV3\tV4\tV5
-                 c\tc\td\td\tc\td
-                  \t \t \t \t \t
-                 3.0\t1.0\t4\ta\t0.0\tx
-                 1.0\t2.0\t4\tb\t0.0\ty
-                 2.0\t1.0\t7\ta\t0.0\ty
-                 0.0\t2.0\t7\ta\t0.0\tz"""
+        dat = """V0\tV1\tV2\tV3\tV4\tV5\tV6
+                 c\tc\td\td\tc\td\td
+                  \t \t \t \t \t \t
+                 3.0\t1.0\t4\ta\t0.0\tx\t1.0
+                 1.0\t2.0\t4\tb\t0.0\ty\t2.0
+                 2.0\t1.0\t7\ta\t0.0\ty\t2.0
+                 0.0\t2.0\t7\ta\t0.0\tz\t2.0"""
         with named_file(dat, suffix=".tab") as filename:
             self.open_dataset(filename)
             data1 = self.get_output(self.widget.Outputs.data)
@@ -263,9 +360,10 @@ a
                 self.assertEqual(str(a), model.data(model.createIndex(i, 0), Qt.DisplayRole))
             # make conversions
             model.setData(model.createIndex(0, 1), "categorical", Qt.EditRole)
-            model.setData(model.createIndex(1, 1), "string", Qt.EditRole)
+            model.setData(model.createIndex(1, 1), "text", Qt.EditRole)
             model.setData(model.createIndex(2, 1), "numeric", Qt.EditRole)
             model.setData(model.createIndex(3, 1), "numeric", Qt.EditRole)
+            model.setData(model.createIndex(6, 1), "numeric", Qt.EditRole)
             self.widget.apply_button.click()
             data2 = self.get_output(self.widget.Outputs.data)
             # round continuous values should be converted to integers (3.0 -> 3, "3")
@@ -273,6 +371,22 @@ a
             self.assertEqual(len(data2[0].metas[0]), 1)
             # discrete integer values should stay the same after conversion to continuous
             self.assertAlmostEqual(float(data1[0][2].value), data2[0][1])
+            # discrete round floats should stay the same after conversion to continuous
+            self.assertAlmostEqual(float(data1[0][6].value), data2[0][5])
+
+    def test_domaineditor_continuous_to_string(self):
+        # GH 2744
+        dat = """V0\nc\n\n1.0\nnan\n3.0"""
+        with named_file(dat, suffix=".tab") as filename:
+            self.open_dataset(filename)
+
+            model = self.widget.domain_editor.model()
+            model.setData(model.createIndex(0, 1), "text", Qt.EditRole)
+            self.widget.apply_button.click()
+
+            data = self.get_output(self.widget.Outputs.data)
+            self.assertSequenceEqual(data.metas.ravel().tolist(), ['1', '', '3'])
+
 
     def test_url_no_scheme(self):
         mock_urlreader = Mock(side_effect=ValueError())
@@ -283,3 +397,21 @@ a
             self.widget.url_combo.activated.emit(0)
 
         mock_urlreader.assert_called_once_with('http://' + url)
+
+    def test_adds_origin(self):
+        self.open_dataset("origin1/images")
+        data1 = self.get_output(self.widget.Outputs.data)
+        attrs = data1.domain["image"].attributes
+        self.assertIn("origin", attrs)
+        self.assertIn("origin1", attrs["origin"])
+
+        self.open_dataset("origin2/images")
+        data2 = self.get_output(self.widget.Outputs.data)
+        attrs = data2.domain["image"].attributes
+        self.assertIn("origin", attrs)
+        self.assertIn("origin2", attrs["origin"])
+
+        # Make sure that variable in data1 still contains correct origin
+        attrs = data1.domain["image"].attributes
+        self.assertIn("origin", attrs)
+        self.assertIn("origin1", attrs["origin"])

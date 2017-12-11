@@ -56,6 +56,7 @@ class SettingHandlerTestCase(unittest.TestCase):
         fd, settings_file = mkstemp(suffix='.ini')
 
         handler = SettingsHandler()
+        handler.widget_class = SimpleWidget
         handler.defaults = {'a': 5, 'b': {1: 5}}
         handler._get_settings_filename = lambda: settings_file
         handler.write_defaults()
@@ -64,7 +65,9 @@ class SettingHandlerTestCase(unittest.TestCase):
             default_settings = pickle.load(f)
         os.close(fd)
 
-        self.assertEqual(handler.defaults, default_settings)
+        self.assertEqual(default_settings.pop(VERSION_KEY, -0xBAD),
+                         handler.widget_class.settings_version,)
+        self.assertEqual(default_settings, handler.defaults)
 
         os.remove(settings_file)
 
@@ -233,17 +236,25 @@ class SettingHandlerTestCase(unittest.TestCase):
         handler.fast_save(widget, 'schema_only_setting', 5)
         self.assertEqual(
             handler.known_settings['schema_only_setting'].default, None)
+        handler.fast_save(widget, 'component.schema_only_setting', 5)
+        self.assertEqual(
+            handler.known_settings['component.schema_only_setting'].default, "only")
 
         # update_defaults should not update defaults
         widget.schema_only_setting = 5
         handler.update_defaults(widget)
         self.assertEqual(
             handler.known_settings['schema_only_setting'].default, None)
+        widget.component.schema_only_setting = 5
+        self.assertEqual(
+            handler.known_settings['component.schema_only_setting'].default, "only")
 
         # pack_data should pack setting
         widget.schema_only_setting = 5
+        widget.component.schema_only_setting = 5
         data = handler.pack_data(widget)
         self.assertEqual(data['schema_only_setting'], 5)
+        self.assertEqual(data['component']['schema_only_setting'], 5)
 
     def test_read_defaults_migrates_settings(self):
         handler = SettingsHandler()
@@ -319,7 +330,10 @@ class SettingHandlerTestCase(unittest.TestCase):
         h.widget_class = widget
         h.defaults = defaults
         filename = h._get_settings_filename()
-        h.write_defaults()
+
+        os.makedirs(os.path.dirname(filename), exist_ok=True)
+        with open(filename, "wb") as f:
+            pickle.dump(defaults, f)
 
         yield
 
@@ -329,6 +343,7 @@ class SettingHandlerTestCase(unittest.TestCase):
 
 class Component:
     int_setting = Setting(42)
+    schema_only_setting = Setting("only", schema_only=True)
 
 
 class SimpleWidget:

@@ -10,6 +10,7 @@ import warnings
 from ast import literal_eval
 from collections import OrderedDict, Counter
 from functools import lru_cache
+from importlib import import_module
 from itertools import chain, repeat
 from math import isnan
 from numbers import Number
@@ -30,6 +31,9 @@ from Orange.data import (
 )
 from Orange.util import Registry, flatten, namegen
 
+
+# Support values longer than 128K (i.e. text contents features)
+csv.field_size_limit(100*1024*1024)
 
 __all__ = ["Flags", "FileFormat"]
 
@@ -133,6 +137,27 @@ def guess_data_type(orig_values):
 
 def sanitize_variable(valuemap, values, orig_values, coltype, coltype_kwargs,
                       domain_vars, existing_var, new_var_name, data=None):
+    def reorder_values():
+        new_order, old_order = \
+            var.values, coltype_kwargs.get('values', var.values)
+        if new_order != old_order:
+            offset = len(new_order)
+            column = values if data.ndim > 1 else data
+            column += offset
+            for _, val in enumerate(var.values):
+                try:
+                    oldval = old_order.index(val)
+                except ValueError:
+                    continue
+                bn.replace(column, offset + oldval, new_order.index(val))
+
+    def get_number_of_decimals():
+        ndecimals = max((len(value) - value.find(".")
+                         for value in orig_values
+                         if isinstance(value, str) and "." in value),
+                        default=1)
+        return ndecimals - 1
+
     if valuemap:
         # Map discrete data to ints
         def valuemap_index(val):
@@ -156,20 +181,20 @@ def sanitize_variable(valuemap, values, orig_values, coltype, coltype_kwargs,
             # Never use existing for un-named variables
             var = coltype(new_var_name, **coltype_kwargs)
 
-        # Reorder discrete values to match existing variable
         if var.is_discrete and not var.ordered:
-            new_order, old_order = var.values, coltype_kwargs.get('values',
-                                                                  var.values)
-            if new_order != old_order:
-                offset = len(new_order)
-                column = values if data.ndim > 1 else data
-                column += offset
-                for _, val in enumerate(var.values):
-                    try:
-                        oldval = old_order.index(val)
-                    except ValueError:
-                        continue
-                    bn.replace(column, offset + oldval, new_order.index(val))
+            # Reorder discrete values to match existing variable
+            reorder_values()
+
+    # ContinuousVariable.number_of_decimals is supposed to be handled by
+    # ContinuousVariable.to_val. In the interest of speed, the reader bypasses
+    # it, so we set the number of decimals here.
+    # The number of decimals is increased if not set manually (in which case
+    # var.adjust_decimals would be 0).
+    if isinstance(var, ContinuousVariable) and var.adjust_decimals:
+        ndecimals = get_number_of_decimals()
+        if var.adjust_decimals == 2 or ndecimals > var.number_of_decimals:
+            var.number_of_decimals = ndecimals
+            var.adjust_decimals = 1
 
     if isinstance(var, TimeVariable) or coltype is TimeVariable:
         # Re-parse the values because only now after coltype.make call
@@ -269,11 +294,18 @@ class FileFormatMeta(Registry):
         """
         Return ``{ext: `attr`, ...}`` dict if ``cls`` has `attr2`.
         If `attr` is '', return ``{ext: cls, ...}`` instead.
+
+        If there are multiple formats for an extension, return a format
+        with the lowest priority.
         """
-        return OrderedDict((ext, getattr(cls, attr, cls))
-                           for cls in cls.registry.values()
-                           if hasattr(cls, attr2)
-                           for ext in getattr(cls, 'EXTENSIONS', []))
+        formats = OrderedDict()
+        for format in sorted(cls.registry.values(), key=lambda x: x.PRIORITY):
+            if not hasattr(format, attr2):
+                continue
+            for ext in getattr(format, 'EXTENSIONS', []):
+                # Only adds if not yet registered
+                formats.setdefault(ext, getattr(format, attr, format))
+        return formats
 
     @property
     def names(cls):
@@ -319,7 +351,9 @@ class FileFormat(metaclass=FileFormatMeta):
     iterable (list (rows) of lists of values (cols)).
     """
 
-    PRIORITY = 10000  # Sort order in OWSave widget combo box, lower is better
+    # Priority when multiple formats support the same extension. Also
+    # the sort order in file open/save combo boxes. Lower is better.
+    PRIORITY = 10000
 
     def __init__(self, filename):
         """
@@ -738,6 +772,17 @@ class FileFormat(metaclass=FileFormatMeta):
                    val
                    for var, val in zip(vars, flatten(row))])
 
+    @classmethod
+    def qualified_name(cls):
+        return cls.__module__ + '.' + cls.__name__
+
+
+def class_from_qualified_name(format_name):
+    """ File format class from qualified name. """
+    elements = format_name.split(".")
+    m = import_module(".".join(elements[:-1]))
+    return getattr(m, elements[-1])
+
 
 class CSVReader(FileFormat):
     """Reader for comma separated files"""
@@ -765,7 +810,10 @@ class CSVReader(FileFormat):
                            encoding=encoding, errors=errors) as file:
                 # Sniff the CSV dialect (delimiter, quotes, ...)
                 try:
-                    dialect = csv.Sniffer().sniff(file.read(1024), self.DELIMITERS)
+                    dialect = csv.Sniffer().sniff(
+                        # Take first couple of *complete* lines as sample
+                        ''.join(file.readline() for _ in range(5)),
+                        self.DELIMITERS)
                 except UnicodeDecodeError as e:
                     error = e
                     continue

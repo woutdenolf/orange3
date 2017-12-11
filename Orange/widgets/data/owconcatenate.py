@@ -124,9 +124,10 @@ class OWConcatenate(widget.OWWidget):
         cb.makeConsistent()
 
         box = gui.auto_commit(
-            self.controlArea, self, "auto_commit", "Apply", commit=self.apply)
-        box.layout().insertWidget(0, self.report_button)
-        box.layout().insertSpacing(1, 20)
+            self.controlArea, self, "auto_commit", "Apply", commit=self.apply,
+            orientation=Qt.Horizontal, checkbox_label="Apply automatically")
+        box.button.setFixedWidth(180)
+        box.layout().insertStretch(0)
 
     @Inputs.primary_data
     @check_sql_input
@@ -160,9 +161,13 @@ class OWConcatenate(widget.OWWidget):
 
         if tables and self.append_source_column:
             assert domain is not None
+            names = [getattr(t, 'name', '') for t in tables]
+            if len(names) != len(set(names)):
+                names = ['{} ({})'.format(name, i)
+                         for i, name in enumerate(names)]
             source_var = Orange.data.DiscreteVariable(
                 self.source_attr_name,
-                values=["{}".format(i) for i in range(len(tables))]
+                values=names
             )
             places = ["class_vars", "attributes", "metas"]
             domain = add_columns(

@@ -50,59 +50,142 @@ class OWMergeData(widget.OWWidget):
     def __init__(self):
         super().__init__()
 
-        # data
-        self.dataA = None
-        self.dataB = None
+        self.data = None
+        self.extra_data = None
+        self.extra_data = None
 
-        # GUI
-        w = QWidget(self)
-        self.controlArea.layout().addWidget(w)
-        grid = QGridLayout()
-        grid.setContentsMargins(0, 0, 0, 0)
-        w.setLayout(grid)
+        self.model = itemmodels.VariableListModel()
+        self.model_unique_with_id = itemmodels.VariableListModel()
+        self.extra_model_unique = itemmodels.VariableListModel()
+        self.extra_model_unique_with_id = itemmodels.VariableListModel()
 
-        # attribute A selection
-        boxAttrA = gui.vBox(self, self.tr("Attribute A"), addToLayout=False)
-        grid.addWidget(boxAttrA, 0, 0)
+        box = gui.hBox(self.controlArea, box=None)
+        self.infoBoxData = gui.label(
+            box, self, self.dataInfoText(None), box="Data")
+        self.infoBoxExtraData = gui.label(
+            box, self, self.dataInfoText(None), box="Extra Data")
 
-        self.attrViewA = gui.comboBox(boxAttrA, self, 'attr_a',
-                                      orientation=Qt.Horizontal,
-                                      sendSelectedValue=True,
-                                      callback=self._invalidate)
-        self.attrModelA = itemmodels.VariableListModel()
-        self.attrViewA.setModel(self.attrModelA)
+        grp = gui.radioButtonsInBox(
+            self.controlArea, self, "merging", box="Merging",
+            callback=self.change_merging)
+        self.attr_boxes = []
 
-        # attribute  B selection
-        boxAttrB = gui.vBox(self, self.tr("Attribute B"), addToLayout=False)
-        grid.addWidget(boxAttrB, 0, 1)
+        radio_width = \
+            QApplication.style().pixelMetric(QStyle.PM_ExclusiveIndicatorWidth)
 
-        self.attrViewB = gui.comboBox(boxAttrB, self, 'attr_b',
-                                      orientation=Qt.Horizontal,
-                                      sendSelectedValue=True,
-                                      callback=self._invalidate)
-        self.attrModelB = itemmodels.VariableListModel()
-        self.attrViewB.setModel(self.attrModelB)
+        def add_option(label, pre_label, between_label,
+                       merge_type, model, extra_model):
+            gui.appendRadioButton(grp, label)
+            vbox = gui.vBox(grp)
+            box = gui.hBox(vbox)
+            box.layout().addSpacing(radio_width)
+            self.attr_boxes.append(box)
+            gui.widgetLabel(box, pre_label)
+            model[:] = [getattr(self, 'attr_{}_data'.format(merge_type))]
+            extra_model[:] = [getattr(self, 'attr_{}_extra'.format(merge_type))]
+            cb = gui.comboBox(box, self, 'attr_{}_data'.format(merge_type),
+                              callback=self._invalidate, model=model)
+            cb.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Fixed)
+            cb.setFixedWidth(190)
+            gui.widgetLabel(box, between_label)
+            cb = gui.comboBox(box, self, 'attr_{}_extra'.format(merge_type),
+                              callback=self._invalidate, model=extra_model)
+            cb.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Fixed)
+            cb.setFixedWidth(190)
+            vbox.layout().addSpacing(6)
 
-        # info A
-        boxDataA = gui.vBox(self, self.tr("Data A Input"), addToLayout=False)
-        grid.addWidget(boxDataA, 1, 0)
-        self.infoBoxDataA = gui.widgetLabel(boxDataA, self.dataInfoText(None))
+        add_option("Append columns from Extra Data",
+                   "by matching", "with", "augment",
+                   self.model, self.extra_model_unique)
+        add_option("Find matching rows", "where",
+                   "equals", "merge",
+                   self.model_unique_with_id, self.extra_model_unique_with_id)
+        add_option("Concatenate tables, merge rows",
+                   "where", "equals", "combine",
+                   self.model_unique_with_id, self.extra_model_unique_with_id)
+        self.set_merging()
 
-        # info B
-        boxDataB = gui.vBox(self, self.tr("Data B Input"), addToLayout=False)
-        grid.addWidget(boxDataB, 1, 1)
-        self.infoBoxDataB = gui.widgetLabel(boxDataB, self.dataInfoText(None))
+    def set_merging(self):
+        # pylint: disable=invalid-sequence-index
+        # all boxes should be hidden before one is shown, otherwise widget's
+        # layout changes height
+        for box in self.attr_boxes:
+            box.hide()
+        self.attr_boxes[self.merging].show()
 
-        gui.rubber(self)
+    def change_merging(self):
+        self.set_merging()
+        self._invalidate()
 
-    def _setAttrs(self, model, data, othermodel, otherdata):
-        model[:] = allvars(data) if data is not None else []
+    @staticmethod
+    def _set_unique_model(data, model):
+        if data is None:
+            model[:] = []
+            return
+        m = [INDEX]
+        for attr in chain(data.domain.variables, data.domain.metas):
+            col = data.get_column_view(attr)[0]
+            if attr.is_primitive():
+                col = col.astype(float)
+                col = col[~np.isnan(col)]
+            else:
+                col = col[~(col == "")]
+            if len(np.unique(col)) == len(col):
+                m.append(attr)
+        model[:] = m
 
-        if data is not None and otherdata is not None and \
-                len(numpy.intersect1d(data.ids, otherdata.ids)):
-            for model_ in (model, othermodel):
-                if len(model_) and model_[0] != INSTANCEID:
-                    model_.insert(0, INSTANCEID)
+    @staticmethod
+    def _set_model(data, model):
+        if data is None:
+            model[:] = []
+            return
+        model[:] = list(chain([INDEX], data.domain.variables, data.domain.metas))
+
+    def _add_instanceid_to_models(self):
+        needs_id = self.data is not None and self.extra_data is not None and \
+            len(np.intersect1d(self.data.ids, self.extra_data.ids))
+        for model in (self.model_unique_with_id,
+                      self.extra_model_unique_with_id):
+            has_id = INSTANCEID in model
+            if needs_id and not has_id:
+                model.insert(0, INSTANCEID)
+            elif not needs_id and has_id:
+                model.remove(INSTANCEID)
+
+    def _init_combo_current_items(self, variables, models):
+        for var, model in zip(variables, models):
+            value = getattr(self, var)
+            if len(model) > 0:
+                setattr(self, var, value if value in model else INDEX)
+
+    def _find_best_match(self):
+        def get_unique_str_metas_names(model_):
+            return [m for m in model_ if isinstance(m, StringVariable)]
+
+        def best_match(model, extra_model):
+            attr, extra_attr, n_max_intersect = INDEX, INDEX, 0
+            str_metas = get_unique_str_metas_names(model)
+            extra_str_metas = get_unique_str_metas_names(extra_model)
+            for m_a, m_b in product(str_metas, extra_str_metas):
+                n_inter = len(np.intersect1d(self.data[:, m_a].metas,
+                                             self.extra_data[:, m_b].metas))
+                if n_inter > n_max_intersect:
+                    n_max_intersect, attr, extra_attr = n_inter, m_a, m_b
+            return attr, extra_attr
+
+        def set_attrs(attr_name, attr_extra_name, attr, extra_attr):
+            if getattr(self, attr_name) == INDEX and \
+                    getattr(self, attr_extra_name) == INDEX:
+                setattr(self, attr_name, attr)
+                setattr(self, attr_extra_name, extra_attr)
+
+        if self.data and self.extra_data:
+            attrs = best_match(self.model, self.extra_model_unique)
+            set_attrs("attr_augment_data", "attr_augment_extra", *attrs)
+            attrs = best_match(self.model_unique_with_id,
+                               self.extra_model_unique_with_id)
+            set_attrs("attr_merge_data", "attr_merge_extra", *attrs)
+            set_attrs("attr_combine_data", "attr_combine_extra", *attrs)
 
     @Inputs.data
     @check_sql_input

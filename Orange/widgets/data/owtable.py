@@ -364,7 +364,7 @@ class OWDataTable(widget.OWWidget):
     name = "Data Table"
     description = "View the data set in a spreadsheet."
     icon = "icons/Table.svg"
-    priority = 10
+    priority = 50
 
     buttons_area_orientation = Qt.Vertical
 
@@ -658,7 +658,7 @@ class OWDataTable(widget.OWWidget):
                 RichTableDecorator.Labels | RichTableDecorator.Name)
 
             labelnames = set()
-            for a in model.source.domain:
+            for a in model.source.domain.variables:
                 labelnames.update(a.attributes.keys())
             labelnames = sorted(
                 [label for label in labelnames if not label.startswith("_")])
@@ -776,9 +776,12 @@ class OWDataTable(widget.OWWidget):
 
         indexes = selection.indexes()
 
-        rows = list(set(ind.row() for ind in indexes))
+        rows = numpy.unique([ind.row() for ind in indexes])
         # map the rows through the applied sorting (if any)
-        rows = sorted(model.mapToTableRows(rows))
+        rows = model.mapToSourceRows(rows)
+        rows.sort()
+        rows = rows.tolist()
+
         cols = sorted(set(ind.column() for ind in indexes))
         return rows, cols
 
