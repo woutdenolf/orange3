@@ -141,6 +141,12 @@ class OWWidget(QDialog, OWComponent, Report, ProgressBarMixin,
     #: static size contents.
     resizing_enabled = True
 
+    #: Is the widget allowing connections bringing cycling in the workflow.
+    allows_cycle = False
+
+    #: Is the signals received by the widget should be compressed
+    compress_signal = True
+
     blockingStateChanged = Signal(bool)
     processingStateChanged = Signal(int)
 
@@ -257,7 +263,7 @@ class OWWidget(QDialog, OWComponent, Report, ProgressBarMixin,
                       ("name", "icon", "description", "priority", "keywords",
                        "help", "help_ref", "url",
                        "version", "background", "replaces", "allows_cycle",
-                       "compress_received_signals")}
+                       "compress_signal")}
         properties["id"] = cls.id or cls.__module__
         properties["inputs"] = cls.get_signals("inputs")
         properties["outputs"] = cls.get_signals("outputs")
