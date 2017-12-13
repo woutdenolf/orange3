@@ -335,7 +335,7 @@ class SignalManager(QObject):
         signals_in = self.pending_input_signals(node)
         self.remove_pending_signals(node)
 
-        if node.compress_received_signals() is True:
+        if node.compress_signal() is True:
             signals_in = self.compress_signals(signals_in)
 
         log.debug("Processing %r, sending %i signals.",
