@@ -22,16 +22,24 @@ from AnyQt.QtCore import (
     Qt, QEvent, QSize, QUrl, QTimer, QFile, QByteArray, QSettings, QT_VERSION
 )
 
-try:
-    from AnyQt.QtWebEngineWidgets import QWebEngineView
-    USE_WEB_ENGINE = True
-except ImportError:
-    try:
-        from AnyQt.QtWebKitWidgets import QWebView
-    except ImportError:
+# env variable used for tomwer unit test using xvfb-run. Failed to load openGLX
+# when import AnyQt. Don't know why for now
+if os.environ.get("USE_WEB_ENGINE")and \
+                os.environ.get("USE_WEB_ENGINE", "") == 'False':
         QWebView = None
-    from AnyQt.QtNetwork import QNetworkDiskCache
-    USE_WEB_ENGINE = False
+        from AnyQt.QtNetwork import QNetworkDiskCache
+        USE_WEB_ENGINE = False
+else:
+    try:
+        from AnyQt.QtWebEngineWidgets import QWebEngineView
+        USE_WEB_ENGINE = True
+    except ImportError:
+        try:
+            from AnyQt.QtWebKitWidgets import QWebView
+        except ImportError:
+            QWebView = None
+        from AnyQt.QtNetwork import QNetworkDiskCache
+        USE_WEB_ENGINE = False
 
 
 from AnyQt.QtCore import pyqtProperty as Property
