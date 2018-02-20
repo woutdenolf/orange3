@@ -250,9 +250,10 @@ def main(argv=None):
     parser.add_option("--qt",
                       help="Additional arguments for QApplication",
                       type="str", default=None)
-    parser.add_option('--only-addon',
+    parser.add_option('--all-addon',
                       action="store_true",
-                      help='display only add-on widgets')
+                      help='display only add-on widgets',
+                      default=False)
 
     (options, args) = parser.parse_args(argv[1:])
 
@@ -414,10 +415,10 @@ def main(argv=None):
         reg_cache = None
 
 
-    if options.only_addon:
-        only_addon = True
+    if options.all_addon:
+        all_addon = True
     else:
-        only_addon = False
+        all_addon = False
 
     widget_discovery = qt.QtWidgetDiscovery(cached_descriptions=reg_cache)
 
@@ -456,7 +457,7 @@ def main(argv=None):
         widget_registry = qt.QtWidgetRegistry(widget_registry)
     else:
         entry_points = config.widgets_entry_points(
-            with_default_entry=(only_addon is False))
+            with_default_entry=(all_addon is True))
         widget_discovery.run(entry_points)
         # Store cached descriptions
         cache.save_registry_cache(widget_discovery.cached_descriptions)
