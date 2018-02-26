@@ -51,6 +51,13 @@ import pyqtgraph
 pyqtgraph.setConfigOption("exitCleanup", False)
 
 
+
+MAX_LOG_FILE = 10
+"""Maximal log file kepts for orange"""
+
+LOG_FILE_NAME = 'orange.log'
+
+
 def fix_osx_10_9_private_font():
     # Fix fonts on Os X (QTBUG 47206, 40833, 32789)
     if sys.platform == "darwin":
@@ -186,7 +193,26 @@ def check_for_updates():
         return thread
 
 
+def dealWithLogFile():
+    """Move log file history across log file hierarchy"""
+    for i in range(MAX_LOG_FILE):
+        iLog = MAX_LOG_FILE - i
+        print('iLog is %s' %iLog)
+        maxLogNameN1 = LOG_FILE_NAME + '.' + str(iLog)
+        if iLog - 1 is 0:
+            maxLogNameN2 = 'orange.log'
+        else:
+            maxLogNameN2 = LOG_FILE_NAME + '.' + str(iLog - 1)
+        if os.path.exists(maxLogNameN2):
+            print('replace %s by %s' % (maxLogNameN2, maxLogNameN1))
+            shutil.copy(maxLogNameN2, maxLogNameN1)
+
+
 def main(argv=None):
+    dealWithLogFile()
+    logging.basicConfig(filename='orange.log', filemode='w',
+                        level=logging.DEBUG)
+
     if argv is None:
         argv = sys.argv
 
@@ -474,6 +500,7 @@ def main(argv=None):
     except BaseException:
         log.error("Error in main event loop.", exc_info=True)
 
+    log.info('orange closing')
     canvas_window.deleteLater()
     app.processEvents()
     app.flush()
