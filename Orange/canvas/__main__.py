@@ -59,6 +59,13 @@ LOG_FILE_NAME = 'orange.log'
 
 default_proxies = None
 
+MAX_LOG_FILE = 10
+"""Maximal log file kepts for orange"""
+
+LOG_FILE_NAME = 'orange.log'
+
+LOG_FOLDER = '/var/log/orange'
+
 
 def fix_osx_10_9_private_font():
     # Fix fonts on Os X (QTBUG 47206, 40833, 32789)
@@ -222,12 +229,17 @@ def check_for_updates():
 def dealWithLogFile():
     """Move log file history across log file hierarchy"""
     for i in range(MAX_LOG_FILE):
+        logFile = LOG_FILE_NAME
+        if os.path.exists(LOG_FOLDER) and os.access(LOG_FOLDER, os.W_OK):
+            logFile = os.path.join(LOG_FOLDER, logFile)
+        defLogName = logFile
+
         iLog = MAX_LOG_FILE - i
-        maxLogNameN1 = LOG_FILE_NAME + '.' + str(iLog)
+        maxLogNameN1 = logFile + '.' + str(iLog)
         if iLog - 1 is 0:
-            maxLogNameN2 = 'orange.log'
+            maxLogNameN2 = defLogName
         else:
-            maxLogNameN2 = LOG_FILE_NAME + '.' + str(iLog - 1)
+            maxLogNameN2 = logFile + '.' + str(iLog - 1)
         if os.path.exists(maxLogNameN2):
             try:
                 stat = os.stat(maxLogNameN2)
@@ -239,18 +251,13 @@ def dealWithLogFile():
 
 def main(argv=None):
     dealWithLogFile()
-
-    logging.basicConfig(filename='orange.log', filemode='w',
-                        level=logging.DEBUG)
-
     logFile = LOG_FILE_NAME
     if os.path.exists(LOG_FOLDER) and os.access(LOG_FOLDER, os.W_OK):
         logFile = os.path.join(LOG_FOLDER, logFile)
-        if not os.path.exists(logFile) or os.access(logFile, os.W_OK):
-            logging.basicConfig(filename=logFile,
-                                filemode='w',
-                                level=logging.DEBUG,
-                                format='%(asctime)s %(message)s')
+        print('save in %s' % logFile)
+        logging.basicConfig(filename=logFile, filemode='w',
+                            level=logging.DEBUG,
+                            format='%(asctime)s %(message)s)
 
     if argv is None:
         argv = sys.argv
@@ -325,6 +332,14 @@ def main(argv=None):
     stream_hander = logging.StreamHandler()
     stream_hander.setLevel(level=levels[options.log_level])
     rootlogger.addHandler(stream_hander)
+
+    if os.path.exists(LOG_FOLDER):
+        rootlogger.warning("%s is not existing. Can't save log file"
+                           "" % LOG_FOLDER)
+
+    if not os.access(LOG_FOLDER, os.W_OK):
+        rootlogger.warning("No write right on %s. Can't save log file"
+                           "" % LOG_FOLDER)
 
     log.info("Starting 'Orange Canvas' application.")
 
