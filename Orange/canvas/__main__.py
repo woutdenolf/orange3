@@ -166,6 +166,14 @@ def main(argv=None):
     parser.add_option("--qt",
                       help="Additional arguments for QApplication",
                       type="str", default=None)
+    parser.add_option('--only-addon',
+                      action="store_true",
+                      help='display only add-on widgets',
+                      default=False)
+    parser.add_option('--color-stdout-logs',
+                      action="store_true",
+                      help='instead of having logs in the log view, color logs of the stdout',
+                      default=False)
 
     (options, args) = parser.parse_args(argv[1:])
 
@@ -303,6 +311,17 @@ def main(argv=None):
     else:
         reg_cache = None
 
+    if options.only_addon:
+        only_addon = True
+    else:
+        only_addon = False
+
+    if options.color_stdout_logs is True:
+        color_logs = True
+    else:
+        color_logs = False
+    os.environ['ORANGE_COLOR_STDOUT_LOG'] = str(color_logs)
+
     widget_discovery = qt.QtWidgetDiscovery(cached_descriptions=reg_cache)
 
     widget_registry = qt.QtWidgetRegistry()
@@ -407,8 +426,9 @@ def main(argv=None):
         stdout.flushed.connect(sys.stdout.flush)
 
     stderr = TextStream()
-    error_writer = log_view.formated(color=Qt.red)
-    stderr.stream.connect(error_writer.write)
+    if color_logs is False:
+        error_writer = log_view.formated(color=Qt.red)
+        stderr.stream.connect(error_writer.write)
     if sys.stderr:
         stderr.stream.connect(sys.stderr.write)
         stderr.flushed.connect(sys.stderr.flush)
