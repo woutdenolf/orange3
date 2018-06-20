@@ -11,10 +11,10 @@ from sklearn.metrics import r2_score
 
 import Orange
 from Orange.data import Table, Domain, DiscreteVariable
-from Orange.canvas import report
 from Orange.data.sql.table import SqlTable, AUTO_DL_LIMIT
 from Orange.preprocess.score import ReliefF, RReliefF
 from Orange.widgets import gui
+from Orange.widgets import report
 from Orange.widgets.settings import \
     DomainContextHandler, Setting, ContextSetting, SettingProvider
 from Orange.widgets.utils.itemmodels import DomainModel
@@ -158,7 +158,8 @@ class OWScatterPlot(OWWidget):
 
         common_options = dict(
             labelWidth=50, orientation=Qt.Horizontal, sendSelectedValue=True,
-            valueType=str)
+            valueType=str, contentsLength=14
+        )
         box = gui.vBox(self.controlArea, "Axis Data")
         dmod = DomainModel
         self.xy_model = DomainModel(dmod.MIXED, valid_types=dmod.PRIMITIVE)

@@ -36,7 +36,7 @@ from Orange.widgets import gui
 from Orange.widgets.settings import ContextSetting, DomainContextHandler
 from Orange.widgets.utils import itemmodels, vartype
 from Orange.widgets.utils.sql import check_sql_input
-from Orange.canvas import report
+from Orange.widgets import report
 from Orange.widgets.widget import OWWidget, Msg, Input, Output
 
 FeatureDescriptor = \
@@ -121,7 +121,7 @@ class FeatureEditor(QFrame):
 
         self.attrs_model = itemmodels.VariableListModel(
             ["Select Feature"], parent=self)
-        self.attributescb = QComboBox(
+        self.attributescb = gui.OrangeComboBox(
             minimumContentsLength=16,
             sizeAdjustPolicy=QComboBox.AdjustToMinimumContentsLengthWithIcon,
             sizePolicy=QSizePolicy(QSizePolicy.Minimum, QSizePolicy.Minimum)
@@ -137,7 +137,7 @@ class FeatureEditor(QFrame):
             [''],
             [self.FUNCTIONS[func].__doc__ for func in sorted_funcs])
 
-        self.functionscb = QComboBox(
+        self.functionscb = gui.OrangeComboBox(
             minimumContentsLength=16,
             sizeAdjustPolicy=QComboBox.AdjustToMinimumContentsLengthWithIcon,
             sizePolicy=QSizePolicy(QSizePolicy.Minimum, QSizePolicy.Minimum))

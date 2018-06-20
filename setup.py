@@ -19,8 +19,8 @@ from distutils.command.build_ext import build_ext
 
 NAME = 'Orange3'
 
-VERSION = '3.10.0'
-ISRELEASED = False
+VERSION = '3.13.0'
+ISRELEASED = True
 # full version identifier including a git revision identifier for development
 # build/releases (this is filled/updated in `write_version_py`)
 FULLVERSION = VERSION
@@ -180,10 +180,9 @@ PACKAGE_DATA = {
     "Orange.canvas": ["icons/*.png", "icons/*.svg"],
     "Orange.canvas.styles": ["*.qss", "orange/*.svg"],
     "Orange.canvas.application.workflows": ["*.ows"],
-    "Orange.canvas.report": ["icons/*.svg", "*.html"],
     "Orange.widgets": ["icons/*.png",
-                       "icons/*.svg",
-                       "_highcharts/*"],
+                       "icons/*.svg"],
+    "Orange.widgets.report": ["icons/*.svg", "*.html"],
     "Orange.widgets.tests": ["datasets/*.tab",
                              "workflows/*.ows"],
     "Orange.widgets.data": ["icons/*.svg",

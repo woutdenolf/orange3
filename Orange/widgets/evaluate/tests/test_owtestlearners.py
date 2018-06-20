@@ -5,9 +5,11 @@ import unittest
 
 import numpy as np
 from AnyQt.QtWidgets import QMenu
-from AnyQt.QtCore import QPoint
+from AnyQt.QtCore import QPoint, Qt
+from AnyQt.QtTest import QTest
 
-from Orange.classification import MajorityLearner
+from Orange.classification import MajorityLearner, LogisticRegressionLearner
+from Orange.classification.majority import ConstantModel
 from Orange.data import Table, Domain, DiscreteVariable, ContinuousVariable
 from Orange.evaluation import Results, TestOnTestData
 from Orange.evaluation.scoring import ClassificationScore, RegressionScore, \
@@ -19,12 +21,19 @@ from Orange.widgets.evaluate.owtestlearners import (
 from Orange.widgets.settings import (
     ClassValuesContextHandler, PerfectDomainContextHandler)
 from Orange.widgets.tests.base import WidgetTest
+from Orange.widgets.tests.utils import simulate
 
 
 class TestOWTestLearners(WidgetTest):
     def setUp(self):
         super().setUp()
         self.widget = self.create_widget(OWTestLearners)  # type: OWTestLearners
+
+        self.scores_domain = Domain(
+            [ContinuousVariable("a"), ContinuousVariable("b")],
+            [DiscreteVariable("c", values=["y", "n"])])
+
+        self.scores_table_values = [[1, 1, 1.23, 23.8], [1., 2., 3., 4.]]
 
     def tearDown(self):
         self.widget.onDeleteWidget()
@@ -246,6 +255,171 @@ class TestOWTestLearners(WidgetTest):
             del Score.registry["NewScore"]
             del Score.registry["NewClassificationScore"]
             del Score.registry["NewRegressionScore"]
+
+    def test_target_changing(self):
+        data = Table("iris")
+        w = self.widget  #: OWTestLearners
+
+        w.n_folds = 2
+        self.send_signal(self.widget.Inputs.train_data, data)
+        self.send_signal(self.widget.Inputs.learner,
+                         LogisticRegressionLearner(), 0, wait=5000)
+
+        average_auc = float(w.view.model().item(0, 1).text())
+
+        simulate.combobox_activate_item(w.controls.class_selection, "Iris-setosa")
+        setosa_auc = float(w.view.model().item(0, 1).text())
+
+        simulate.combobox_activate_item(w.controls.class_selection, "Iris-versicolor")
+        versicolor_auc = float(w.view.model().item(0, 1).text())
+
+        simulate.combobox_activate_item(w.controls.class_selection, "Iris-virginica")
+        virginica_auc = float(w.view.model().item(0, 1).text())
+
+        self.assertGreater(average_auc, versicolor_auc)
+        self.assertGreater(average_auc, virginica_auc)
+        self.assertLess(average_auc, setosa_auc)
+        self.assertGreater(setosa_auc, versicolor_auc)
+        self.assertGreater(setosa_auc, virginica_auc)
+
+    def test_resort_on_data_change(self):
+        iris = Table("iris")
+        # one example is included from the other class
+        # to keep F1 from complaining
+        setosa = iris[:51]
+        versicolor = iris[49:100]
+
+        class SetosaLearner:
+            def __call__(self, data):
+                model = ConstantModel([1., 0, 0])
+                model.domain = iris.domain
+                return model
+
+        class VersicolorLearner:
+            def __call__(self, data):
+                model = ConstantModel([0, 1., 0])
+                model.domain = iris.domain
+                return model
+
+        # this is done manually to avoid multiple computations
+        self.widget.resampling = 5
+        self.widget.set_train_data(iris)
+        self.widget.set_learner(SetosaLearner(), 1)
+        self.widget.set_learner(VersicolorLearner(), 2)
+
+        self.send_signal(self.widget.Inputs.test_data, setosa, wait=5000)
+
+        self.widget.show()
+        header = self.widget.view.horizontalHeader()
+        QTest.mouseClick(header.viewport(), Qt.LeftButton)
+
+        # Ensure that the click on header caused an ascending sort
+        # Ascending sort means that wrong model should be listed first
+        self.assertEqual(header.sortIndicatorOrder(), Qt.AscendingOrder)
+        self.assertEqual(
+            self.widget.view.model().item(0, 0).text(),
+            "VersicolorLearner")
+
+        self.send_signal(self.widget.Inputs.test_data, versicolor, wait=5000)
+        self.assertEqual(
+            self.widget.view.model().item(0, 0).text(),
+            "SetosaLearner")
+
+        self.widget.hide()
+
+    def _retrieve_scores(self):
+        w = self.widget
+        auc = w.view.model().item(0, 1).text()
+        auc = float(auc) if auc != "" else None
+        ca = float(w.view.model().item(0, 2).text())
+        f1 = float(w.view.model().item(0, 3).text())
+        precision = float(w.view.model().item(0, 4).text())
+        recall = float(w.view.model().item(0, 5).text())
+        return auc, ca, f1, precision, recall
+
+    def _test_scores(self, train_data, test_data, learner, sampling, n_folds):
+        w = self.widget  #: OWTestLearners
+        w.controls.resampling.buttons[sampling].click()
+        if n_folds is not None:
+            w.n_folds = n_folds
+
+        self.send_signal(self.widget.Inputs.train_data, train_data)
+        if test_data is not None:
+            self.send_signal(self.widget.Inputs.test_data, test_data)
+        self.send_signal(self.widget.Inputs.learner, learner, 0, wait=5000)
+        return self._retrieve_scores()
+
+    def test_scores_constant_all_same(self):
+        table = Table(
+            self.scores_domain,
+            list(zip(*self.scores_table_values + [list("yyyy")]))
+        )
+
+        self.assertTupleEqual(self._test_scores(
+            table, table, ConstantLearner(), OWTestLearners.TestOnTest, None),
+                              (None, 1, 1, 1, 1))
+
+    def test_scores_log_reg_overfitted(self):
+        table = Table(
+            self.scores_domain,
+            list(zip(*self.scores_table_values + [list("yyyn")]))
+        )
+
+        self.assertTupleEqual(self._test_scores(
+            table, table, LogisticRegressionLearner(),
+            OWTestLearners.TestOnTest, None),
+                              (1, 1, 1, 1, 1))
+
+    def test_scores_log_reg_bad(self):
+        table_train = Table(
+            self.scores_domain,
+            list(zip(*self.scores_table_values + [list("nnny")]))
+        )
+        table_test = Table(
+            self.scores_domain,
+            list(zip(*self.scores_table_values + [list("yyyn")]))
+        )
+
+        self.assertTupleEqual(self._test_scores(
+            table_train, table_test, LogisticRegressionLearner(),
+            OWTestLearners.TestOnTest, None),
+                              (0, 0, 0, 0, 0))
+
+    def test_scores_log_reg_bad2(self):
+        table_train = Table(
+            self.scores_domain,
+            list(zip(*(self.scores_table_values + [list("nnyy")]))))
+        table_test = Table(
+            self.scores_domain,
+            list(zip(*(self.scores_table_values + [list("yynn")]))))
+        self.assertTupleEqual(self._test_scores(
+            table_train, table_test, LogisticRegressionLearner(),
+            OWTestLearners.TestOnTest, None),
+                              (0, 0, 0, 0, 0))
+
+    def test_scores_log_reg_advanced(self):
+        table_train = Table(
+            self.scores_domain, list(zip(
+                [1, 1, 1.23, 23.8, 5.], [1., 2., 3., 4., 3.], "yyynn"))
+        )
+        table_test = Table(
+            self.scores_domain, list(zip(
+                [1, 1, 1.23, 23.8, 5.], [1., 2., 3., 4., 3.], "yynnn"))
+        )
+
+        self.assertTupleEqual(self._test_scores(
+            table_train, table_test, LogisticRegressionLearner(),
+            OWTestLearners.TestOnTest, None),
+                              (0.667, 0.8, 0.8, 0.867, 0.8))
+
+    def test_scores_cross_validation(self):
+        """
+        Test more than two classes and cross-validation
+        """
+        self.assertTupleEqual(self._test_scores(
+            Table("iris")[::15], None, LogisticRegressionLearner(),
+            OWTestLearners.KFold, 0),
+                              (0.917, 0.7, 0.6, 0.55, 0.7))
 
 
 class TestHelpers(unittest.TestCase):

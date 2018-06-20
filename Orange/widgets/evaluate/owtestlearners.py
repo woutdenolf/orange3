@@ -293,6 +293,7 @@ class OWTestLearners(OWWidget):
 
         self.view = gui.TableView(
             wordWrap=True,
+            editTriggers=gui.TableView.NoEditTriggers
         )
         header = self.view.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeToContents)
@@ -567,7 +568,7 @@ class OWTestLearners(OWWidget):
 
                     # Cell variable is used immediatelly, it's not stored
                     # pylint: disable=cell-var-from-loop
-                    stats = [Try(scorer_caller(scorer, ovr_results))
+                    stats = [Try(scorer_caller(scorer, ovr_results, target=1))
                              for scorer in self.scorers]
                 else:
                     stats = None
@@ -585,6 +586,13 @@ class OWTestLearners(OWWidget):
                     row.append(item)
 
             model.appendRow(row)
+
+        # Resort rows based on current sorting
+        header = self.view.horizontalHeader()
+        model.sort(
+            header.sortIndicatorSection(),
+            header.sortIndicatorOrder()
+        )
 
         self.error("\n".join(errors), shown=bool(errors))
         self.Warning.scores_not_computed(shown=has_missing_scores)
@@ -950,9 +958,9 @@ class OWTestLearners(OWWidget):
         super().onDeleteWidget()
 
 
-def scorer_caller(scorer, ovr_results):
+def scorer_caller(scorer, ovr_results, target=None):
     if scorer.is_binary:
-        return lambda: scorer(ovr_results, target=1, average='weighted')
+        return lambda: scorer(ovr_results, target=target, average='weighted')
     else:
         return lambda: scorer(ovr_results)
 

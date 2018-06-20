@@ -25,10 +25,13 @@ def _count_nans_per_row_sparse(X, weights, dtype=None):
 
         w = sp.coo_matrix((data_weights, (nan_rows, nan_cols)), shape=X.shape)
         w = w.tocsr()
+        return np.asarray(w.sum(axis=1), dtype=dtype).ravel()
 
-        return np.fromiter((np.sum(row.data) for row in w), dtype=dtype)
-
-    return np.fromiter((np.isnan(row.data).sum() for row in X), dtype=dtype)
+    if isinstance(X, (sp.csr_matrix, sp.csc_matrix)):
+        X = type(X)((np.isnan(X.data), X.indices, X.indptr), X.shape)
+        return np.asarray(X.sum(axis=1), dtype=dtype).ravel()
+    else:  # pragma: no cover
+        raise TypeError("unsupported type '{}'".format(type(X).__name__))
 
 
 def sparse_count_implicit_zeros(x):
@@ -233,7 +236,8 @@ def contingency(X, y, max_X=None, max_y=None, weights=None, mask=None):
         The maximal value in the array
     max_y : int
         The maximal value in `y`
-    weights : ...
+    weights : array_like
+        Row weights. When not None, contingencies contain weighted counts
     mask : sequence
         Discrete columns of X.
 
@@ -247,9 +251,6 @@ def contingency(X, y, max_X=None, max_y=None, weights=None, mask=None):
     nans : array_like
         Number of nans in each column of X for each unique value of y.
     """
-    if weights is not None and np.any(weights) and np.unique(weights)[0] != 1:
-        raise ValueError('weights not yet supported')
-
     was_1d = False
     if X.ndim == 1:
         X = X[..., np.newaxis]
@@ -268,7 +269,8 @@ def contingency(X, y, max_X=None, max_y=None, weights=None, mask=None):
             col = np.ravel(col.todense())
         contingencies.append(
             bincount(y + ny * col,
-                     minlength=ny * nx)[0].reshape(nx, ny).T)
+                     minlength=ny * nx,
+                     weights=weights)[0].reshape(nx, ny).T)
         nans.append(
             bincount(y[np.isnan(col)], minlength=ny)[0])
     if was_1d:

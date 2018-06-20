@@ -20,7 +20,7 @@ from AnyQt.QtWidgets import (
 )
 
 from Orange.base import SklModel, Model
-from Orange.canvas.report.owreport import OWReport
+from Orange.widgets.report.owreport import OWReport
 from Orange.classification.base_classification import (
     LearnerClassification, ModelClassification
 )
@@ -244,7 +244,42 @@ class WidgetTest(GuiTest):
             spy = QSignalSpy(widget.blockingStateChanged)
             self.assertTrue(spy.wait(timeout=wait))
 
-    def get_output(self, output, widget=None, wait=5000):
+    def wait_until_stop_blocking(self, widget=None, wait=DEFAULT_TIMEOUT):
+        """Wait until the widget stops blocking i.e. finishes computation.
+
+        Parameters
+        ----------
+        widget : Optional[OWWidget]
+            widget to send signal to. If not set, self.widget is used
+        wait : int
+            The amount of time to wait for the widget to complete.
+
+        """
+        if widget is None:
+            widget = self.widget
+
+        if widget.isBlocking():
+            spy = QSignalSpy(widget.blockingStateChanged)
+            self.assertTrue(spy.wait(timeout=wait))
+
+    def commit_and_wait(self, widget=None, wait=DEFAULT_TIMEOUT):
+        """Unconditinal commit and wait to stop blocking if needed.
+
+        Parameters
+        ----------
+        widget : Optional[OWWidget]
+            widget to send signal to. If not set, self.widget is used
+        wait : int
+            The amount of time to wait for the widget to complete.
+
+        """
+        if widget is None:
+            widget = self.widget
+
+        widget.unconditional_commit()
+        self.wait_until_stop_blocking(widget=widget, wait=wait)
+
+    def get_output(self, output, widget=None, wait=DEFAULT_TIMEOUT):
         """Return the last output that has been sent from the widget.
 
         Parameters
@@ -273,7 +308,6 @@ class WidgetTest(GuiTest):
         assert output in (out.name for out in outputs), \
             "widget {} has no output {}".format(widget.name, output)
         return self.signal_manager.outputs.get((widget, output), None)
-
 
     @contextmanager
     def modifiers(self, modifiers):

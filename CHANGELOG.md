@@ -6,6 +6,65 @@ Change Log
 * ...
 
 
+[3.13.0] - 2018-04-17
+--------------------
+##### Enhancements
+* canvas/add-ons: Add extra packages via a name input dialog ([#3006](../../pull/3006))
+* Variable lists (with QListView) optimizations ([#2994](../../pull/2994))
+
+##### Bugfixes
+* Add-ons working again (PyPI JSON interface + local official index) ([#3005](../../pull/3005))
+* Fix variable type guessing ([#2998](../../pull/2998))
+* Addon dialog crashes when site-packages directory does not exist ([#2988](../../pull/2988))
+* Fix reading double quoted text fields ([#2989](../../pull/2989))
+
+[3.12.0] - 2018-04-06
+--------------------
+##### Enhancements
+* owselectrows: Change defaults for 'Purging' ([#2969](../../pull/2969))
+* statistics: Speed up countnans for sparse matrices ([#2965](../../pull/2965))
+
+##### Bugfixes
+* Sieve Diagram: Fix spacing of axis labels ([#2971](../../pull/2971))
+* Fix data reading speed ([#2923](../../pull/2923))
+* KMeans clear results on k change, do not recluster ([#2915](../../pull/2915))
+* gui.ControlledList: Take a weakref to listBox ([#2962](../../pull/2962))
+* WidgetManager: Schedule delayed deletion for managed OWWidgets ([#2963](../../pull/2963))
+* domaineditor: Give the VarTableModel a parent ([#2961](../../pull/2961))
+* scatterplot: limit number of points displayed in tooltip ([#2980](../../pull/2980))
+* Speed-up prediction by circumventing Instance-specific prediction. ([#2959](../../pull/2959))
+* Vizrank: Properly shutdown/wait when parent deleted ([#2960](../../pull/2960))
+* Test & Score: Make the scores view table non-editable ([#2947](../../pull/2947))
+
+
+[3.11.0] - 2018-03-07
+--------------------
+##### Enhancements
+* Distances: Optimize PearsonR/SpearmanR ([#2852](../../pull/2852))
+* Data Table: Optimize performance ([#2905](../../pull/2905))
+
+##### Bugfixes
+* Save Image to SVG fixed on Qt5 ([#2930](../../pull/2930))
+* Test & Score: Resort scores when data changes ([#2931](../../pull/2931))
+* distribution.py: Fix computation on multiclass data ([#2903](../../pull/2903))
+* contingency.pyx: Fix out of bound write ([#2924](../../pull/2924))
+* Test and Score: Fix averaging over classes for binary scores ([#2918](../../pull/2918))
+* sgd: Change deprecated n_iter to max_iter ([#2920](../../pull/2920))
+* heatmap: Do not crash on all zero column ([#2916](../../pull/2916))
+
+
+[3.10.0] - 2018-02-19
+--------------------
+##### Enhancements
+* Select Rows: Add annotated data output ([#2908](../../pull/2908))
+* canvas: Open dropped ows files ([#2885](../../pull/2885))
+* Settings for HTTP and HTTPS proxies in the canvas ([#2906](../../pull/2906))
+* Add-ons: Option to list only trusted add-ons ([#2899](../../pull/2899))
+
+##### Bugfixes
+* SPG Legend: Fix vertical spacing ([#2914](../../pull/2914))
+
+
 [3.9.1] - 2018-02-02
 --------------------
 ##### Enhancements
@@ -766,7 +825,11 @@ Change Log
 * Initial version based on Python 1.5.2 and Qt 2.3
 
 
-[next]: https://github.com/biolab/orange3/compare/3.9.1...HEAD
+[next]: https://github.com/biolab/orange3/compare/3.13.0...HEAD
+[3.13.0]: https://github.com/biolab/orange3/compare/3.12.0...3.13.0
+[3.12.0]: https://github.com/biolab/orange3/compare/3.11.0...3.12.0
+[3.11.0]: https://github.com/biolab/orange3/compare/3.10.0...3.11.0
+[3.10.0]: https://github.com/biolab/orange3/compare/3.9.1...3.10.0
 [3.9.1]: https://github.com/biolab/orange3/compare/3.9.0...3.9.1
 [3.9.0]: https://github.com/biolab/orange3/compare/3.8.0...3.9.0
 [3.8.0]: https://github.com/biolab/orange3/compare/3.7.1...3.8.0

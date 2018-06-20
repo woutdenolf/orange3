@@ -1,7 +1,9 @@
+import sys
 import enum
-
 from collections import OrderedDict
 from itertools import chain
+
+import numpy as np
 
 from AnyQt.QtWidgets import (
     QWidget, QTableWidget, QHeaderView, QComboBox, QLineEdit, QToolButton,
@@ -24,8 +26,10 @@ from Orange.widgets import widget, gui
 from Orange.widgets.settings import Setting, ContextSetting, DomainContextHandler
 from Orange.widgets.widget import Input, Output
 from Orange.widgets.utils import vartype
-from Orange.canvas import report
+from Orange.widgets import report
 from Orange.widgets.widget import Msg
+from Orange.widgets.utils.annotated_data import (create_annotated_table,
+                                                 ANNOTATED_DATA_SIGNAL_NAME)
 
 
 class SelectRowsContextHandler(DomainContextHandler):
@@ -79,14 +83,15 @@ class OWSelectRows(widget.OWWidget):
     class Outputs:
         matching_data = Output("Matching Data", Table, default=True)
         unmatched_data = Output("Unmatched Data", Table)
+        annotated_data = Output(ANNOTATED_DATA_SIGNAL_NAME, Table)
 
     want_main_area = False
 
     settingsHandler = SelectRowsContextHandler()
     conditions = ContextSetting([])
     update_on_change = Setting(True)
-    purge_attributes = Setting(True)
-    purge_classes = Setting(True)
+    purge_attributes = Setting(False, schema_only=True)
+    purge_classes = Setting(False, schema_only=True)
     auto_commit = Setting(True)
 
     Operators = {
@@ -200,7 +205,7 @@ class OWSelectRows(widget.OWWidget):
         row = model.rowCount()
         model.insertRow(row)
 
-        attr_combo = QComboBox(
+        attr_combo = gui.OrangeComboBox(
             minimumContentsLength=12,
             sizeAdjustPolicy=QComboBox.AdjustToMinimumContentsLengthWithIcon)
         attr_combo.row = row
@@ -465,6 +470,8 @@ class OWSelectRows(widget.OWWidget):
     def commit(self):
         matching_output = self.data
         non_matching_output = None
+        annotated_output = None
+
         self.Error.clear()
         if self.data:
             domain = self.data.domain
@@ -512,6 +519,9 @@ class OWSelectRows(widget.OWWidget):
                 self.filters.negate = True
                 non_matching_output = self.filters(self.data)
 
+                row_sel = np.in1d(self.data.ids, matching_output.ids)
+                annotated_output = create_annotated_table(self.data, row_sel)
+
             # if hasattr(self.data, "name"):
             #     matching_output.name = self.data.name
             #     non_matching_output.name = self.data.name
@@ -529,14 +539,18 @@ class OWSelectRows(widget.OWWidget):
 
                 matching_output = remover(matching_output)
                 non_matching_output = remover(non_matching_output)
+                annotated_output = remover(annotated_output)
 
         if matching_output is not None and not len(matching_output):
             matching_output = None
         if non_matching_output is not None and not len(non_matching_output):
             non_matching_output = None
+        if annotated_output is not None and not len(annotated_output):
+            annotated_output = None
 
         self.Outputs.matching_data.send(matching_output)
         self.Outputs.unmatched_data.send(non_matching_output)
+        self.Outputs.annotated_data.send(annotated_output)
 
         self.match_desc = report.describe_data_brief(matching_output)
         self.nonmatch_desc = report.describe_data_brief(non_matching_output)
@@ -685,13 +699,20 @@ class DropDownToolButton(QToolButton):
         self.set_text()
 
 
-def test():
+def main(argv=None):  # pragma: no cover
     from AnyQt.QtWidgets import QApplication
-    app = QApplication([])
+    app = QApplication(argv or [])
+    argv = app.arguments()
+    if len(argv) > 1:
+        filename = argv[1]
+    else:
+        filename = "zoo"
+
     w = OWSelectRows()
-    w.set_data(Table("zoo"))
+    w.set_data(Table(filename))
     w.show()
     app.exec_()
 
-if __name__ == "__main__":
-    test()
+
+if __name__ == "__main__":  # pragma: no cover
+    sys.exit(main(sys.argv))

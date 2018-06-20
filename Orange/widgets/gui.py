@@ -8,6 +8,7 @@ import re
 import itertools
 import warnings
 import logging
+import weakref
 from types import LambdaType
 from collections import defaultdict, Sequence
 
@@ -1089,6 +1090,7 @@ def listView(widget, master, value=None, model=None, box=None, callback=None,
                        CallFrontListView(view),
                        CallBackListView(model, view, master, value))
     misc.setdefault('addSpace', True)
+    misc.setdefault('uniformItemSizes', True)
     miscellanea(view, bg, widget, **misc)
     return view
 
@@ -1496,11 +1498,18 @@ def valueSlider(widget, master, value, box=None, label=None,
 class OrangeComboBox(QtWidgets.QComboBox):
     """
     A QComboBox subclass extended to support bounded contents width hint.
+
+    Prefer to use this class in place of plain QComboBox when the used
+    model will possibly contain many items.
     """
     def __init__(self, parent=None, maximumContentsLength=-1, **kwargs):
         # Forward-declared for sizeHint()
         self.__maximumContentsLength = maximumContentsLength
         super().__init__(parent, **kwargs)
+        view = self.view()
+        # optimization for displaying large models
+        if isinstance(view, QListView):
+            view.setUniformItemSizes(True)
 
     def setMaximumContentsLength(self, length):
         """
@@ -1512,11 +1521,11 @@ class OrangeComboBox(QtWidgets.QComboBox):
 
         .. note::
              This property does not affect the widget's `maximumSize`.
-             The widget can still grow depending in it's sizePolicy.
+             The widget can still grow depending on its `sizePolicy`.
 
         Parameters
         ----------
-        lenght : int
+        length : int
             Maximum contents length hint.
         """
         if self.__maximumContentsLength != length:
@@ -2063,7 +2072,14 @@ class ControlledList(list):
     """
     def __init__(self, content, listBox=None):
         super().__init__(content if content is not None else [])
-        self.listBox = listBox
+        # Controlled list is created behind the back by gui.listBox and
+        # commonly used as a setting which gets synced into a GLOBAL
+        # SettingsHandler and which keeps the OWWidget instance alive via a
+        # reference in listBox (see gui.listBox)
+        if listBox is not None:
+            self.listBox = weakref.ref(listBox)
+        else:
+            self.listBox = lambda: None
 
     def __reduce__(self):
         # cannot pickle self.listBox, but can't discard it
@@ -2073,7 +2089,7 @@ class ControlledList(list):
 
     # TODO ControllgedList.item2name is probably never used
     def item2name(self, item):
-        item = self.listBox.labels[item]
+        item = self.listBox().labels[item]
         if isinstance(item, tuple):
             return item[1]
         else:
@@ -2082,12 +2098,12 @@ class ControlledList(list):
     def __setitem__(self, index, item):
         def unselect(i):
             try:
-                item = self.listBox.item(i)
+                item = self.listBox().item(i)
             except RuntimeError:  # Underlying C/C++ object has been deleted
                 item = None
             if item is None:
                 # Labels changed before clearing the selection: clear everything
-                self.listBox.selectionModel().clear()
+                self.listBox().selectionModel().clear()
             else:
                 item.setSelected(0)
 
@@ -2098,15 +2114,15 @@ class ControlledList(list):
             for i in self[index]:
                 unselect(i)
             for i in item:
-                self.listBox.item(i).setSelected(1)
+                self.listBox().item(i).setSelected(1)
         super().__setitem__(index, item)
 
     def __delitem__(self, index):
         if isinstance(index, int):
-            self.listBox.item(self[index]).setSelected(0)
+            self.listBox().item(self[index]).setSelected(0)
         else:
             for i in self[index]:
-                self.listBox.item(i).setSelected(0)
+                self.listBox().item(i).setSelected(0)
         super().__delitem__(index)
 
     def append(self, item):
@@ -2116,7 +2132,7 @@ class ControlledList(list):
     def extend(self, items):
         super().extend(items)
         for i in items:
-            self.listBox.item(i).setSelected(1)
+            self.listBox().item(i).setSelected(1)
 
     def insert(self, index, item):
         item.setSelected(1)
@@ -2124,7 +2140,7 @@ class ControlledList(list):
 
     def pop(self, index=-1):
         i = super().pop(index)
-        self.listBox.item(i).setSelected(0)
+        self.listBox().item(i).setSelected(0)
 
     def remove(self, item):
         item.setSelected(0)
@@ -2485,6 +2501,7 @@ class CallFrontListView(ControlledCallFront):
 
         selection = QItemSelection()
         for value in values:
+            index = None
             if not isinstance(value, int):
                 if isinstance(value, Variable):
                     search_role = TableVariable
@@ -2493,9 +2510,12 @@ class CallFrontListView(ControlledCallFront):
                     value = str(value)
                 for i in range(model.rowCount()):
                     if model.data(model.index(i), search_role) == value:
-                        value = i
+                        index = i
                         break
-            selection.select(model.index(value), model.index(value))
+            else:
+                index = value
+            if index is not None:
+                selection.select(model.index(index), model.index(index))
         sel_model.select(selection, sel_model.ClearAndSelect)
 
 

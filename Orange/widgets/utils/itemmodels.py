@@ -11,7 +11,7 @@ from xml.sax.saxutils import escape
 
 from AnyQt.QtCore import (
     Qt, QObject, QAbstractListModel, QAbstractTableModel, QModelIndex,
-    QItemSelectionModel
+    QItemSelectionModel, QT_VERSION
 )
 from AnyQt.QtCore import pyqtSignal as Signal
 from AnyQt.QtGui import QColor
@@ -197,7 +197,12 @@ class AbstractSortTableModel(QAbstractTableModel):
         data table is left unmodified. Use mapToSourceRows()/mapFromSourceRows()
         when accessing data by row indexes.
         """
-        self.layoutAboutToBeChanged.emit()
+        if QT_VERSION >= 0x50000:
+            self.layoutAboutToBeChanged.emit(
+                [], QAbstractTableModel.VerticalSortHint
+            )
+        else:
+            self.layoutAboutToBeChanged.emit()
 
         # Store persistent indices as well as their (actual) rows in the
         # source data table.
@@ -230,7 +235,10 @@ class AbstractSortTableModel(QAbstractTableModel):
             persistent,
             [self.index(row, pind.column())
              for row, pind in zip(persistent_rows, persistent)])
-        self.layoutChanged.emit()
+        if QT_VERSION >= 0x50000:
+            self.layoutChanged.emit([], QAbstractTableModel.VerticalSortHint)
+        else:
+            self.layoutChanged.emit()
 
 
 class PyTableModel(AbstractSortTableModel):
@@ -528,14 +536,6 @@ class PyListModel(QAbstractListModel):
         self._other_data = [_store() for _ in lst]
         self.endResetModel()
 
-
-    # noinspection PyMethodOverriding
-    def index(self, row, column=0, parent=QModelIndex()):
-        if self._is_index_valid(row) and column == 0:
-            return QAbstractListModel.createIndex(self, row, column, parent)
-        else:
-            return QModelIndex()
-
     def headerData(self, section, orientation, role=Qt.DisplayRole):
         if role == Qt.DisplayRole:
             return str(section)
@@ -543,7 +543,7 @@ class PyListModel(QAbstractListModel):
 
     # noinspection PyMethodOverriding
     def rowCount(self, parent=QModelIndex()):
-        return 0 if parent.isValid() else len(self)
+        return 0 if parent.isValid() else len(self._list)
 
     def columnCount(self, parent=QModelIndex()):
         return 0 if parent.isValid() else 1
