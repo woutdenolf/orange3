@@ -244,9 +244,8 @@ def main(argv=None):
     logFile = LOG_FILE_NAME
     if os.path.exists(LOG_FOLDER) and os.access(LOG_FOLDER, os.W_OK):
         logFile = os.path.join(LOG_FOLDER, logFile)
-        print('save in %s' % logFile)
-        logging.basicConfig(filename=logFile, filemode='w',
-                        level=logging.DEBUG)
+        logging.basicConfig(filename=logFile, filemode='w', level=logging.DEBUG,
+                            format='%(asctime)s %(message)s')
 
     if argv is None:
         argv = sys.argv
