@@ -287,7 +287,7 @@ def main(argv=None):
                       action="store_true",
                       help='display only add-on widgets',
                       default=False)
-    parser.add_option('--color-stdout-logs',
+    parser.add_option('--color-stdout-logs', '--colored-logs',
                       action="store_true",
                       help='instead of having logs in the log view, color logs of the stdout',
                       default=False)
