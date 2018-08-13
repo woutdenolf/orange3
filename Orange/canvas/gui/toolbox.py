@@ -210,6 +210,7 @@ class ToolBox(QFrame):
         """
         Set exclusive tabs (only one tab can be open at a time).
         """
+        exclusive = False
         if self.__exclusive != exclusive:
             self.__exclusive = exclusive
             self.__tabActionGroup.setExclusive(exclusive)
@@ -288,7 +289,7 @@ class ToolBox(QFrame):
         self.__tabActionGroup = \
                 QActionGroup(self, objectName="toolbox-tab-action-group")
 
-        self.__tabActionGroup.setExclusive(self.__exclusive)
+        self.__tabActionGroup.setExclusive(False)
 
         self.__actionMapper = QSignalMapper(self)
         self.__actionMapper.mapped[QObject].connect(self.__onTabActionToogled)
