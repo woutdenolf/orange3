@@ -236,7 +236,10 @@ def dealWithLogFile():
         else:
             maxLogNameN2 = logFile + '.' + str(iLog - 1)
         if os.path.exists(maxLogNameN2):
-            shutil.copy(maxLogNameN2, maxLogNameN1)
+            try:
+                shutil.copy(maxLogNameN2, maxLogNameN1)
+            except:
+                pass
 
 
 def main(argv=None):
@@ -244,8 +247,11 @@ def main(argv=None):
     logFile = LOG_FILE_NAME
     if os.path.exists(LOG_FOLDER) and os.access(LOG_FOLDER, os.W_OK):
         logFile = os.path.join(LOG_FOLDER, logFile)
-        logging.basicConfig(filename=logFile, filemode='w', level=logging.DEBUG,
-                            format='%(asctime)s %(message)s')
+        if not os.path.exists(logFile) or os.access(logFile, os.W_OK):
+            logging.basicConfig(filename=logFile,
+                                filemode='w',
+                                level=logging.DEBUG,
+                                format='%(asctime)s %(message)s')
 
     if argv is None:
         argv = sys.argv
