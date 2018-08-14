@@ -229,15 +229,28 @@ def dealWithLogFile():
         else:
             maxLogNameN2 = LOG_FILE_NAME + '.' + str(iLog - 1)
         if os.path.exists(maxLogNameN2):
-            stat = os.stat(maxLogNameN2)
-            shutil.copy(maxLogNameN2, maxLogNameN1)
-            os.utime(maxLogNameN1, (stat.st_atime, stat.st_mtime))
+            try:
+                stat = os.stat(maxLogNameN2)
+                shutil.copy(maxLogNameN2, maxLogNameN1)
+                os.utime(maxLogNameN1, (stat.st_atime, stat.st_mtime))
+            except:
+                pass
 
 
 def main(argv=None):
     dealWithLogFile()
+
     logging.basicConfig(filename='orange.log', filemode='w',
                         level=logging.DEBUG)
+
+    logFile = LOG_FILE_NAME
+    if os.path.exists(LOG_FOLDER) and os.access(LOG_FOLDER, os.W_OK):
+        logFile = os.path.join(LOG_FOLDER, logFile)
+        if not os.path.exists(logFile) or os.access(logFile, os.W_OK):
+            logging.basicConfig(filename=logFile,
+                                filemode='w',
+                                level=logging.DEBUG,
+                                format='%(asctime)s %(message)s')
 
     if argv is None:
         argv = sys.argv
