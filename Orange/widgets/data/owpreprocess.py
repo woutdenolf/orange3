@@ -1,27 +1,22 @@
 import sys
-import bisect
-import contextlib
-import warnings
 from collections import OrderedDict
 import pkg_resources
 
 import numpy
 
 from AnyQt.QtWidgets import (
-    QWidget, QButtonGroup, QGroupBox, QRadioButton, QSlider, QFocusFrame,
-    QDoubleSpinBox, QComboBox, QSpinBox, QListView, QDockWidget, QLabel,
-    QScrollArea, QVBoxLayout, QHBoxLayout, QFormLayout, QSpacerItem,
-    QSizePolicy, QStyle, QStylePainter, QAction, QLabel,
-    QApplication, QCheckBox
+    QWidget, QButtonGroup, QGroupBox, QRadioButton, QSlider,
+    QDoubleSpinBox, QComboBox, QSpinBox, QListView, QLabel,
+    QScrollArea, QVBoxLayout, QHBoxLayout, QFormLayout,
+    QSizePolicy, QApplication, QCheckBox
 )
 
 from AnyQt.QtGui import (
-    QCursor, QIcon, QPainter, QPixmap, QStandardItemModel, QStandardItem,
-    QDrag, QKeySequence
+    QIcon, QStandardItemModel, QStandardItem
 )
 
 from AnyQt.QtCore import (
-    Qt, QObject, QEvent, QSize, QModelIndex, QMimeData, QTimer
+    Qt, QEvent, QSize, QMimeData, QTimer
 )
 
 from AnyQt.QtCore import pyqtSignal as Signal, pyqtSlot as Slot
@@ -29,9 +24,8 @@ from AnyQt.QtCore import pyqtSignal as Signal, pyqtSlot as Slot
 
 import Orange.data
 from Orange import preprocess
-from Orange.statistics import distribution
 from Orange.preprocess import Continuize, ProjectPCA, \
-    ProjectCUR, Randomize as Random
+    ProjectCUR, Scale as _Scale, Randomize as _Randomize
 from Orange.widgets import widget, gui, settings
 from Orange.widgets.utils.overlay import OverlayWidget
 from Orange.widgets.utils.sql import check_sql_input
@@ -50,6 +44,8 @@ class _NoneDisc(preprocess.discretize.Discretization):
     all discrete features from the domain.
 
     """
+    _reprable_module = True
+
     def __call__(self, data, variable):
         return None
 
@@ -208,7 +204,6 @@ class ContinuizeEditor(BaseEditor):
     def __init__(self, parent=None, **kwargs):
         super().__init__(parent, **kwargs)
         self.setLayout(QVBoxLayout())
-
         self.__treatment = Continuize.Indicators
         self.__group = group = QButtonGroup(exclusive=True)
         group.buttonClicked.connect(self.__on_buttonClicked)
@@ -258,6 +253,8 @@ class ContinuizeEditor(BaseEditor):
 
 
 class _RemoveNaNRows(preprocess.preprocess.Preprocess):
+    _reprable_module = True
+
     def __call__(self, data):
         mask = numpy.isnan(data.X)
         mask = numpy.any(mask, axis=1)
@@ -270,9 +267,9 @@ class ImputeEditor(BaseEditor):
 
     Imputers = {
         NoImputation: (None, {}),
-#         Constant: (None, {"value": 0})
+        #         Constant: (None, {"value": 0})
         Average: (preprocess.impute.Average(), {}),
-#         Model: (preprocess.impute.Model, {}),
+        #         Model: (preprocess.impute.Model, {}),
         Random: (preprocess.impute.Random(), {}),
         DropRows: (None, {})
     }
@@ -476,7 +473,11 @@ class FeatureSelectEditor(BaseEditor):
         ("Gain ratio", preprocess.score.GainRatio),
         ("Gini index", preprocess.score.Gini),
         ("ReliefF", preprocess.score.ReliefF),
-        ("Fast Correlation Based Filter", preprocess.score.FCBF)
+        ("Fast Correlation Based Filter", preprocess.score.FCBF),
+        ("ANOVA", preprocess.score.ANOVA),
+        ("Chi2", preprocess.score.Chi2),
+        ("RReliefF", preprocess.score.RReliefF),
+        ("Univariate Linear Regression", preprocess.score.UnivariateLinearRegression)
     ]
 
     def __init__(self, parent=None):
@@ -493,7 +494,11 @@ class FeatureSelectEditor(BaseEditor):
              {"text": "Gain Ratio"},
              {"text": "Gini Index"},
              {"text": "ReliefF"},
-             {"text": "Fast Correlation Based Filter"}
+             {"text": "Fast Correlation Based Filter"},
+             {"text": "ANOVA"},
+             {"text": "Chi2"},
+             {"text": "RReliefF"},
+             {"text": "Univariate Linear Regression"}
             ]
         )
         self.layout().addWidget(self.__uni_fs)
@@ -630,14 +635,6 @@ class RandomFeatureSelectEditor(BaseEditor):
             # further implementations
             raise NotImplementedError
 
-class _Scaling(preprocess.preprocess.Preprocess):
-    """
-    Scale data preprocessor.
-    """
-    @staticmethod
-    def mean(dist):
-        values, counts = numpy.array(dist)
-        return numpy.average(values, weights=counts)
 
 def index_to_enum(enum, i):
     """Enums, by default, are not int-comparable, so use an ad-hoc mapping of
@@ -692,50 +689,17 @@ class Scale(BaseEditor):
 
     @staticmethod
     def createinstance(params):
-        center = params.get("center", Scale.CenterMean)
-        scale = params.get("scale", Scale.ScaleBySD)
-
-        if center == Scale.NoCentering:
-            center = None
-        elif center == Scale.CenterMean:
-            center = _Scaling.mean
-        elif center == Scale.CenterMedian:
-            center = _Scaling.median
-        else:
-            assert False
-
-        if scale == Scale.NoScaling:
-            scale = None
-        elif scale == Scale.ScaleBySD:
-            scale = _Scaling.std
-        elif scale == Scale.ScaleBySpan:
-            scale = _Scaling.span
-        else:
-            assert False
-
-        return _Scaling(center=center, scale=scale)
+        center = params.get("center", _Scale.CenteringType.Mean)
+        scale = params.get("scale", _Scale.ScalingType.Std)
+        return _Scale(center=center, scale=scale)
 
     def __repr__(self):
         return "{}, {}".format(self.__centercb.currentText(),
                                self.__scalecb.currentText())
 
 
-class _Randomize(preprocess.preprocess.Preprocess):
-    """
-    Randomize data preprocessor.
-    """
-
-    def __init__(self, rand_type=Random.RandomizeClasses, rand_seed=None):
-        self.rand_type = rand_type
-        self.rand_seed = rand_seed
-
-    def __call__(self, data):
-        randomizer = Random(rand_type=self.rand_type, rand_seed=self.rand_seed)
-        return randomizer(data)
-
-
 class Randomize(BaseEditor):
-    RandomizeClasses, RandomizeAttributes, RandomizeMetas = Random.RandTypes
+    RandomizeClasses, RandomizeAttributes, RandomizeMetas = _Randomize.Type
 
     def __init__(self, parent=None, **kwargs):
         super().__init__(parent, **kwargs)
@@ -941,7 +905,7 @@ PREPROCESS_ACTIONS = [
         RandomFeatureSelectEditor
     ),
     PreprocessAction(
-        "Normalize", "orange.preprocess.scale", "Scaling",
+        "Normalize", "orange.preprocess.scale", "Scale",
         Description("Normalize Features",
                     icon_path("Normalize.svg")),
         Scale
@@ -1149,6 +1113,7 @@ class OWPreprocess(widget.OWWidget):
         d["preprocessors"] = preprocessors
         return d
 
+
     def set_model(self, ppmodel):
         if self.preprocessormodel:
             self.preprocessormodel.dataChanged.disconnect(self.__on_modelchanged)
@@ -1225,7 +1190,7 @@ class OWPreprocess(widget.OWWidget):
             self.error()
             try:
                 data = preprocessor(self.data)
-            except ValueError as e:
+            except (ValueError, ZeroDivisionError) as e:
                 self.error(str(e))
                 return
         else:
@@ -1308,4 +1273,3 @@ def test_main(argv=sys.argv):
 
 if __name__ == "__main__":
     sys.exit(test_main())
-

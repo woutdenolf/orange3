@@ -399,7 +399,6 @@ class SampleRandomN(Reprable):
         ind = skl_cross_validation.ShuffleSplit(
             len(table), n_iter=1,
             test_size=n, random_state=random_state)
-    return next(iter(ind))
 
 
 def sample_random_p(table, p, stratified=False, random_state=None):

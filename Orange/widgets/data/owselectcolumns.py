@@ -1,10 +1,6 @@
 import sys
-<<<<<<< HEAD
-from functools import partial, reduce
-=======
 from functools import partial
 from typing import Optional  # pylint: disable=unused-import
->>>>>>> upstream/master
 
 from AnyQt.QtWidgets import QWidget, QGridLayout
 from AnyQt.QtWidgets import QListView  # pylint: disable=unused-import
