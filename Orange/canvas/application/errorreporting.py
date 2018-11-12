@@ -124,6 +124,21 @@ class ErrorReporting(QDialog):
         buttons_layout.addWidget(QPushButton("Don't Send", default=False, clicked=self.reject))
         layout.addWidget(buttons)
 
+    def _getGrayLogOrangeLogger(self):
+        if not hasattr(self, '_graylogLogger'):
+            import graypy
+            import logging
+            _logger = logging.getLogger(__file__)
+            # + send me an email for the time being
+            grayport_port = 12204
+            """Port of connection"""
+            grayport_host = 'graylog-dau'
+            """host of connection"""
+            self._graylogHandler = graypy.GELFHandler(grayport_host, grayport_port)
+            self._graylogLogger = logging.getLogger('orangeLogger')
+            self._graylogLogger.addHandler(self._graylogHandler)
+        return self._graylogLogger
+
     def accept(self):
         super().accept()
         F = self.DataField
@@ -132,23 +147,10 @@ class ErrorReporting(QDialog):
         if QSettings().value('error-reporting/add-scheme', True, type=bool):
             data[F.WIDGET_SCHEME] = data['_' + F.WIDGET_SCHEME]
         del data['_' + F.WIDGET_SCHEME]
-
-        def _post_report(data):
-            MAX_RETRIES = 2
-            for _retry in range(MAX_RETRIES):
-                try:
-                    urlopen(REPORT_POST_URL,
-                            timeout=10,
-                            data=urlencode(data).encode('utf8'))
-                except Exception as e:
-                    if _retry == MAX_RETRIES - 1:
-                        e.__context__ = None
-                        log.exception('Error reporting failed', exc_info=e)
-                    time.sleep(10)
-                    continue
-                break
-
-        Thread(target=_post_report, args=(data,)).start()
+            try:
+                self._getGrayLogOrangeLogger().error(data, extra={'source-code-error':'orange-canvas'})
+            except:
+                pass
 
     @classmethod
     @patch('sys.excepthook', sys.__excepthook__)  # Prevent recursion
