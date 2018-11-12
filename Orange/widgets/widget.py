@@ -344,8 +344,14 @@ class OWWidget(QDialog, OWComponent, Report, ProgressBarMixin,
             return
         ClipboardFormat.write_image(None, graph_obj)
 
-    def __restoreWidgetGeometry(self):
+    def updateProperties(self):
+        """
+        function callback before saving widget settings
 
+        """
+        pass
+
+    def __restoreWidgetGeometry(self):
         def _fullscreen_to_maximized(geometry):
             """Don't restore windows into full screen mode because it loses
             decorations and can't be de-fullscreened at least on some platforms.
