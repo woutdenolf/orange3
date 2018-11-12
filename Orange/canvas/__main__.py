@@ -257,7 +257,7 @@ def main(argv=None):
         print('save in %s' % logFile)
         logging.basicConfig(filename=logFile, filemode='w',
                             level=logging.DEBUG,
-                            format='%(asctime)s %(message)s)
+                            format='%(asctime)s %(message)s')
 
     if argv is None:
         argv = sys.argv
