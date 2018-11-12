@@ -172,10 +172,10 @@ class ErrorReporting(QDialog):
 
         def _post_report(data):
             try:
-                self._getGrayLogOrangeLogger().error(data, extra={'source-code-error':'orange-canvas'})
-            except:
-                pass
-
+                msg = 'Exception: %s. \n stack trace: %s' % (data['Exception'], data['Stack Trace'])
+                self._getGrayLogOrangeLogger().error(msg, extra=data)
+            except Exception as e:
+                print(e)
         _post_report(data=data)
 
     @classmethod
