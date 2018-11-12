@@ -223,15 +223,15 @@ def dealWithLogFile():
     """Move log file history across log file hierarchy"""
     for i in range(MAX_LOG_FILE):
         iLog = MAX_LOG_FILE - i
-        print('iLog is %s' %iLog)
         maxLogNameN1 = LOG_FILE_NAME + '.' + str(iLog)
         if iLog - 1 is 0:
             maxLogNameN2 = 'orange.log'
         else:
             maxLogNameN2 = LOG_FILE_NAME + '.' + str(iLog - 1)
         if os.path.exists(maxLogNameN2):
-            print('replace %s by %s' % (maxLogNameN2, maxLogNameN1))
+            stat = os.stat(maxLogNameN2)
             shutil.copy(maxLogNameN2, maxLogNameN1)
+            os.utime(maxLogNameN1, (stat.st_atime, stat.st_mtime))
 
 
 def main(argv=None):
