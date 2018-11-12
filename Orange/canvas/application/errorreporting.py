@@ -176,6 +176,8 @@ class ErrorReporting(QDialog):
             except:
                 pass
 
+        _post_report(data=data)
+
     @classmethod
     @patch('sys.excepthook', sys.__excepthook__)  # Prevent recursion
     @pyqtSlot(object)
