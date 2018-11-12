@@ -8,7 +8,7 @@ from sklearn import feature_selection as skl_fss
 from Orange.data import Domain, Variable, DiscreteVariable, ContinuousVariable
 from Orange.data.filter import HasClass
 from Orange.misc.wrapper_meta import WrapperMeta
-from Orange.preprocess.preprocess import Discretize, Impute
+from Orange.preprocess.preprocess import Discretize, SklImpute
 from Orange.preprocess.util import _RefuseDataInConstructor
 from Orange.statistics import contingency, distribution
 from Orange.util import Reprable
@@ -86,7 +86,7 @@ class SklScorer(Scorer, metaclass=WrapperMeta):
     supports_sparse_data = True
 
     preprocessors = Scorer.preprocessors + [
-        Impute()
+        SklImpute()
     ]
 
     def score_data(self, data, feature):
@@ -181,14 +181,14 @@ class LearnerScorer(Scorer):
 
 class ClassificationScorer(Scorer):
     """
-    Base class for feature scores in a class-labeled data set.
+    Base class for feature scores in a class-labeled dataset.
 
     Parameters
     ----------
     feature : int, string, Orange.data.Variable
         Feature id
     data : Orange.data.Table
-        Data set
+        Dataset
 
     Attributes
     ----------

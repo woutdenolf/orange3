@@ -1,38 +1,22 @@
-.. _model.logit:
-
 Logistic Regression
 ===================
 
-.. figure:: icons/logistic-regression.png
-
 The logistic regression classification algorithm with LASSO (L1) or ridge (L2) regularization.
 
-Signals
--------
+Inputs
+    Data
+        input dataset
+    Preprocessor
+        preprocessing method(s)
 
-**Inputs**:
+Outputs
+    Learner
+        logistic regression learning algorithm
+    Model
+        trained model
+    Coefficients
+        logistic regression coefficients
 
--  **Data**
-
-   A data set
-
-- **Preprocessor**
-
-   Preprocessing method(s)
-
-**Outputs**:
-
--  **Learner**
-
-   A logistic regression learning algorithm with settings as specified in
-   the dialog.
-
--  **Logistic Regression Classifier**
-
-   A trained classifier. Output signal sent only if input *Data* is present.
-
-Description
------------
 
 **Logistic Regression** learns a `Logistic Regression <https://en.wikipedia.org/wiki/Logistic_regression>`_ model from the data.
 
@@ -53,8 +37,8 @@ It only works for classification tasks.
 Example
 -------
 
-The widget is used just as any other widget for inducing a classifier. This is an example demonstrating prediction results with logistic regression on the *hayes-roth* data set. We first load *hayes-roth_learn* in the :doc:`File <../data/file>` widget and pass the data to **Logistic Regression**. Then we pass the trained model to :doc:`Predictions <../evaluation/predictions>`.
+The widget is used just as any other widget for inducing a classifier. This is an example demonstrating prediction results with logistic regression on the *hayes-roth* dataset. We first load *hayes-roth_learn* in the :doc:`File <../data/file>` widget and pass the data to **Logistic Regression**. Then we pass the trained model to :doc:`Predictions <../evaluation/predictions>`.
 
-Now we want to predict class value on a new data set. We load *hayes-roth_test* in the second **File** widget and connect it to **Predictions**. We can now observe class values predicted with **Logistic Regression** directly in **Predictions**.
+Now we want to predict class value on a new dataset. We load *hayes-roth_test* in the second **File** widget and connect it to **Predictions**. We can now observe class values predicted with **Logistic Regression** directly in **Predictions**.
 
 .. figure:: images/LogisticRegression-classification.png

@@ -1,31 +1,18 @@
 Distance Map
 ============
 
-.. figure:: icons/distance-map.png
-
 Visualizes distances between items.
 
-Signals
--------
+Inputs
+    Distances
+        distance matrix
 
-**Inputs**:
+Outputs
+    Data
+        instances selected from the matrix
+    Features
+        attributes selected from the matrix
 
--  **Distances**
-
-   A distance matrix.
-
-**Outputs**:
-
--  **Data**
-
-   Instances corresponding to the selected elements of the matrix.
-
--  **Features**
-
-   Attributes corresponding to the selected elements of the matrix.
-
-Description
------------
 
 The **Distance Map** visualizes distances between objects. The visualization
 is the same as if we printed out a table of numbers, except that the
@@ -50,7 +37,7 @@ while the diagonal may also be non-zero.
 
 1. *Element sorting* arranges elements in the map by
 
-   -  None (lists instances as found in the data set)
+   -  None (lists instances as found in the dataset)
    -  **Clustering** (clusters data by similarity)
    -  **Clustering with ordered leaves** (maximizes the sum of
       similarities of adjacent elements)
@@ -75,7 +62,7 @@ distances outside this interval and visualize the interesting part of
 the distribution.
 
 Below, we visualized the most correlated attributes (distances by
-columns) in the *heart disease* data set by setting the color threshold
+columns) in the *heart disease* dataset by setting the color threshold
 for high distances to the minimum. We get a predominantly black square,
 where attributes with the lowest distance scores are represented by
 a lighter shade of the selected color schema (in our case: orange). Beside the diagonal line, we see that in our example *ST by

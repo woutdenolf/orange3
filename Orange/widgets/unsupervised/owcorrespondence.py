@@ -47,6 +47,7 @@ class OWCorrespondenceAnalysis(widget.OWWidget):
     name = "Correspondence Analysis"
     description = "Correspondence analysis for categorical multivariate data."
     icon = "icons/CorrespondenceAnalysis.svg"
+    keywords = []
 
     class Inputs:
         data = Input("Data", Orange.data.Table)
@@ -60,7 +61,7 @@ class OWCorrespondenceAnalysis(widget.OWWidget):
     graph_name = "plot.plotItem"
 
     class Error(widget.OWWidget.Error):
-        empty_data = widget.Msg("Empty data set")
+        empty_data = widget.Msg("Empty dataset")
         no_disc_vars = widget.Msg("No categorical data")
 
     def __init__(self):
@@ -72,7 +73,10 @@ class OWCorrespondenceAnalysis(widget.OWWidget):
 
         box = gui.vBox(self.controlArea, "Variables")
         self.varlist = itemmodels.VariableListModel()
-        self.varview = view = QListView(selectionMode=QListView.MultiSelection)
+        self.varview = view = QListView(
+            selectionMode=QListView.MultiSelection,
+            uniformItemSizes=True
+        )
         view.setModel(self.varlist)
         view.selectionModel().selectionChanged.connect(self._var_changed)
 

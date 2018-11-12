@@ -1,25 +1,12 @@
 Sieve Diagram
 =============
 
-.. figure:: icons/sieve-diagram.png
-
 Plots a sieve diagram for a pair of attributes.
 
-Signals
--------
+Inputs
+    Data
+        input dataset
 
-**Inputs**:
-
--  **Data**
-
-   An input data set
-
-**Outputs**:
-
--  None
-
-Description
------------
 
 A **Sieve diagram** is a graphical method for visualizing frequencies in a two-way contingency table and comparing them to `expected frequencies <http://cnx.org/contents/d396c4ad-2fd7-47cd-be84-152b44880feb@2/What-is-an-expected-frequency>`_ under assumption of independence. It was proposed by
 Riedwyl and Schüpbach in a technical report in 1983 and later called a
@@ -39,9 +26,9 @@ color to indicate whether the deviation from independence is positive
    format.
 4. Produce a report. 
 
-The snapshot below shows a sieve diagram for the *Titanic* data set and has the
+The snapshot below shows a sieve diagram for the *Titanic* dataset and has the
 attributes *sex* and *survived* (the latter is a class attribute in this
-data set). The plot shows that the two variables are highly associated,
+dataset). The plot shows that the two variables are highly associated,
 as there are substantial differences between observed and expected
 frequencies in all of the four quadrants. For example, and as highlighted
 in the balloon, the chance for surviving the accident was much higher for
@@ -58,7 +45,7 @@ diagram of the least interesting pair (age vs. survival) is shown below.
 Example
 -------
 
-Below, we see a simple schema using the *Titanic* data set, where we use the
+Below, we see a simple schema using the *Titanic* dataset, where we use the
 :doc:`Rank <../data/rank>` widget to select the best attributes (the ones with the highest
 information gain, gain ratio or gini index) and feed them into the **Sieve
 Diagram**. This displays the sieve plot for the two best attributes,

@@ -21,9 +21,10 @@ INDEX = "Position (index)"
 
 class OWMergeData(widget.OWWidget):
     name = "Merge Data"
-    description = "Merge data sets based on the values of selected data features."
+    description = "Merge datasets based on the values of selected features."
     icon = "icons/MergeData.svg"
     priority = 1110
+    keywords = ["join"]
 
     class Inputs:
         data = Input("Data", Orange.data.Table, default=True, replaces=["Data A"])
@@ -41,6 +42,7 @@ class OWMergeData(widget.OWWidget):
     attr_combine_data = settings.Setting('', schema_only=True)
     attr_combine_extra = settings.Setting('', schema_only=True)
     merging = settings.Setting(0)
+    auto_apply = settings.Setting(True)
 
     attr_a = settings.Setting('', schema_only=True)
     attr_b = settings.Setting('', schema_only=True)
@@ -84,12 +86,14 @@ class OWMergeData(widget.OWWidget):
             model[:] = [getattr(self, 'attr_{}_data'.format(merge_type))]
             extra_model[:] = [getattr(self, 'attr_{}_extra'.format(merge_type))]
             cb = gui.comboBox(box, self, 'attr_{}_data'.format(merge_type),
-                              callback=self._invalidate, model=model)
+                              contentsLength=12, callback=self._invalidate,
+                              model=model)
             cb.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Fixed)
             cb.setFixedWidth(190)
             gui.widgetLabel(box, between_label)
             cb = gui.comboBox(box, self, 'attr_{}_extra'.format(merge_type),
-                              callback=self._invalidate, model=extra_model)
+                              contentsLength=12, callback=self._invalidate,
+                              model=extra_model)
             cb.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Fixed)
             cb.setFixedWidth(190)
             vbox.layout().addSpacing(6)
@@ -104,6 +108,9 @@ class OWMergeData(widget.OWWidget):
                    "where", "equals", "combine",
                    self.model_unique_with_id, self.extra_model_unique_with_id)
         self.set_merging()
+
+        gui.auto_commit(self.controlArea, self, "auto_apply", "&Apply",
+                        box=False)
 
     def set_merging(self):
         # pylint: disable=invalid-sequence-index

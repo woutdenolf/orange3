@@ -4,14 +4,14 @@ from collections import OrderedDict
 from xml.sax.saxutils import escape
 
 import docutils.core
-import CommonMark
 
 from AnyQt.QtWidgets import (
     QGraphicsItem, QGraphicsPathItem, QGraphicsWidget, QGraphicsTextItem,
     QGraphicsDropShadowEffect, QMenu, QAction, QActionGroup
 )
 from AnyQt.QtGui import (
-    QPainterPath, QPainterPathStroker, QPolygonF, QColor, QPen, QBrush
+    QPainterPath, QPainterPathStroker, QPolygonF, QColor, QPen, QBrush,
+    QPalette
 )
 from AnyQt.QtCore import (
     Qt, QPointF, QSizeF, QRectF, QLineF, QEvent, QMetaObject, QT_VERSION
@@ -174,22 +174,6 @@ def render_html(content):
     return content
 
 
-def render_markdown(content):
-    """
-    Return a html fragment from markdown text content
-
-    Parameters
-    ----------
-    content : str
-        A markdown formatted text
-
-    Returns
-    -------
-    html : str
-    """
-    return CommonMark.commonmark(content)
-
-
 def render_rst(content):
     """
     Return a html fragment from a RST text content
@@ -235,7 +219,6 @@ class TextAnnotation(Annotation):
     ContentRenderer = OrderedDict([
         ("text/plain", render_plain),
         ("text/rst", render_rst),
-        ("text/markdown", render_markdown),
         ("text/html", render_html),
     ])  # type: Dict[str, Callable[[str], [str]]]
 
@@ -269,6 +252,9 @@ class TextAnnotation(Annotation):
         self.__textItem.setTextInteractionFlags(self.__defaultInteractionFlags)
         self.__textItem.setFont(self.font())
         self.__textItem.editingFinished.connect(self.__textEditingFinished)
+        self.__textItem.setDefaultTextColor(
+            self.palette().color(QPalette.Text)
+        )
         if self.__textItem.scene() is not None:
             self.__textItem.installSceneEventFilter(self)
         layout = self.__textItem.document().documentLayout()
@@ -481,7 +467,10 @@ class TextAnnotation(Annotation):
     def changeEvent(self, event):
         if event.type() == QEvent.FontChange:
             self.__textItem.setFont(self.font())
-
+        elif event.type() == QEvent.PaletteChange:
+            self.__textItem.setDefaultTextColor(
+                self.palette().color(QPalette.Text)
+            )
         Annotation.changeEvent(self, event)
 
     @Slot()

@@ -242,12 +242,9 @@ class Model(Reprable):
             prediction = self.predict(np.atleast_2d(data))
         elif isinstance(data, scipy.sparse.csr.csr_matrix):
             prediction = self.predict(data)
-        elif isinstance(data, Instance):
-            if data.domain != self.domain:
-                data = Instance(self.domain, data)
-            data = Table(data.domain, [data])
-            prediction = self.predict_storage(data)
-        elif isinstance(data, Table):
+        elif isinstance(data, (Table, Instance)):
+            if isinstance(data, Instance):
+                data = Table(data.domain, [data])
             if data.domain != self.domain:
                 data = data.transform(self.domain)
             prediction = self.predict_storage(data)
@@ -332,9 +329,11 @@ class SklLearner(Learner, metaclass=WrapperMeta):
     ${skldoc}
     Additional Orange parameters
 
-    preprocessors : list, optional (default=[RemoveNaNClasses(), Continuize(), SklImpute(), RemoveNaNColumns()])
+    preprocessors : list, optional
         An ordered list of preprocessors applied to data before
         training or testing.
+        Defaults to
+        `[RemoveNaNClasses(), Continuize(), SklImpute(), RemoveNaNColumns()]`
     """
     __wraps__ = None
     __returns__ = SklModel
@@ -381,8 +380,11 @@ class SklLearner(Learner, metaclass=WrapperMeta):
         m.params = self.params
         return m
 
+    def _initialize_wrapped(self):
+        return self.__wraps__(**self.params)
+
     def fit(self, X, Y, W=None):
-        clf = self.__wraps__(**self.params)
+        clf = self._initialize_wrapped()
         Y = Y.reshape(-1)
         if W is None or not self.supports_weights:
             return self.__returns__(clf.fit(X, Y))

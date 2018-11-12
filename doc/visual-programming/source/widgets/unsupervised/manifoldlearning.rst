@@ -1,27 +1,16 @@
 Manifold Learning
 =================
 
-.. figure:: icons/manifold-learning.png
-
 Nonlinear dimensionality reduction.
 
-Signals
--------
+Inputs
+    Data
+        input dataset
 
-**Inputs**:
+Outputs
+    Transformed Data
+        dataset with reduced coordinates
 
--  **Data**
-
-   A data set
-
-**Outputs**:
-
--  **Transformed Data**
-
-   A data set with new, reduced coordinates.
-
-Description
------------
 
 `Manifold Learning <https://en.wikipedia.org/wiki/Nonlinear_dimensionality_reduction>`_ is a
 technique which finds a non-linear manifold within the higher-dimensional space. The widget then
@@ -48,7 +37,7 @@ visualized with :doc:`Scatter Plot <../visualize/scatterplot>` or other visualiz
       - *Mahalanobis*
       - *Cosine*
    - MDS (iterations and initialization):
-      - *max interations*: maximum number of optimization interations
+      - *max iterations*: maximum number of optimization interactions
       - *initialization*: method for initialization of the algorithm (PCA or random)
    - Isomap:
       - number of *neighbors*
@@ -80,6 +69,6 @@ From left to right, top to bottom: t-SNE, MDS, Isomap, Locally Linear Embedding 
 Example
 -------
 
-*Manifold Learning* widget transforms high-dimensional data into a lower dimensional approximation. This makes it great for visualizing data sets with many features. We used *voting.tab* to map 16-dimensional data onto a 2D graph. Then we used :doc:`Scatter Plot <../visualize/scatterplot>` to plot the embeddings.
+*Manifold Learning* widget transforms high-dimensional data into a lower dimensional approximation. This makes it great for visualizing datasets with many features. We used *voting.tab* to map 16-dimensional data onto a 2D graph. Then we used :doc:`Scatter Plot <../visualize/scatterplot>` to plot the embeddings.
 
 .. figure:: images/manifold-learning-example.png

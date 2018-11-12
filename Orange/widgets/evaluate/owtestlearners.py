@@ -141,6 +141,7 @@ class OWTestLearners(OWWidget):
     description = "Cross-validation accuracy estimation."
     icon = "icons/TestLearners1.svg"
     priority = 100
+    keywords = []
 
     class Inputs:
         train_data = Input("Data", Table, default=True)
@@ -197,13 +198,13 @@ class OWTestLearners(OWWidget):
         settings.Setting(set(chain(*BUILTIN_ORDER.values())))
 
     class Error(OWWidget.Error):
-        train_data_empty = Msg("Train data set is empty.")
-        test_data_empty = Msg("Test data set is empty.")
+        train_data_empty = Msg("Train dataset is empty.")
+        test_data_empty = Msg("Test dataset is empty.")
         class_required = Msg("Train data input requires a target variable.")
         too_many_classes = Msg("Too many target variables.")
         class_required_test = Msg("Test data input requires a target variable.")
         too_many_folds = Msg("Number of folds exceeds the data size")
-        class_inconsistent = Msg("Test and train data sets "
+        class_inconsistent = Msg("Test and train datasets "
                                  "have different target variables.")
         memory_error = Msg("Not enough memory.")
         no_class_values = Msg("Target variable has no values.")
@@ -293,6 +294,7 @@ class OWTestLearners(OWWidget):
 
         self.view = gui.TableView(
             wordWrap=True,
+            editTriggers=gui.TableView.NoEditTriggers
         )
         header = self.view.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeToContents)
@@ -567,7 +569,7 @@ class OWTestLearners(OWWidget):
 
                     # Cell variable is used immediatelly, it's not stored
                     # pylint: disable=cell-var-from-loop
-                    stats = [Try(scorer_caller(scorer, ovr_results))
+                    stats = [Try(scorer_caller(scorer, ovr_results, target=1))
                              for scorer in self.scorers]
                 else:
                     stats = None
@@ -585,6 +587,13 @@ class OWTestLearners(OWWidget):
                     row.append(item)
 
             model.appendRow(row)
+
+        # Resort rows based on current sorting
+        header = self.view.horizontalHeader()
+        model.sort(
+            header.sortIndicatorSection(),
+            header.sortIndicatorOrder()
+        )
 
         self.error("\n".join(errors), shown=bool(errors))
         self.Warning.scores_not_computed(shown=has_missing_scores)
@@ -950,9 +959,9 @@ class OWTestLearners(OWWidget):
         super().onDeleteWidget()
 
 
-def scorer_caller(scorer, ovr_results):
+def scorer_caller(scorer, ovr_results, target=None):
     if scorer.is_binary:
-        return lambda: scorer(ovr_results, target=1, average='weighted')
+        return lambda: scorer(ovr_results, target=target, average='weighted')
     else:
         return lambda: scorer(ovr_results)
 

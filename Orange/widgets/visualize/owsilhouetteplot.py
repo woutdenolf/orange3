@@ -44,6 +44,7 @@ class OWSilhouettePlot(widget.OWWidget):
 
     icon = "icons/SilhouettePlot.svg"
     priority = 300
+    keywords = []
 
     class Inputs:
         data = Input("Data", Orange.data.Table)
@@ -74,7 +75,8 @@ class OWSilhouettePlot(widget.OWWidget):
     auto_commit = settings.Setting(True)
 
     Distances = [("Euclidean", Orange.distance.Euclidean),
-                 ("Manhattan", Orange.distance.Manhattan)]
+                 ("Manhattan", Orange.distance.Manhattan),
+                 ("Cosine", Orange.distance.Cosine)]
 
     graph_name = "scene"
     buttons_area_orientation = Qt.Vertical
@@ -88,6 +90,8 @@ class OWSilhouettePlot(widget.OWWidget):
     class Warning(widget.OWWidget.Warning):
         missing_cluster_assignment = Msg(
             "{} instance{s} omitted (missing cluster assignment)")
+        nan_distances = Msg("{} instance{s} omitted (undefined distances)")
+        ignoring_categorical = Msg("Ignoring categorical features")
 
     def __init__(self):
         super().__init__()
@@ -113,8 +117,9 @@ class OWSilhouettePlot(widget.OWWidget):
 
         box = gui.vBox(self.controlArea, "Cluster Label")
         self.cluster_var_cb = gui.comboBox(
-            box, self, "cluster_var_idx", addSpace=4,
-            callback=self._invalidate_scores)
+            box, self, "cluster_var_idx", contentsLength=14, addSpace=4,
+            callback=self._invalidate_scores
+        )
         gui.checkBox(
             box, self, "group_by_cluster", "Group by cluster",
             callback=self._replot)
@@ -128,7 +133,8 @@ class OWSilhouettePlot(widget.OWWidget):
             callback=self._update_bar_size, addSpace=6)
         gui.widgetLabel(box, "Annotations:")
         self.annotation_cb = gui.comboBox(
-            box, self, "annotation_var_idx", callback=self._update_annotations)
+            box, self, "annotation_var_idx", contentsLength=14,
+            callback=self._update_annotations)
         self.annotation_var_model = itemmodels.VariableListModel(parent=self)
         self.annotation_var_model[:] = ["None"]
         self.annotation_cb.setModel(self.annotation_var_model)
@@ -165,7 +171,7 @@ class OWSilhouettePlot(widget.OWWidget):
     @check_sql_input
     def set_data(self, data):
         """
-        Set the input data set.
+        Set the input dataset.
         """
         self.closeContext()
         self.clear()
@@ -248,8 +254,13 @@ class OWSilhouettePlot(widget.OWWidget):
 
         if self._matrix is None and self.data is not None:
             _, metric = self.Distances[self.distance_idx]
+            data = self.data
+            if not metric.supports_discrete and any(
+                    a.is_discrete for a in data.domain.attributes):
+                self.Warning.ignoring_categorical()
+                data = Orange.distance.remove_discrete_features(data)
             try:
-                self._matrix = np.asarray(metric(self.data))
+                self._matrix = np.asarray(metric(data))
             except MemoryError:
                 self.Error.memory_error()
                 return
@@ -268,13 +279,15 @@ class OWSilhouettePlot(widget.OWWidget):
 
     def _clear_messages(self):
         self.Error.clear()
-        self.Warning.missing_cluster_assignment.clear()
+        self.Warning.clear()
 
     def _update_labels(self):
         labelvar = self.cluster_var_model[self.cluster_var_idx]
         labels, _ = self.data.get_column_view(labelvar)
         labels = np.asarray(labels, dtype=float)
-        mask = np.isnan(labels)
+        cluster_mask = np.isnan(labels)
+        dist_mask = np.isnan(self._matrix).all(axis=0)
+        mask = cluster_mask | dist_mask
         labels = labels.astype(int)
         labels = labels[~mask]
 
@@ -293,11 +306,15 @@ class OWSilhouettePlot(widget.OWWidget):
         self._labels = labels
         self._silhouette = silhouette
 
-        if labels is not None:
-            count_missing = np.count_nonzero(mask)
+        if mask is not None:
+            count_missing = np.count_nonzero(cluster_mask)
             if count_missing:
                 self.Warning.missing_cluster_assignment(
                     count_missing, s="s" if count_missing > 1 else "")
+            count_nandist = np.count_nonzero(dist_mask)
+            if count_nandist:
+                self.Warning.nan_distances(
+                    count_nandist, s="s" if count_nandist > 1 else "")
 
     def _set_bar_height(self):
         visible = self.bar_size >= 5

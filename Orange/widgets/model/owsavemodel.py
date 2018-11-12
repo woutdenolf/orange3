@@ -1,6 +1,7 @@
 import os
 
-import dill as pickle
+import pickle
+
 from AnyQt.QtWidgets import (
     QComboBox, QStyle, QSizePolicy, QFileDialog, QApplication
 )
@@ -18,6 +19,7 @@ class OWSaveModel(widget.OWWidget):
     icon = "icons/SaveModel.svg"
     replaces = ["Orange.widgets.classify.owsaveclassifier.OWSaveClassifier"]
     priority = 3000
+    keywords = []
 
     class Inputs:
         model = Input("Model", Model)

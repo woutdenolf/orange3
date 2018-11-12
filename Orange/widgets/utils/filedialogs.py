@@ -5,8 +5,9 @@ from AnyQt.QtGui import QBrush
 from AnyQt.QtWidgets import \
     QMessageBox, QFileDialog, QFileIconProvider, QComboBox
 
-from Orange.data.io import FileFormat
+from Orange.data.io import FileFormat, Compression
 from Orange.widgets.settings import Setting
+from Orange.util import deprecated
 
 
 def fix_extension(ext, format, suggested_ext, suggested_format):
@@ -41,6 +42,7 @@ def format_filter(writer):
     return '{} (*{})'.format(writer.DESCRIPTION, ' *'.join(writer.EXTENSIONS))
 
 
+@deprecated
 def dialog_formats():
     """
     Return readable file types for QFileDialogs.
@@ -53,59 +55,59 @@ def dialog_formats():
 
 
 def get_file_name(start_dir, start_filter, file_formats):
-    """
-    Get filename for the given possible file formats
+    return open_filename_dialog_save(start_dir, start_filter,
+                                     sorted(set(file_formats.values()), key=lambda x: x.PRIORITY))
 
+
+def open_filename_dialog_save(start_dir, start_filter, file_formats):
+    """
     The function uses the standard save file dialog with filters from the
     given file formats. Extension is added automatically, if missing. If the
     user enters file extension that does not match the file format, (s)he is
     given a dialog to decide whether to fix the extension or the format.
 
-    Function also returns the writer and filter to cover the case where the
-    same extension appears in multiple filters. Although `file_format` is a
-    dictionary that associates its extension with one writer, writers can
-    still have other extensions that are allowed.
-
     Args:
         start_dir (str): initial directory, optionally including the filename
         start_filter (str): initial filter
-        file_formats (dict {extension: Orange.data.io.FileFormat}): file formats
+        file_formats (a list of Orange.data.io.FileFormat): file formats
     Returns:
         (filename, writer, filter), or `(None, None, None)` on cancel
     """
-    writers = sorted(set(file_formats.values()), key=lambda w: w.PRIORITY)
-    filters = [format_filter(w) for w in writers]
-    if start_filter not in filters:
-        start_filter = filters[0]
-
     while True:
-        filename, filter = QFileDialog.getSaveFileName(
-            None, 'Save As...', start_dir, ';;'.join(filters), start_filter)
+        dialog = QFileDialog.getSaveFileName
+        filename, format, filter = \
+            open_filename_dialog(start_dir, start_filter, file_formats,
+                                 add_all=False, title="Save as...", dialog=dialog)
         if not filename:
             return None, None, None
 
-        writer = writers[filters.index(filter)]
         base, ext = os.path.splitext(filename)
+        if ext in Compression.all:
+            base, base_ext = os.path.splitext(base)
+            ext = base_ext + ext
         if not ext:
-            filename += writer.EXTENSIONS[0]
-        elif ext not in writer.EXTENSIONS:
-            format = writer.DESCRIPTION
-            suggested_ext = writer.EXTENSIONS[0]
-            suggested_format = \
-                ext in file_formats and file_formats[ext].DESCRIPTION
-            res = fix_extension(ext, format, suggested_ext, suggested_format)
+            filename += format.EXTENSIONS[0]
+        elif ext not in format.EXTENSIONS:
+            suggested_ext = format.EXTENSIONS[0]
+            suggested_format = False
+            for f in file_formats:  # find the first format
+                if ext in f.EXTENSIONS:
+                    suggested_format = f
+                    break
+            res = fix_extension(ext, format.DESCRIPTION, suggested_ext,
+                                suggested_format.DESCRIPTION if suggested_format else False)
             if res == fix_extension.CANCEL:
                 continue
             if res == fix_extension.CHANGE_EXT:
                 filename = base + suggested_ext
             elif res == fix_extension.CHANGE_FORMAT:
-                writer = file_formats[ext]
-                filter = format_filter(writer)
-        return filename, writer, filter
+                format = suggested_format
+                filter = format_filter(format)
+        return filename, format, filter
 
 
-def open_filename_dialog(start_dir, start_filter, file_formats, title="Open...",
-                         dialog=None):
+def open_filename_dialog(start_dir, start_filter, file_formats,
+                         add_all=True, title="Open...", dialog=None):
     """
     Open file dialog with file formats.
 
@@ -116,6 +118,7 @@ def open_filename_dialog(start_dir, start_filter, file_formats, title="Open...",
         start_dir (str): initial directory, optionally including the filename
         start_filter (str): initial filter
         file_formats (a list of Orange.data.io.FileFormat): file formats
+        add_all (bool): add a filter for all supported extensions
         title (str): title of the dialog
         dialog: a function that creates a QT dialog
     Returns:
@@ -125,12 +128,13 @@ def open_filename_dialog(start_dir, start_filter, file_formats, title="Open...",
     filters = [format_filter(f) for f in file_formats]
 
     # add all readable files option
-    all_extensions = set()
-    for f in file_formats:
-        all_extensions.update(f.EXTENSIONS)
-    file_formats.insert(0, None)
-    filters.insert(0, "All readable files (*{})".format(
-        ' *'.join(sorted(all_extensions))))
+    if add_all:
+        all_extensions = set()
+        for f in file_formats:
+            all_extensions.update(f.EXTENSIONS)
+        file_formats.insert(0, None)
+        filters.insert(0, "All readable files (*{})".format(
+            ' *'.join(sorted(all_extensions))))
 
     if start_filter not in filters:
         start_filter = filters[0]
@@ -239,14 +243,17 @@ class RecentPath:
     def resolve(self, searchpaths):
         if self.prefix is None and os.path.exists(self.abspath):
             return self
-        elif self.prefix is not None:
+        else:
             for prefix, base in searchpaths:
-                if self.prefix == prefix:
+                path = None
+                if self.prefix and self.prefix == prefix:
                     path = os.path.join(base, self.relpath)
-                    if os.path.exists(path):
-                        return RecentPath(
-                            os.path.normpath(path), self.prefix, self.relpath,
-                            file_format=self.file_format)
+                elif not self.prefix and prefix == "basedir":
+                    path = os.path.join(base, self.basename)
+                if path and os.path.exists(path):
+                    return RecentPath(
+                        os.path.normpath(path), self.prefix, self.relpath,
+                        file_format=self.file_format)
         return None
 
     @property
@@ -300,7 +307,7 @@ class RecentPathsWidgetMixin:
     `RecentPathsWidgetMixin.__init__(self)`.
     """
 
-    #: list with search paths; overload to add, say, documentation data sets dir
+    #: list with search paths; overload to add, say, documentation datasets dir
     SEARCH_PATHS = []
 
     #: List[RecentPath]
@@ -342,16 +349,6 @@ class RecentPathsWidgetMixin:
         # change the list in-place for the case the widgets wraps this list
         # in some model (untested!)
         self.recent_paths[:] = rec
-
-    def workflowEnvChanged(self, key, value, oldvalue):
-        """
-        Handle changes of the working directory
-
-        The function is triggered by a signal from the canvas when the user
-        saves the schema.
-        """
-        if key == "basedir":
-            self._relocate_recent_files()
 
     def add_path(self, filename):
         """Add (or move) a file name to the top of recent paths"""
@@ -413,7 +410,7 @@ class RecentPathsWComboMixin(RecentPathsWidgetMixin):
                     self.file_combo.setItemData(i, QBrush(Qt.red),
                                                 Qt.TextColorRole)
 
-    def workflowEnvChanged(self, key, value, oldvalue):
-        super().workflowEnvChanged(key, value, oldvalue)
+    def update_file_list(self, key, value, oldvalue):
         if key == "basedir":
+            self._relocate_recent_files()
             self.set_file_list()

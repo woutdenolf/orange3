@@ -336,8 +336,10 @@ EOF
              -DBASEDIR="${basedir}" \
              -DPYINSTALLER=${pyinstaller} \
              -DINSTALL_REGISTRY_KEY=OrangeCanvas \
-             -DINSTALLERICON=scripts/windows/OrangeInstall.ico \
+             -DINSTALLERICON=scripts/windows/Orange.ico \
+             -DICONDIR="orange3\icons" \
              -DLICENSE_FILE="${BASEDIR}"/license.txt \
+             -DLAUNCHERMODULE="Orange.canvas" \
              "${extransisparams[@]}" \
              -NOCD \
              -V4 -WX \
@@ -370,5 +372,5 @@ cp "${CACHEDIR:?}/miniconda/Miniconda3-${MINICONDA_VERSION}-Windows-${CONDAPLATT
    "${BASEDIR:?}/"
 
 mkdir -p "${BASEDIR:?}/icons"
-cp scripts/windows/{orange.ico,OrangeOWS.ico} "${BASEDIR:?}/icons"
+cp scripts/windows/{Orange.ico,OrangeOWS.ico} "${BASEDIR:?}/icons"
 make-installer

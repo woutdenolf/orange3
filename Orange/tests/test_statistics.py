@@ -5,8 +5,9 @@ from functools import partial, wraps
 import numpy as np
 from scipy.sparse import csr_matrix, issparse, lil_matrix, csc_matrix
 
-from Orange.statistics.util import bincount, countnans, contingency, stats, \
-    nanmin, nanmax, unique, nanunique, mean, nanmean, digitize, var, nansum, nanmedian
+from Orange.statistics.util import bincount, countnans, contingency, digitize, \
+    mean, nanmax, nanmean, nanmedian, nanmin, nansum, nanunique, stats, std, \
+    unique, var, nanstd, nanvar
 
 
 def dense_sparse(test_case):
@@ -26,7 +27,9 @@ def dense_sparse(test_case):
 
             return sp_array
 
-        test_case(self, lambda x: np.array(x))
+        test_case(self, np.array)
+        test_case(self, csr_matrix)
+        test_case(self, csc_matrix)
         test_case(self, partial(sparse_with_explicit_zero, array=csr_matrix))
         test_case(self, partial(sparse_with_explicit_zero, array=csc_matrix))
 
@@ -51,6 +54,16 @@ class TestUtil(unittest.TestCase):
         cont_table, nans = contingency(x, y, 2, 2)
         np.testing.assert_equal(cont_table, [[1, 1, 0],
                                              [1, 0, 0],
+                                             [0, 0, 0]])
+        np.testing.assert_equal(nans, [1, 0, 0])
+
+    def test_weighted_contingency(self):
+        x = np.array([0, 1, 0, 2, np.nan])
+        y = np.array([0, 0, 1, np.nan, 0])
+        w = np.array([1, 2, 2, 3, 4])
+        cont_table, nans = contingency(x, y, 2, 2, weights=w)
+        np.testing.assert_equal(cont_table, [[1, 2, 0],
+                                             [2, 0, 0],
                                              [0, 0, 0]])
         np.testing.assert_equal(nans, [1, 0, 0])
 
@@ -178,6 +191,31 @@ class TestUtil(unittest.TestCase):
                     var(csr_matrix(data), axis=axis),
                     np.var(data, axis=axis)
                 )
+
+    @dense_sparse
+    def test_nanvar(self, array):
+        for X in self.data:
+            X_sparse = array(X)
+            np.testing.assert_array_equal(
+                nanvar(X_sparse),
+                np.nanvar(X))
+
+    def test_std(self):
+        for data in self.data:
+            for axis in chain((None,), range(len(data.shape))):
+                # Can't use array_equal here due to differences on 1e-16 level
+                np.testing.assert_array_almost_equal(
+                    std(csr_matrix(data), axis=axis),
+                    np.std(data, axis=axis)
+                )
+
+    @dense_sparse
+    def test_nanstd(self, array):
+        for X in self.data:
+            X_sparse = array(X)
+            np.testing.assert_array_equal(
+                nanstd(X_sparse),
+                np.nanstd(X))
 
 
 class TestDigitize(unittest.TestCase):
@@ -407,6 +445,22 @@ class TestBincount(unittest.TestCase):
 
         expected = [3, 0, 2, 1]
         np.testing.assert_equal(bincount(x, w)[0], expected)
+
+    @dense_sparse
+    def test_all_nans(self, array):
+        x = array([np.nan] * 5)
+        expected = []
+
+        np.testing.assert_equal(bincount(x)[0], expected)
+
+    @dense_sparse
+    def test_all_zeros_or_nans(self, array):
+        """Sparse arrays with only nans with no explicit zeros will have no non
+        zero indices. Check that this counts the zeros properly."""
+        x = array([np.nan] * 5 + [0] * 5)
+        expected = [5]
+
+        np.testing.assert_equal(bincount(x)[0], expected)
 
 
 class TestUnique(unittest.TestCase):

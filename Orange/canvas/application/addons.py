@@ -5,20 +5,19 @@ import logging
 import re
 import errno
 import shlex
-import shutil
 import subprocess
 import itertools
+import json
+import traceback
 import concurrent.futures
 
-from site import USER_SITE
-from glob import iglob
 from collections import namedtuple, deque
 from xml.sax.saxutils import escape
 from distutils import version
-import urllib.request
-import xmlrpc.client
+from typing import Optional, List, Union, Tuple  # pylint: disable=unused-import
 
 import pkg_resources
+import requests
 
 try:
     import docutils.core
@@ -29,7 +28,7 @@ from AnyQt.QtWidgets import (
     QWidget, QDialog, QLabel, QLineEdit, QTreeView, QHeaderView,
     QTextBrowser, QDialogButtonBox, QProgressDialog,
     QVBoxLayout, QStyle, QStyledItemDelegate, QStyleOptionViewItem,
-    QApplication, QHBoxLayout
+    QApplication, QHBoxLayout, QPushButton, QFormLayout
 )
 
 from AnyQt.QtGui import (
@@ -47,16 +46,14 @@ from ..gui.utils import message_warning, message_information, \
                         OSX_NSURL_toLocalFile
 from ..help.manager import get_dist_meta, trim, parse_meta
 
-log = logging.getLogger(__name__)
 
-OFFICIAL_ADDONS = [
-    "Orange-Bioinformatics",
-    "Orange3-DataFusion",
-    "Orange3-Prototypes",
-    "Orange3-Text",
-    "Orange3-Network",
-    "Orange3-Associate",
-]
+PYPI_API_JSON = "https://pypi.org/pypi/{name}/json"
+
+# generated from biolab/orange3-addons repository
+OFFICIAL_ADDON_LIST = "https://orange.biolab.si/addons/list"
+
+
+log = logging.getLogger(__name__)
 
 Installable = namedtuple(
     "Installable",
@@ -89,8 +86,12 @@ Installed = namedtuple(
      "local"]
 )
 
+#: An installable item/slot
+Item = Union[Available, Installed]
+
 
 def is_updatable(item):
+    # type: (Item) -> bool
     if isinstance(item, Available):
         return False
     elif item.installable is None:
@@ -210,7 +211,9 @@ class AddonManagerWidget(QWidget):
             placeholderText=self.tr("Filter")
         )
 
-        self.layout().addWidget(self.__search)
+        self.tophlayout = topline = QHBoxLayout()
+        topline.addWidget(self.__search)
+        self.layout().addLayout(topline)
 
         self.__view = view = QTreeView(
             rootIsDecorated=False,
@@ -224,7 +227,7 @@ class AddonManagerWidget(QWidget):
         self.__model = model = QStandardItemModel()
         model.setHorizontalHeaderLabels(["", "Name", "Version", "Action"])
         model.dataChanged.connect(self.__data_changed)
-        proxy = QSortFilterProxyModel(
+        self.__proxy = proxy = QSortFilterProxyModel(
             filterKeyColumn=1,
             filterCaseSensitivity=Qt.CaseInsensitive
         )
@@ -253,10 +256,10 @@ class AddonManagerWidget(QWidget):
         self.layout().addWidget(self.__details)
 
     def set_items(self, items):
+        # type: (List[Item]) -> None
         self.__items = items
         model = self.__model
-        model.clear()
-        model.setHorizontalHeaderLabels(["", "Name", "Version", "Action"])
+        model.setRowCount(0)
 
         for item in items:
             if isinstance(item, Installed):
@@ -286,9 +289,9 @@ class AddonManagerWidget(QWidget):
                 item1.setCheckState(Qt.Checked)
             else:
                 item1.setCheckState(Qt.Unchecked)
+            item1.setData(item, Qt.UserRole)
 
             item2 = QStandardItem(cleanup(name))
-
             item2.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
             item2.setToolTip(summary)
             item2.setData(item, Qt.UserRole)
@@ -304,6 +307,8 @@ class AddonManagerWidget(QWidget):
 
             model.appendRow([item1, item2, item3, item4])
 
+        model.sort(1)
+
         self.__view.resizeColumnToContents(0)
         self.__view.setColumnWidth(
             1, max(150, self.__view.sizeHintForColumn(1)))
@@ -315,11 +320,18 @@ class AddonManagerWidget(QWidget):
                 self.__view.model().index(0, 0),
                 QItemSelectionModel.Select | QItemSelectionModel.Rows
             )
+        self.__proxy.sort(1)  # sorting list of add-ons in alphabetical order
+
+    def items(self):
+        # type: () -> List[Item]
+        return list(self.__items)
 
     def item_state(self):
+        # type: () -> List['Action']
         steps = []
-        for i, item in enumerate(self.__items):
+        for i in range(self.__model.rowCount()):
             modelitem = self.__model.item(i, 0)
+            item = modelitem.data(Qt.UserRole)
             state = modelitem.checkState()
             if modelitem.flags() & Qt.ItemIsTristate and state == Qt.Checked:
                 steps.append((Upgrade, item))
@@ -329,6 +341,37 @@ class AddonManagerWidget(QWidget):
                 steps.append((Uninstall, item))
 
         return steps
+
+    def set_item_state(self, steps):
+        # type: (List['Action']) -> None
+        model = self.__model
+        if model.rowCount() == 0:
+            return
+
+        for row in range(model.rowCount()):
+            modelitem = model.item(row, 0)  # type: QStandardItem
+            item = modelitem.data(Qt.UserRole)  # type: Item
+            # Find the action command in the steps list for the item
+            cmd = -1
+            for cmd_, item_ in steps:
+                if item == item_:
+                    cmd = cmd_
+                    break
+            if isinstance(item, Available):
+                modelitem.setCheckState(
+                    Qt.Checked if cmd == Install else Qt.Unchecked
+                )
+            elif isinstance(item, Installed):
+                if cmd == Upgrade:
+                    modelitem.setCheckState(Qt.Checked)
+                elif cmd == Uninstall:
+                    modelitem.setCheckState(Qt.Unchecked)
+                elif is_updatable(item):
+                    modelitem.setCheckState(Qt.PartiallyChecked)
+                else:
+                    modelitem.setCheckState(Qt.Checked)
+            else:
+                assert False
 
     def __selected_row(self):
         indices = self.__view.selectedIndexes()
@@ -352,7 +395,7 @@ class AddonManagerWidget(QWidget):
         for i in rows:
             modelitem = self.__model.item(i, 0)
             actionitem = self.__model.item(i, 3)
-            item = self.__items[i]
+            item = modelitem.data(Qt.UserRole)
 
             state = modelitem.checkState()
             flags = modelitem.flags()
@@ -375,16 +418,6 @@ class AddonManagerWidget(QWidget):
             item = self.__model.item(index, 1)
             item = item.data(Qt.UserRole)
             assert isinstance(item, (Installed, Available))
-#             if isinstance(item, Available):
-#                 self.__installed_label.setText("")
-#                 self.__available_label.setText(str(item.available.version))
-#             elif item.installable is not None:
-#                 self.__installed_label.setText(str(item.local.version))
-#                 self.__available_label.setText(str(item.available.version))
-#             else:
-#                 self.__installed_label.setText(str(item.local.version))
-#                 self.__available_label.setText("")
-
             text = self._detailed_text(item)
             self.__details.setText(text)
 
@@ -454,20 +487,23 @@ class AddonManagerDialog(QDialog):
 
         buttons = QDialogButtonBox(
             orientation=Qt.Horizontal,
-            standardButtons=QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+            standardButtons=QDialogButtonBox.Ok | QDialogButtonBox.Cancel,
         )
+        addmore = QPushButton(
+            "Add more...", toolTip="Add an add-on not listed below",
+            autoDefault=False
+        )
+        self.addonwidget.tophlayout.addWidget(addmore)
+        addmore.clicked.connect(self.__run_add_package_dialog)
+
         buttons.accepted.connect(self.__accepted)
         buttons.rejected.connect(self.reject)
 
         self.layout().addWidget(buttons)
 
-        # No system access => install into user site-packages
-        self.user_install = not os.access(sysconfig.get_path("purelib"),
-                                          os.W_OK)
-
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         if AddonManagerDialog._packages is None:
-            self._f_pypi_addons = self._executor.submit(list_pypi_addons)
+            self._f_pypi_addons = self._executor.submit(list_available_versions)
         else:
             self._f_pypi_addons = concurrent.futures.Future()
             self._f_pypi_addons.set_result(AddonManagerDialog._packages)
@@ -476,26 +512,116 @@ class AddonManagerDialog(QDialog):
             method_queued(self._set_packages, (object,))
         )
 
-        self.__progress = QProgressDialog(
-            self, Qt.Sheet,
-            minimum=0, maximum=0,
-            labelText=self.tr("Retrieving package list"),
-            sizeGripEnabled=False,
-            windowTitle="Progress"
-        )
-
-        self.__progress.rejected.connect(self.reject)
+        self.__progress = None  # type: Optional[QProgressDialog]
         self.__thread = None
         self.__installer = None
 
+        if not self._f_pypi_addons.done():
+            self.__progressDialog()
+
+    def __run_add_package_dialog(self):
+        dlg = QDialog(self, windowTitle="Add add-on by name")
+        dlg.setAttribute(Qt.WA_DeleteOnClose)
+
+        vlayout = QVBoxLayout()
+        form = QFormLayout()
+        form.setContentsMargins(0, 0, 0, 0)
+        nameentry = QLineEdit(
+            placeholderText="Package name",
+            toolTip="Enter a package name as displayed on "
+                    "PyPI (capitalization is not important)")
+        nameentry.setMinimumWidth(250)
+        form.addRow("Name:", nameentry)
+        vlayout.addLayout(form)
+        buttons = QDialogButtonBox(
+            standardButtons=QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+        )
+        okb = buttons.button(QDialogButtonBox.Ok)
+        okb.setEnabled(False)
+        okb.setText("Add")
+
+        def changed(name):
+            okb.setEnabled(bool(name))
+        nameentry.textChanged.connect(changed)
+        vlayout.addWidget(buttons)
+        vlayout.setSizeConstraint(QVBoxLayout.SetFixedSize)
+        dlg.setLayout(vlayout)
+        f = None
+
+        def query():
+            nonlocal f
+            name = nameentry.text()
+            f = self._executor.submit(pypi_json_query_project_meta, [name])
+            okb.setDisabled(True)
+
+            def ondone(f):
+                error_text = ""
+                error_details = ""
+                try:
+                    pkgs = f.result()
+                except Exception:
+                    log.error("Query error:", exc_info=True)
+                    error_text = "Failed to query package index"
+                    error_details = traceback.format_exc()
+                    pkg = None
+                else:
+                    pkg = pkgs[0]
+                    if pkg is None:
+                        error_text = "'{}' not was not found".format(name)
+                if pkg:
+                    method_queued(self.add_package, (object,))(pkg)
+                    method_queued(dlg.accept, ())()
+                else:
+                    method_queued(self.__show_error_for_query, (str, str)) \
+                        (error_text, error_details)
+                    method_queued(dlg.reject, ())()
+
+            f.add_done_callback(ondone)
+
+        buttons.accepted.connect(query)
+        buttons.rejected.connect(dlg.reject)
+        dlg.exec_()
+
+    @Slot(str, str)
+    def __show_error_for_query(self, text, error_details):
+        message_error(text, title="Error", details=error_details)
+
+    @Slot(object)
+    def add_package(self, installable):
+        # type: (Installable) -> None
+        if installable.name in {p.name for p in self._packages}:
+            return
+        else:
+            packages = self._packages + [installable]
+        state = self.addonwidget.item_state()
+        self.set_packages(packages)
+        self.addonwidget.set_item_state(state)
+
+    def __progressDialog(self):
+        if self.__progress is None:
+            self.__progress = QProgressDialog(
+                self,
+                minimum=0, maximum=0,
+                labelText=self.tr("Retrieving package list"),
+                sizeGripEnabled=False,
+                windowTitle="Progress",
+            )
+            self.__progress.setWindowModality(Qt.WindowModal)
+            self.__progress.canceled.connect(self.reject)
+            self.__progress.hide()
+
+        return self.__progress
+
     @Slot(object)
     def _set_packages(self, f):
-        if self.__progress.isVisible():
-            self.__progress.close()
+        if self.__progress is not None:
+            self.__progress.hide()
+            self.__progress.deleteLater()
+            self.__progress = None
 
         try:
             packages = f.result()
-        except (IOError, OSError, ValueError) as err:
+        except Exception as err:
             message_warning(
                 "Could not retrieve package list",
                 title="Error",
@@ -504,11 +630,15 @@ class AddonManagerDialog(QDialog):
             )
             log.error(str(err), exc_info=True)
             packages = []
-        except Exception:
-            raise
         else:
             AddonManagerDialog._packages = packages
 
+        self.set_packages(packages)
+
+    @Slot(object)
+    def set_packages(self, installable):
+        # type: (List[Installable]) -> None
+        self._packages = packages = installable  # type: List[Installable]
         installed = list_installed_addons()
         dists = {dist.project_name: dist for dist in installed}
         packages = {pkg.name: pkg for pkg in packages}
@@ -550,7 +680,7 @@ class AddonManagerDialog(QDialog):
     def showEvent(self, event):
         super().showEvent(event)
 
-        if not self._f_pypi_addons.done():
+        if not self._f_pypi_addons.done() and self.__progress is not None:
             QTimer.singleShot(0, self.__progress.show)
 
     def done(self, retcode):
@@ -563,6 +693,8 @@ class AddonManagerDialog(QDialog):
 
     def closeEvent(self, event):
         super().closeEvent(event)
+        if self.__progress is not None:
+            self.__progress.hide()
         self._f_pypi_addons.cancel()
         self._executor.shutdown(wait=False)
 
@@ -592,10 +724,19 @@ class AddonManagerDialog(QDialog):
                 packages.append(
                     Installable(name, vers, summary,
                                 descr or summary, path, [path]))
-        future = concurrent.futures.Future()
-        future.set_result((AddonManagerDialog._packages or []) + packages)
-        self._set_packages(future)
-        self.addonwidget.set_install_projects(names)
+
+        if packages:
+            state = self.addonwidget.item_state()
+            self.set_packages((self._packages or []) + packages)
+            items = self.addonwidget.items()
+            # mark for installation the added packages
+            for item in items:
+                if item.installable in packages:
+                    if isinstance(item, Available):
+                        state.append((Install, item))
+                    elif isinstance(item, Installed) and is_updatable(item):
+                        state.append((Upgrade, item))
+            self.addonwidget.set_item_state(state)
 
     def __accepted(self):
         steps = self.addonwidget.item_state()
@@ -605,19 +746,18 @@ class AddonManagerDialog(QDialog):
             steps = sorted(
                 steps, key=lambda step: 0 if step[0] == Uninstall else 1
             )
-            self.__installer = Installer(steps=steps,
-                                         user_install=self.user_install)
+            self.__installer = Installer(steps=steps)
             self.__thread = QThread(self)
             self.__thread.start()
 
             self.__installer.moveToThread(self.__thread)
             self.__installer.finished.connect(self.__on_installer_finished)
             self.__installer.error.connect(self.__on_installer_error)
-            self.__installer.installStatusChanged.connect(
-                self.__progress.setLabelText)
 
-            self.__progress.show()
-            self.__progress.setLabelText("Installing")
+            progress = self.__progressDialog()
+            self.__installer.installStatusChanged.connect(progress.setLabelText)
+            progress.show()
+            progress.setLabelText("Installing")
 
             self.__installer.start()
 
@@ -634,71 +774,95 @@ class AddonManagerDialog(QDialog):
         self.reject()
 
     def __on_installer_finished(self):
-        message = (
-            ("Changes successfully applied in <i>{}</i>.<br>".format(
-                USER_SITE) if self.user_install else '') +
-            "Please restart Orange for changes to take effect.")
+        message = "Please restart Orange for changes to take effect."
         message_information(message, parent=self)
         self.accept()
 
 
-class SafeUrllibTransport(xmlrpc.client.Transport):
-    """Urllib for HTTPS connections that automatically handles proxies."""
-
-    def single_request(self, host, handler, request_body, verbose=False):
-        req = urllib.request.Request('https://%s%s' % (host, handler), request_body)
-        req.add_header('User-agent', self.user_agent)
-        req.add_header('Content-Type', 'text/xml')
-        self.verbose = verbose
-        opener = urllib.request.build_opener()
-        return self.parse_response(opener.open(req))
-
-
-def list_pypi_addons():
+def list_available_versions():
     """
-    List add-ons available on pypi.
+    List add-ons available.
     """
-    from ..config import ADDON_PYPI_SEARCH_SPEC
+    addons = requests.get(OFFICIAL_ADDON_LIST).json()
 
-    pypi = xmlrpc.client.ServerProxy(
-        "https://pypi.python.org/pypi/",
-        transport=SafeUrllibTransport()
-    )
-    addons = pypi.search(ADDON_PYPI_SEARCH_SPEC)
+    # query pypi.org for installed add-ons that are not in our list
+    installed = list_installed_addons()
+    missing = set(dist.project_name for dist in installed) - \
+              set(a.get("info", {}).get("name", "") for a in addons)
+    for p in missing:
+        response = requests.get(PYPI_API_JSON.format(name=p))
+        if response.status_code != 200:
+            continue
+        addons.append(response.json())
 
-    for addon in OFFICIAL_ADDONS:
-        if not any(a for a in addons if a['name'] == addon):
-            addons.append({"name": addon, "version": '0'})
-
-    multicall = xmlrpc.client.MultiCall(pypi)
-    for addon in addons:
-        name = addon["name"]
-        multicall.package_releases(name)
-
-    releases = multicall()
-    multicall = xmlrpc.client.MultiCall(pypi)
-    for addon, versions in zip(addons, releases):
-        # Workaround for PyPI bug of search not returning the latest versions
-        # https://bitbucket.org/pypa/pypi/issues/326/my-package-doesnt-appear-in-the-search
-        version_ = max(versions, key=version.LooseVersion)
-
-        name = addon["name"]
-        multicall.release_data(name, version_)
-
-    results = list(multicall())
     packages = []
-
-    for release in results:
-        if release:
-            # ignore releases without actual source/wheel/egg files,
-            # or with empty metadata (deleted from PyPi?).
+    for addon in addons:
+        try:
+            info = addon["info"]
             packages.append(
-                Installable(release["name"], release["version"],
-                            release["summary"], release["description"],
-                            release["package_url"],
-                            release["package_url"])
+                Installable(info["name"], info["version"],
+                            info["summary"], info["description"],
+                            info["package_url"],
+                            info["package_url"])
             )
+        except (TypeError, KeyError):
+            continue  # skip invalid packages
+
     return packages
+
+
+def pypi_json_query_project_meta(projects, session=None):
+    # type: (List[str], str, Optional[requests.Session]) -> List[Installable]
+    """
+    Parameters
+    ----------
+    projects : List[str]
+        List of project names to query
+    session : Optional[requests.Session]
+    """
+    if session is None:
+        session = requests.Session()
+
+    rval = []
+    for name in projects:
+        r = session.get(PYPI_API_JSON.format(name=name))
+        if r.status_code != 200:
+            rval.append(None)
+        else:
+            try:
+                meta = r.json()
+            except json.JSONDecodeError:
+                rval.append(None)
+            else:
+                try:
+                    rval.append(installable_from_json_response(meta))
+                except (TypeError, KeyError):
+                    rval.append(None)
+    return rval
+
+
+def installable_from_json_response(meta):
+    # type: (dict) -> Installable
+    """
+    Extract relevant project meta data from a PyPiJSONRPC response
+
+    Parameters
+    ----------
+    meta : dict
+        JSON response decoded into python native dict.
+
+    Returns
+    -------
+    installable : Installable
+    """
+    info = meta["info"]
+    name = info["name"]
+    version = info.get("version", "0")
+    summary = info.get("summary", "")
+    description = info.get("description", "")
+    package_url = info.get("package_url", "")
+
+    return Installable(name, version, summary, description, package_url, [])
 
 
 def list_installed_addons():
@@ -719,21 +883,22 @@ def unique(iterable):
     return (el for el in iterable if not observed(el))
 
 
-def _env_with_proxies():
-    """
-    Return system environment with proxies obtained from urllib so that
-    they can be used with pip.
-    """
-    proxies = urllib.request.getproxies()
-    env = dict(os.environ)
-    if "http" in proxies:
-        env["HTTP_PROXY"] = proxies["http"]
-    if "https" in proxies:
-        env["HTTPS_PROXY"] = proxies["https"]
-    return env
+def have_install_permissions():
+    """Check if we can create a file in the site-packages folder.
+    This works on a Win7 miniconda install, where os.access did not. """
+    try:
+        fn = os.path.join(sysconfig.get_path("purelib"), "test_write_" + str(os.getpid()))
+        with open(fn, "w"):
+            pass
+        os.remove(fn)
+        return True
+    except OSError:
+        return False
 
 
 Install, Upgrade, Uninstall = 1, 2, 3
+
+Action = Tuple[int, Item]
 
 
 class CommandFailed(Exception):
@@ -751,11 +916,11 @@ class Installer(QObject):
     finished = Signal()
     error = Signal(str, object, int, list)
 
-    def __init__(self, parent=None, steps=[], user_install=False):
+    def __init__(self, parent=None, steps=[]):
         QObject.__init__(self, parent)
         self.__interupt = False
         self.__queue = deque(steps)
-        self.pip = PipInstaller(user_install)
+        self.pip = PipInstaller()
         self.conda = CondaInstaller()
 
     def start(self):
@@ -774,19 +939,19 @@ class Installer(QObject):
         try:
             if command == Install:
                 self.setStatusMessage(
-                    "Installing {}".format(pkg.installable.name))
+                    "Installing {}".format(cleanup(pkg.installable.name)))
                 if self.conda:
                     self.conda.install(pkg.installable, raise_on_fail=False)
                 self.pip.install(pkg.installable)
             elif command == Upgrade:
                 self.setStatusMessage(
-                    "Upgrading {}".format(pkg.installable.name))
+                    "Upgrading {}".format(cleanup(pkg.installable.name)))
                 if self.conda:
                     self.conda.upgrade(pkg.installable, raise_on_fail=False)
                 self.pip.upgrade(pkg.installable)
             elif command == Uninstall:
                 self.setStatusMessage(
-                    "Uninstalling {}".format(pkg.local.project_name))
+                    "Uninstalling {}".format(cleanup(pkg.local.project_name)))
                 if self.conda:
                     try:
                         self.conda.uninstall(pkg.local, raise_on_fail=True)
@@ -808,14 +973,15 @@ class Installer(QObject):
 
 
 class PipInstaller:
-    def __init__(self, user_install=False):
-        self.user_install = user_install
+
+    def __init__(self):
+        arguments = QSettings().value('add-ons/pip-install-arguments', '', type=str)
+        self.arguments = shlex.split(arguments)
 
     def install(self, pkg):
         cmd = ["python", "-m", "pip", "install"]
-        if self.user_install:
-            cmd.append("--user")
-        if pkg.package_url.startswith("http://"):
+        cmd.extend(self.arguments)
+        if pkg.package_url.startswith("http://") or pkg.package_url.startswith("https://"):
             cmd.append(pkg.name)
         else:
             # Package url is path to the (local) wheel
@@ -831,8 +997,7 @@ class PipInstaller:
 
     def upgrade_no_deps(self, package):
         cmd = ["python", "-m", "pip", "install", "--upgrade", "--no-deps"]
-        if self.user_install:
-            cmd.append("--user")
+        cmd.extend(self.arguments)
         cmd.append(package.name)
 
         run_command(cmd)
@@ -841,36 +1006,11 @@ class PipInstaller:
         cmd = ["python", "-m", "pip", "uninstall", "--yes", dist.project_name]
         run_command(cmd)
 
-        if self.user_install:
-            # Remove the package forcefully; pip doesn't (yet) uninstall
-            # --user packages (or any package outside sys.prefix?)-
-            # google: pip "Not uninstalling ?" "outside environment"
-            self.manual_uninstall(dist)
-
-    def manual_uninstall(self, dist):
-        install_path = os.path.join(
-            USER_SITE, re.sub('[^\w]', '_', dist.project_name))
-        pip_record = next(iglob(install_path + '*.dist-info/RECORD'),
-                          None)
-        if pip_record:
-            with open(pip_record) as f:
-                files = [line.rsplit(',', 2)[0] for line in f]
-        else:
-            files = [os.path.join(
-                USER_SITE, 'orangecontrib',
-                dist.project_name.split('-')[-1].lower()), ]
-        for match in itertools.chain(files, iglob(install_path + '*')):
-            print('rm -rf', match)
-            if os.path.isdir(match):
-                shutil.rmtree(match)
-            elif os.path.exists(match):
-                os.unlink(match)
-
 
 class CondaInstaller:
     def __init__(self):
-        enabled = QSettings().value('add-ons/allow-conda-experimental',
-                                    False, type=bool)
+        enabled = QSettings().value('add-ons/allow-conda',
+                                    True, type=bool)
         if enabled:
             self.conda = self._find_conda()
         else:
@@ -988,7 +1128,6 @@ def create_process(cmd, executable=None, **kwargs):
         cmd,
         executable=executable,
         cwd=None,
-        env=_env_with_proxies(),
         stderr=subprocess.STDOUT,
         stdout=subprocess.PIPE,
         bufsize=-1,

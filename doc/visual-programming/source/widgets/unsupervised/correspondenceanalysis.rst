@@ -1,23 +1,12 @@
 Correspondence Analysis
 =======================
 
-.. figure:: icons/correspondence-analysis.png
+Correspondence analysis for categorical multivariate data.
 
-Signals
--------
+Inputs
+    Data
+        input dataset
 
-**Inputs**:
-
--  **Data**
-
-   A data set.
-
-**Outputs**:
-
--  None
-
-Description
------------
 
 `Correspondence Analysis <https://en.wikipedia.org/wiki/Correspondence_analysis>`_ (CA)
 computes the CA linear transformation of the input data. While it is
@@ -37,7 +26,7 @@ Example
 -------
 
 Below, is a simple comparison between the **Correspondence Analysis** and
-:doc:`Scatter plot <../visualize/scatterplot>` widgets on the *Titanic* data set. While the :doc:`Scatter plot <../visualize/scatterplot>` shows
+:doc:`Scatter plot <../visualize/scatterplot>` widgets on the *Titanic* dataset. While the :doc:`Scatter plot <../visualize/scatterplot>` shows
 fairly well which class and sex had a good survival rate and which one
 didn't, **Correspondence Analysis** can plot several variables in a 2-D
 graph, thus making it easy to see the relations between variable values.

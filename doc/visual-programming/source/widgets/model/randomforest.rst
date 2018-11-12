@@ -1,38 +1,20 @@
-.. _model.rf:
-
 Random Forest
 =============
 
-.. figure:: icons/random-forest.png
-
 Predict using an ensemble of decision trees.
 
-Signals
--------
+Inputs
+    Data
+        input dataset
+    Preprocessor
+        preprocessing method(s)
 
-**Inputs**:
+Outputs
+    Learner
+        random forest learning algorithm
+    Model
+        trained model
 
--  **Data**
-
-   A data set
-
--  **Preprocessor**
-
-   Preprocessing method(s)
-
-**Outputs**:
-
--  **Learner**
-
-   A random forest learning algorithm with settings as specified in the
-   dialog.
-
--  **Model**
-
-   A trained model. Output signal sent only if input *Data* is present.
-
-Description
------------
 
 `Random forest <https://en.wikipedia.org/wiki/Random_forest>`_ is an ensemble learning method used for classification, regression and other tasks. It was first proposed by Tin Kam Ho and further developed by Leo Breiman (Breiman, 2001) and Adele Cutler.
 
@@ -45,14 +27,14 @@ Description
 
 1. Specify the name of the model. The default name is "Random Forest".
 2. Specify how many decision trees will be included in the forest (*Number of trees in the forest*), and how many attributes will be arbitrarily drawn for consideration at each node. If the latter is not specified (option *Number of attributes...* left unchecked), this number is equal to the square root of the number of attributes in the data. You can also choose to fix the seed for tree generation (*Fixed seed for random generator*), which enables replicability of the results.
-3. Original Brieman’s proposal is to grow the trees without any pre-prunning, but since pre-pruning often works quite well and is faster, the user can set the depth to which the trees will be grown (*Limit depth of individual trees*). Another pre-pruning option is to select the smallest subset that can be split (*Do not split subsets smaller than*).
+3. Original Breiman’s proposal is to grow the trees without any pre-pruning, but since pre-pruning often works quite well and is faster, the user can set the depth to which the trees will be grown (*Limit depth of individual trees*). Another pre-pruning option is to select the smallest subset that can be split (*Do not split subsets smaller than*).
 4. Produce a report. 
 5. Click *Apply* to communicate the changes to other widgets. Alternatively, tick the box on the left side of the *Apply* button and changes will be communicated automatically. 
 
 Examples
 --------
 
-For classification tasks, we use *iris* data set. Connect it to :doc:`Predictions <../evaluation/predictions>`. Then, connect :doc:`File <../data/file>` to **Random Forest** and :doc:`Tree <../model/tree>` and connect them further to :doc:`Predictions <../evaluation/predictions>`. Finally, observe the predictions for the two models.
+For classification tasks, we use *iris* dataset. Connect it to :doc:`Predictions <../evaluation/predictions>`. Then, connect :doc:`File <../data/file>` to **Random Forest** and :doc:`Tree <../model/tree>` and connect them further to :doc:`Predictions <../evaluation/predictions>`. Finally, observe the predictions for the two models.
 
 .. figure:: images/RandomForest-classification.png
 

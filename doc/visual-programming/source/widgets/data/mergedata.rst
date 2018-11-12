@@ -1,35 +1,21 @@
 Merge Data
 ==========
 
-.. figure:: icons/merge-data.png
+Merges two datasets, based on values of selected attributes.
 
-Merges two data sets, based on values of selected attributes.
+Inputs
+    Data
+        input dataset
+    Extra Data
+        additional dataset
 
-Signals
--------
+Outputs
+    Data
+        dataset with features added from extra data
 
-**Inputs**:
 
--  **Data**
-
-   Attribute-valued data set.
-
--  **Extra Data**
-
-   Attribute-valued data set.
-
-**Outputs**:
-
--  **Data**
-
-   Instances from input data to which attributes from input extra data are
-   added.
-
-Description
------------
-
-The **Merge Data** widget is used to horizontally merge two data sets, based
-on values of selected attributes. In the input, two data sets are
+The **Merge Data** widget is used to horizontally merge two datasets, based
+on values of selected attributes. In the input, two datasets are
 required, data and extra data. The widget allows selection of an attribute from each
 domain, which will be used to perform the merging. The widget produces
 one output. It corresponds to instances from the input data
@@ -48,8 +34,7 @@ Data was to be found, the attribute is removed from available merging attributes
    **Append columns from Extra Data** outputs all instances from
    Data appended by matching instances from Extra Data. When no match is found,
    unknown values are appended.
-   **Find matching rows** outputs similar as above,
-   except hen no match is found, instances are excluded.
+   **Find matching rows** outputs only matching instances.
    **Concatenate tables, merge rows** outputs all instances from both inputs,
    even though the match may not be found. In that case unknown values are
    assigned.
@@ -60,7 +45,7 @@ Data was to be found, the attribute is removed from available merging attributes
 Example
 -------
 
-Merging two data sets results in appending new attributes to the
+Merging two datasets results in appending new attributes to the
 original file, based on a selected common attribute. In the example
 below, we wanted to merge the **zoo.tab** file containing only factual
 data with :download:`zoo-with-images.tab <../data/zoo-with-images.tab>`
@@ -83,14 +68,3 @@ The third type of merging is shown in the next workflow. The output consist of
 both inputs, with unknown values assigned where no match was found.
 
 .. figure:: images/MergeData-Example3.png
-
-Hint
-----
-
-If the two data sets consist of equally-named attributes (other than
-the ones used to perform the merging), Orange will check by default for
-consistency of the values of these attributes and report an error in
-case of non-matching values. In order to avoid the consistency checking,
-make sure that new attributes are created for each data set: you may use the
-'*Columns with the same name in different files represent different
-variables*' option in the :doc:`File <../data/file>` widget for loading the data.

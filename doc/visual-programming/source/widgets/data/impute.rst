@@ -1,38 +1,23 @@
 Impute
 ======
 
-.. figure:: icons/impute.png
-
 Replaces unknown values in the data.
 
-Signals
--------
+Inputs
+    Data
+        input dataset
+    Learner
+        learning algorithm for imputation
 
-**Inputs**
+Outputs
+    Data
+        dataset with imputed values
 
--  **Data**
-
-   A data set.
-
--  **Learner for Imputation**
-
-   A learning algorithm to be used when values are imputed with a
-   predictive model. This algorithm, if given, substitutes the default
-   (1-NN).
-
-**Outputs**
-
--  **Data**
-
-   The same data set as in the input, but with the missing values imputed.
-
-Description
------------
 
 Some Orange's algorithms and visualizations cannot handle unknown values
 in the data. This widget does what statisticians call imputation: it
 substitutes missing values by values either computed from the data or
-set by the user.
+set by the user. The default imputation is (1-NN).
 
 .. figure:: images/impute-stamped.png
 
@@ -83,7 +68,7 @@ set by the user.
 Example
 -------
 
-To demonstrate how the **Impute** widget works, we played around with the *Iris* data set
+To demonstrate how the **Impute** widget works, we played around with the *Iris* dataset
 and deleted some of the data. We used the **Impute** widget and selected the 
 *Model-based imputer* to impute the missing values. In another :doc:`Data Table <../data/datatable>`, 
 we see how the question marks turned into distinct values ("Iris-setosa, "Iris-versicolor"). 

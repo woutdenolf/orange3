@@ -1,35 +1,20 @@
 CN2 Rule Induction
 ==================
 
-.. figure:: icons/cn2ruleinduction.png
-
 Induce rules from data using CN2 algorithm.
 
-Signals
--------
+Inputs
+    Data
+        input dataset
+    Preprocessor
+        preprocessing method(s)
 
-**Inputs**
+Outputs
+    Learner
+        CN2 learning algorithm 
+    CN2 Rule Classifier
+        trained model
 
--  **Data**
-
-   Data set.
-
--  **Preprocessor**
-
-   Preprocessing method(s)
-
-**Outputs**
-
--  **Learner**
-
-   The CN2 learning algorithm with settings as specified in the dialog.
-
--  **CN2 Rule Classifier**
-
-   A trained model. Output signal sent only if input *Data* is present.
-
-Description
------------
 
 The CN2 algorithm is a classification technique designed for the
 efficient induction of simple, comprehensible rules of form "if *cond*
@@ -97,7 +82,7 @@ then predict *class*", even in domains where noise may be present.
 Examples
 --------
 
-For the example below, we have used *zoo* data set and passed it to **CN2 Rule Induction**. We can review and interpret the built model with :doc:`CN2 Rule Viewer <../visualize/cn2ruleviewer>` widget.
+For the example below, we have used *zoo* dataset and passed it to **CN2 Rule Induction**. We can review and interpret the built model with :doc:`CN2 Rule Viewer <../visualize/cn2ruleviewer>` widget.
 
 .. figure:: images/CN2-visualize.png
 

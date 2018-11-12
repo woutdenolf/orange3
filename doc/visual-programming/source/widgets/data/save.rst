@@ -1,27 +1,14 @@
 Save Data
 =========
 
-.. figure:: icons/save.png
-
 Saves data to a file.
 
-Signals
--------
+Inputs
+    Data
+        input dataset
 
-**Inputs**:
 
--  **Data**
-
-   A data set.
-
-**Outputs**:
-
--  (None)
-
-Description
------------
-
-The **Save Data** widget considers a data set provided in the input channel
+The **Save Data** widget considers a dataset provided in the input channel
 and saves it to a data file with a specified name. It can save the
 data as a tab-delimited or a comma-separated file.
 
@@ -38,7 +25,7 @@ name is set or the user pushes the *Save* button.
 Example
 -------
 
-In the workflow below, we used the *Zoo* data set. We loaded the data into the :doc:`Scatter Plot <../visualize/scatterplot>` widget, with which
+In the workflow below, we used the *Zoo* dataset. We loaded the data into the :doc:`Scatter Plot <../visualize/scatterplot>` widget, with which
 we selected a subset of data instances and pushed them to the
 **Save Data** widget to store them in a file.
 

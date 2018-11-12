@@ -3,10 +3,10 @@ Preprocess
 ----------
 
 """
+import bottleneck as bn
 import numpy as np
 import scipy.sparse as sp
-import sklearn.preprocessing as skl_preprocessing
-import bottleneck as bn
+from sklearn.impute import SimpleImputer
 
 import Orange.data
 from Orange.data.filter import HasClass
@@ -130,7 +130,7 @@ class Impute(Preprocess):
 
     def __call__(self, data):
         """
-        Apply an imputation method to the given data set. Returns a new
+        Apply an imputation method to the given dataset. Returns a new
         data table with missing values replaced by their imputations.
 
         Parameters
@@ -147,7 +147,7 @@ class Impute(Preprocess):
 
 
 class SklImpute(Preprocess):
-    __wraps__ = skl_preprocessing.Imputer
+    __wraps__ = SimpleImputer
 
     def __init__(self, strategy='mean'):
         self.strategy = strategy
@@ -156,7 +156,7 @@ class SklImpute(Preprocess):
         from Orange.data.sql.table import SqlTable
         if isinstance(data, SqlTable):
             return Impute()(data)
-        imputer = skl_preprocessing.Imputer(strategy=self.strategy)
+        imputer = SimpleImputer(strategy=self.strategy)
         X = imputer.fit_transform(data.X)
         # Create new variables with appropriate `compute_value`, but
         # drop the ones which do not have valid `imputer.statistics_`
@@ -177,21 +177,21 @@ class SklImpute(Preprocess):
 class RemoveConstant(Preprocess):
     """
     Construct a preprocessor that removes features with constant values
-    from the data set.
+    from the dataset.
     """
 
     def __call__(self, data):
         """
-        Remove columns with constant values from the data set and return
+        Remove columns with constant values from the dataset and return
         the resulting data table.
 
         Parameters
         ----------
-        data : an input data set
+        data : an input dataset
         """
 
-        oks = bn.nanmin(data.X, axis=0) != \
-              bn.nanmax(data.X, axis=0)
+        oks = np.logical_and(~bn.allnan(data.X, axis=0),
+                             bn.nanmin(data.X, axis=0) != bn.nanmax(data.X, axis=0))
         atts = [data.domain.attributes[i] for i, ok in enumerate(oks) if ok]
         domain = Orange.data.Domain(atts, data.domain.class_vars,
                                     data.domain.metas)
@@ -202,21 +202,21 @@ class RemoveConstant(Preprocess):
 class RemoveNaNClasses(Preprocess):
     """
     Construct preprocessor that removes examples with missing class
-    from the data set.
+    from the dataset.
     """
 
     def __call__(self, data):
         """
-        Remove rows that contain NaN in any class variable from the data set
+        Remove rows that contain NaN in any class variable from the dataset
         and return the resulting data table.
 
         Parameters
         ----------
-        data : an input data set
+        data : an input dataset
 
         Returns
         -------
-        data : data set without rows with missing classes
+        data : dataset without rows with missing classes
         """
         return HasClass()(data)
 
@@ -286,7 +286,7 @@ class Normalize(Preprocess):
 
         if all(a.attributes.get('skip-normalization', False)
                for a in data.domain.attributes if a.is_continuous):
-            # Skip normalization for data sets where all features are marked as already normalized.
+            # Skip normalization for datasets where all features are marked as already normalized.
             # Required for SVMs (with normalizer as their default preprocessor) on sparse data to
             # retain sparse structure. Normalizing sparse data would otherwise result in a dense
             # matrix, which requires too much memory. For example, this is used for Bag of Words
@@ -488,9 +488,21 @@ class Scale(Preprocess):
         return data.transform(domain)
 
 
+class ApplyDomain(Preprocess):
+    def __init__(self, domain, name):
+        self._domain = domain
+        self._name = name
+
+    def __call__(self, data):
+        return data.transform(self._domain)
+
+    def __str__(self):
+        return self._name
+
+
 class PreprocessorList(Preprocess):
     """
-    Store a list of preprocessors and on call apply them to the data set.
+    Store a list of preprocessors and on call apply them to the dataset.
 
     Parameters
     ----------
@@ -503,7 +515,7 @@ class PreprocessorList(Preprocess):
 
     def __call__(self, data):
         """
-        Applies a list of preprocessors to the data set.
+        Applies a list of preprocessors to the dataset.
 
         Parameters
         ----------

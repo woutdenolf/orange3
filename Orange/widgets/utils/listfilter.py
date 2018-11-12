@@ -53,6 +53,7 @@ class VariablesListItemView(QListView):
         self.setDragDropMode(self.DragDrop)
         self.setDefaultDropAction(Qt.MoveAction)
         self.setDragDropOverwriteMode(False)
+        self.setUniformItemSizes(True)
         self.viewport().setAcceptDrops(True)
 
         #: type | Tuple[type]
@@ -168,7 +169,7 @@ class CompleterNavigator(QObject):
             return False
 
 
-def variables_filter(model, parent=None):
+def variables_filter(model, parent=None, accepted_type=Orange.data.Variable):
     """
     GUI components: ListView with a lineedit which works as a filter. One can write
     a variable name in a edit box and possible matches are then shown in a listview.
@@ -179,8 +180,7 @@ def variables_filter(model, parent=None):
 
         """
         nonlocal original_completer_items
-        items = [var.name for var in model]
-        items += ["%s=%s" % item for v in model for item in v.attributes.items()]
+        items = ["%s=%s" % item for v in model for item in v.attributes.items()]
 
         new = sorted(set(items))
         if new != original_completer_items:
@@ -211,7 +211,7 @@ def variables_filter(model, parent=None):
     filter_edit.setPlaceholderText("Filter")
 
     completer_model = QStringListModel()
-    completer = QCompleter(completer_model)
+    completer = QCompleter(completer_model, filter_edit)
     completer.setCompletionMode(QCompleter.InlineCompletion)
     completer.setModelSorting(QCompleter.CaseSensitivelySortedModel)
 
@@ -221,7 +221,7 @@ def variables_filter(model, parent=None):
 
     proxy = VariableFilterProxyModel()
     proxy.setSourceModel(model)
-    view = VariablesListItemView(acceptedType=Orange.data.Variable)
+    view = VariablesListItemView(acceptedType=accepted_type)
     view.setModel(proxy)
 
     model.dataChanged.connect(update_completer_model)

@@ -1,28 +1,17 @@
 Purge Domain
 ============
 
-.. figure:: icons/purge-domain.png
-
 Removes unused attribute values and useless attributes, sorts the
 remaining values.
 
-Signals
--------
+Inputs
+    Data
+        input dataset
 
-**Inputs**:
+Outputs
+    Data
+        filtered dataset
 
--  **Data**
-
-   A data set.
-
-**Outputs**:
-
--  **Data**
-
-   A filtered data set
-
-Description
------------
 
 Definitions of nominal attributes sometimes contain values which don’t
 appear in the data. Even if this does not happen in the original data,
@@ -78,7 +67,7 @@ Example
 The **Purge Domain** widget would typically appear after data filtering, for
 instance when selecting a subset of visualized examples.
 
-In the above schema, we play with the *adult.tab* data set: we visualize
+In the above schema, we play with the *adult.tab* dataset: we visualize
 it and select a portion of the data, which contains only four out of the
 five original classes. To get rid of the empty class, we put the data
 through **Purge Domain** before going on to the :doc:`Box Plot <../visualize/boxplot>` widget. The

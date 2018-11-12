@@ -15,10 +15,11 @@ import pickle
 import shlex
 import shutil
 from unittest.mock import patch
+from urllib.request import urlopen, Request, getproxies
 
 import pkg_resources
 
-from AnyQt.QtGui import QFont, QColor, QDesktopServices
+from AnyQt.QtGui import QFont, QColor, QPalette, QDesktopServices
 from AnyQt.QtWidgets import QMessageBox
 from AnyQt.QtCore import (
     Qt, QDir, QUrl, QSettings, QThread, pyqtSignal, QT_VERSION
@@ -51,11 +52,12 @@ import pyqtgraph
 pyqtgraph.setConfigOption("exitCleanup", False)
 
 
-
 MAX_LOG_FILE = 10
 """Maximal log file kepts for orange"""
 
 LOG_FILE_NAME = 'orange.log'
+
+default_proxies = None
 
 
 def fix_osx_10_9_private_font():
@@ -89,6 +91,31 @@ def fix_win_pythonw_std_stream():
             sys.stdout = open(os.devnull, "w")
         if sys.stderr is None:
             sys.stderr = open(os.devnull, "w")
+
+
+def fix_set_proxy_env():
+    """
+    Set http_proxy/https_proxy environment variables (for requests, pip, ...)
+    from user-specified settings or, if none, from system settings on OS X
+    and from registry on Windos.
+    """
+    # save default proxies so that setting can be reset
+    global default_proxies
+    if default_proxies is None:
+        default_proxies = getproxies()  # can also read windows and macos settings
+
+    settings = QSettings()
+    proxies = getproxies()
+    for scheme in set(["http", "https"]) | set(proxies):
+        from_settings = settings.value("network/" + scheme + "-proxy", "", type=str)
+        from_default = default_proxies.get(scheme, "")
+        env_scheme = scheme + '_proxy'
+        if from_settings:
+            os.environ[env_scheme] = from_settings
+        elif from_default:
+            os.environ[env_scheme] = from_default  # crucial for windows/macos support
+        else:
+            os.environ.pop(env_scheme, "")
 
 
 def make_sql_logger(level=logging.INFO):
@@ -136,7 +163,6 @@ def check_for_updates():
     if check_updates and time.time() - last_check_time > ONE_DAY:
         settings.setValue('startup/last-update-check-time', int(time.time()))
 
-        from urllib.request import urlopen, Request
         from Orange.version import version as current
 
         class GetLatestVersion(QThread):
@@ -244,7 +270,7 @@ def main(argv=None):
                       type="str", default=None)
     parser.add_option("--stylesheet",
                       help="Application level CSS style sheet to use",
-                      type="str", default="orange.qss")
+                      type="str", default=None)
     parser.add_option("--qt",
                       help="Additional arguments for QApplication",
                       type="str", default=None)
@@ -286,8 +312,16 @@ def main(argv=None):
 
     qt_argv = argv[:1]
 
-    if options.style is not None:
-        qt_argv += ["-style", options.style]
+    style = options.style
+    defaultstylesheet = "orange.qss"
+    fusiontheme = None
+
+    if style is not None:
+        if style.startswith("fusion:"):
+            qt_argv += ["-style", "fusion"]
+            _, _, fusiontheme = style.partition(":")
+        else:
+            qt_argv += ["-style", style]
 
     if options.qt is not None:
         qt_argv += shlex.split(options.qt)
@@ -299,6 +333,15 @@ def main(argv=None):
 
     log.debug("Starting CanvasApplicaiton with argv = %r.", qt_argv)
     app = CanvasApplication(qt_argv)
+    if app.style().metaObject().className() == "QFusionStyle":
+        if fusiontheme == "breeze-dark":
+            app.setPalette(breeze_dark())
+            defaultstylesheet = "darkorange.qss"
+
+    palette = app.palette()
+    if style is None and palette.color(QPalette.Window).value() < 127:
+        log.info("Switching default stylesheet to darkorange")
+        defaultstylesheet = "darkorange.qss"
 
     # NOTE: config.init() must be called after the QApplication constructor
     config.init()
@@ -312,6 +355,9 @@ def main(argv=None):
         shutil.rmtree(
             config.widget_settings_dir(),
             ignore_errors=True)
+
+    # Set http_proxy environment variables, after (potentially) clearing settings
+    fix_set_proxy_env()
 
     file_handler = logging.FileHandler(
         filename=os.path.join(config.log_dir(), "canvas.log"),
@@ -338,7 +384,7 @@ def main(argv=None):
 
     settings = QSettings()
 
-    stylesheet = options.stylesheet
+    stylesheet = options.stylesheet or defaultstylesheet
     stylesheet_string = None
 
     if stylesheet != "none":
@@ -381,6 +427,7 @@ def main(argv=None):
     QDir.addSearchPath("canvas_icons", os.path.join(dirpath, "icons"))
 
     canvas_window = CanvasMainWindow()
+    canvas_window.setAttribute(Qt.WA_DeleteOnClose)
     canvas_window.setWindowIcon(config.application_icon())
 
     if stylesheet_string is not None:
@@ -470,8 +517,8 @@ def main(argv=None):
         canvas_window.load_scheme(open_requests[-1].toLocalFile())
 
     # local references prevent destruction
-    _ = show_survey()
-    __ = check_for_updates()
+    survey = show_survey()
+    update_check = check_for_updates()
 
     # Tee stdout and stderr into Output dock
     log_view = canvas_window.log_view()
@@ -492,25 +539,68 @@ def main(argv=None):
     log.info("Entering main event loop.")
     try:
         with patch('sys.excepthook',
-                   ExceptHook(stream=stderr, canvas=canvas_window,
+                   ExceptHook(stream=stderr,
                               handledException=handle_exception)),\
              patch('sys.stderr', stderr),\
              patch('sys.stdout', stdout):
             status = app.exec_()
     except BaseException:
         log.error("Error in main event loop.", exc_info=True)
+        status = 42
 
     log.info('orange closing')
     canvas_window.deleteLater()
     app.processEvents()
     app.flush()
     del canvas_window
+    del survey
+    del update_check
 
+    app.processEvents()
+    app.flush()
     # Collect any cycles before deleting the QApplication instance
     gc.collect()
 
     del app
     return status
+
+
+def breeze_dark():
+    # 'Breeze Dark' color scheme from KDE.
+    text = QColor(239, 240, 241)
+    textdisabled = QColor(98, 108, 118)
+    window = QColor(49, 54, 59)
+    base = QColor(35, 38, 41)
+    highlight = QColor(61, 174, 233)
+    link = QColor(41, 128, 185)
+
+    light = QColor(69, 76, 84)
+    mid = QColor(43, 47, 52)
+    dark = QColor(28, 31, 34)
+    shadow = QColor(20, 23, 25)
+
+    palette = QPalette()
+    palette.setColor(QPalette.Window, window)
+    palette.setColor(QPalette.WindowText, text)
+    palette.setColor(QPalette.Disabled, QPalette.WindowText, textdisabled)
+    palette.setColor(QPalette.Base, base)
+    palette.setColor(QPalette.AlternateBase, window)
+    palette.setColor(QPalette.ToolTipBase, window)
+    palette.setColor(QPalette.ToolTipText, text)
+    palette.setColor(QPalette.Text, text)
+    palette.setColor(QPalette.Disabled, QPalette.Text, textdisabled)
+    palette.setColor(QPalette.Button, window)
+    palette.setColor(QPalette.ButtonText, text)
+    palette.setColor(QPalette.Disabled, QPalette.ButtonText, textdisabled)
+    palette.setColor(QPalette.BrightText, Qt.white)
+    palette.setColor(QPalette.Highlight, highlight)
+    palette.setColor(QPalette.HighlightedText, text)
+    palette.setColor(QPalette.Light, light)
+    palette.setColor(QPalette.Mid, mid)
+    palette.setColor(QPalette.Dark, dark)
+    palette.setColor(QPalette.Shadow, shadow)
+    palette.setColor(QPalette.Link, link)
+    return palette
 
 
 if __name__ == "__main__":

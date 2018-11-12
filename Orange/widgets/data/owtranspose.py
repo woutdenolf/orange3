@@ -12,6 +12,7 @@ class OWTranspose(OWWidget):
     description = "Transpose data table."
     icon = "icons/Transpose.svg"
     priority = 2000
+    keywords = []
 
     class Inputs:
         data = Input("Data", Table)
@@ -56,8 +57,8 @@ class OWTranspose(OWWidget):
             alphabetical=True)
         self.feature_combo = gui.comboBox(
             gui.indentedBox(box, gui.checkButtonOffsetHint(button)), self,
-            "feature_names_column", callback=self._feature_combo_changed,
-            model=self.feature_model)
+            "feature_names_column", contentsLength=12,
+            callback=self._feature_combo_changed, model=self.feature_model)
 
         self.apply_button = gui.auto_commit(
             self.controlArea, self, "auto_apply", "&Apply",

@@ -27,13 +27,13 @@ from Orange.data import (Table,  Domain, ContinuousVariable, DiscreteVariable,
                          StringVariable)
 from Orange.misc.cache import memoize_method
 from Orange.preprocess import score
-from Orange.canvas import report
+from Orange.widgets import report
 from Orange.widgets import gui
 from Orange.widgets.settings import (DomainContextHandler, Setting,
                                      ContextSetting)
 from Orange.widgets.utils.itemmodels import PyTableModel
 from Orange.widgets.utils.sql import check_sql_input
-from Orange.widgets.widget import OWWidget, Msg, Input, Output
+from Orange.widgets.widget import OWWidget, Msg, Input, Output, AttributeList
 
 
 log = logging.getLogger(__name__)
@@ -52,17 +52,26 @@ ScoreMeta = namedtuple("score_meta", ["name", "shortname", "scorer", 'problem_ty
 
 # Default scores.
 CLS_SCORES = [
-    ScoreMeta("Information Gain", "Info. gain", score.InfoGain, ProblemType.CLASSIFICATION, False),
-    ScoreMeta("Information Gain Ratio", "Gain ratio", score.GainRatio, ProblemType.CLASSIFICATION, True),
-    ScoreMeta("Gini Decrease", "Gini", score.Gini, ProblemType.CLASSIFICATION, True),
-    ScoreMeta("ANOVA", "ANOVA", score.ANOVA, ProblemType.CLASSIFICATION, False),
-    ScoreMeta("χ²", "χ²", score.Chi2, ProblemType.CLASSIFICATION, False),
-    ScoreMeta("ReliefF", "ReliefF", score.ReliefF, ProblemType.CLASSIFICATION, False),
-    ScoreMeta("FCBF", "FCBF", score.FCBF, ProblemType.CLASSIFICATION, False)
+    ScoreMeta("Information Gain", "Info. gain",
+              score.InfoGain, ProblemType.CLASSIFICATION, False),
+    ScoreMeta("Information Gain Ratio", "Gain ratio",
+              score.GainRatio, ProblemType.CLASSIFICATION, True),
+    ScoreMeta("Gini Decrease", "Gini",
+              score.Gini, ProblemType.CLASSIFICATION, True),
+    ScoreMeta("ANOVA", "ANOVA",
+              score.ANOVA, ProblemType.CLASSIFICATION, False),
+    ScoreMeta("χ²", "χ²",
+              score.Chi2, ProblemType.CLASSIFICATION, False),
+    ScoreMeta("ReliefF", "ReliefF",
+              score.ReliefF, ProblemType.CLASSIFICATION, False),
+    ScoreMeta("FCBF", "FCBF",
+              score.FCBF, ProblemType.CLASSIFICATION, False)
 ]
 REG_SCORES = [
-    ScoreMeta("Univariate Regression", "Univar. reg.", score.UnivariateLinearRegression, ProblemType.REGRESSION, True),
-    ScoreMeta("RReliefF", "RReliefF", score.RReliefF, ProblemType.REGRESSION, True)
+    ScoreMeta("Univariate Regression", "Univar. reg.",
+              score.UnivariateLinearRegression, ProblemType.REGRESSION, True),
+    ScoreMeta("RReliefF", "RReliefF",
+              score.RReliefF, ProblemType.REGRESSION, True)
 ]
 SCORES = CLS_SCORES + REG_SCORES
 
@@ -160,6 +169,7 @@ class OWRank(OWWidget):
     description = "Rank and filter data features by their relevance."
     icon = "icons/Rank.svg"
     priority = 1102
+    keywords = []
 
     buttons_area_orientation = Qt.Vertical
 
@@ -170,10 +180,11 @@ class OWRank(OWWidget):
     class Outputs:
         reduced_data = Output("Reduced Data", Table, default=True)
         scores = Output("Scores", Table)
+        features = Output("Features", AttributeList, dynamic=False)
 
     SelectNone, SelectAll, SelectManual, SelectNBest = range(4)
 
-    nSelected = Setting(5)
+    nSelected = ContextSetting(5)
     auto_apply = Setting(True)
 
     sorting = Setting((0, Qt.DescendingOrder))
@@ -330,6 +341,7 @@ class OWRank(OWWidget):
             self.selectionMethod = OWRank.SelectNBest
 
         self.openContext(data)
+        self.selectButtons.button(self.selectionMethod).setChecked(True)
 
     def handleNewSignals(self):
         self.setStatusMessage('Running')
@@ -434,7 +446,8 @@ class OWRank(OWWidget):
         try:
             sort_column, sort_order = self.sorting
             if sort_column < len(labels):
-                self.ranksModel.sort(sort_column + 1, sort_order)  # +1 for '#' (discrete count) column
+                # adds 1 for '#' (discrete count) column
+                self.ranksModel.sort(sort_column + 1, sort_order)
                 self.ranksView.horizontalHeader().setSortIndicator(sort_column + 1, sort_order)
         except ValueError:
             pass
@@ -449,11 +462,9 @@ class OWRank(OWWidget):
         self.commit()
 
     def setSelectionMethod(self, method):
-        if self.selectionMethod != method:
-            self.selectionMethod = method
-            self.selectButtons.button(method).setChecked(True)
+        self.selectionMethod = method
+        self.selectButtons.button(method).setChecked(True)
         self.autoSelection()
-        self.on_select()
 
     def autoSelection(self):
         selModel = self.ranksView.selectionModel()
@@ -512,20 +523,18 @@ class OWRank(OWWidget):
     def commit(self):
         selected_attrs = []
         if self.data is not None:
-            attributes = self.data.domain.attributes
-            if len(attributes) == len(self.selected_rows):
-                self.selectionMethod = OWRank.SelectAll
-                self.selectButtons.button(self.selectionMethod).setChecked(True)
-            selected_attrs = [attributes[i]
+            selected_attrs = [self.data.domain.attributes[i]
                               for i in self.selected_rows]
         if not selected_attrs:
             self.Outputs.reduced_data.send(None)
+            self.Outputs.features.send(None)
             self.out_domain_desc = None
         else:
             reduced_domain = Domain(
                 selected_attrs, self.data.domain.class_var, self.data.domain.metas)
             data = self.data.transform(reduced_domain)
             self.Outputs.reduced_data.send(data)
+            self.Outputs.features.send(AttributeList(selected_attrs))
             self.out_domain_desc = report.describe_domain(data.domain)
 
     def create_scores_table(self, labels):

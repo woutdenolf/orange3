@@ -217,13 +217,15 @@ class ContinuizeEditor(BaseEditor):
             rb = QRadioButton(
                 text=text,
                 checked=self.__treatment == treatment)
-            group.addButton(rb, int(treatment))
+            group.addButton(rb, enum_to_index(ContinuizeEditor._Type,
+                                              treatment))
             self.layout().addWidget(rb)
 
         self.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
 
     def setTreatment(self, treatment):
-        b = self.__group.button(treatment)
+        buttonid = enum_to_index(ContinuizeEditor._Type, treatment)
+        b = self.__group.button(buttonid)
         if b is not None:
             b.setChecked(True)
             self.__treatment = treatment
@@ -240,7 +242,8 @@ class ContinuizeEditor(BaseEditor):
         return {"multinomial_treatment": self.__treatment}
 
     def __on_buttonClicked(self):
-        self.__treatment = self.__group.checkedId()
+        self.__treatment = index_to_enum(
+            ContinuizeEditor._Type, self.__group.checkedId())
         self.changed.emit()
         self.edited.emit()
 
@@ -636,63 +639,16 @@ class _Scaling(preprocess.preprocess.Preprocess):
         values, counts = numpy.array(dist)
         return numpy.average(values, weights=counts)
 
-    @staticmethod
-    def median(dist):
-        values, counts = numpy.array(dist)
-        cumdist = numpy.cumsum(counts)
-        if cumdist[-1] > 0:
-            cumdist /= cumdist[-1]
+def index_to_enum(enum, i):
+    """Enums, by default, are not int-comparable, so use an ad-hoc mapping of
+    int to enum value at that position"""
+    return list(enum)[i]
 
-        return numpy.interp(0.5, cumdist, values)
 
-    @staticmethod
-    def span(dist):
-        values = numpy.array(dist[0])
-        minval = numpy.min(values)
-        maxval = numpy.max(values)
-        return maxval - minval
-
-    @staticmethod
-    def std(dist):
-        values, counts = numpy.array(dist)
-        mean = numpy.average(values, weights=counts)
-        diff = values - mean
-        return numpy.sqrt(numpy.average(diff ** 2, weights=counts))
-
-    def __init__(self, center=mean, scale=std):
-        self.center = center
-        self.scale = scale
-
-    def __call__(self, data):
-        if self.center is None and self.scale is None:
-            return data
-
-        def transform(var):
-            dist = distribution.get_distribution(data, var)
-            if self.center:
-                c = self.center(dist)
-                dist[0, :] -= c
-            else:
-                c = 0
-
-            if self.scale:
-                s = self.scale(dist)
-                if s < 1e-15:
-                    s = 1
-            else:
-                s = 1
-            factor = 1 / s
-            return var.copy(compute_value=preprocess.transformation.Normalizer(var, c, factor))
-
-        newvars = []
-        for var in data.domain.attributes:
-            if var.is_continuous:
-                newvars.append(transform(var))
-            else:
-                newvars.append(var)
-        domain = Orange.data.Domain(newvars, data.domain.class_vars,
-                                    data.domain.metas)
-        return data.from_table(domain, data)
+def enum_to_index(enum, key):
+    """Enums, by default, are not int-comparable, so use an ad-hoc mapping of
+    enum key to its int position"""
+    return list(enum).index(key)
 
 
 class Scale(BaseEditor):
@@ -721,14 +677,18 @@ class Scale(BaseEditor):
         self.__scalecb.activated.connect(self.edited)
 
     def setParameters(self, params):
-        center = params.get("center", Scale.CenterMean)
-        scale = params.get("scale", Scale.ScaleBySD)
-        self.__centercb.setCurrentIndex(center)
-        self.__scalecb.setCurrentIndex(scale)
+        center = params.get("center", _Scale.CenteringType.Mean)
+        scale = params.get("scale", _Scale.ScalingType.Std)
+        self.__centercb.setCurrentIndex(
+            enum_to_index(_Scale.CenteringType, center))
+        self.__scalecb.setCurrentIndex(
+            enum_to_index(_Scale.ScalingType, scale))
 
     def parameters(self):
-        return {"center": self.__centercb.currentIndex(),
-                "scale": self.__scalecb.currentIndex()}
+        return {"center": index_to_enum(_Scale.CenteringType,
+                                        self.__centercb.currentIndex()),
+                "scale": index_to_enum(_Scale.ScalingType,
+                                       self.__scalecb.currentIndex())}
 
     @staticmethod
     def createinstance(params):
@@ -799,11 +759,13 @@ class Randomize(BaseEditor):
 
     def setParameters(self, params):
         rand_type = params.get("rand_type", Randomize.RandomizeClasses)
-        self.__rand_type_cb.setCurrentIndex(rand_type)
+        self.__rand_type_cb.setCurrentIndex(
+            enum_to_index(_Randomize.Type, rand_type))
         self.__rand_seed_ch.setChecked(params.get("rand_seed", 1) or 0)
 
     def parameters(self):
-        return {"rand_type": self.__rand_type_cb.currentIndex(),
+        return {"rand_type": index_to_enum(_Randomize.Type,
+                                           self.__rand_type_cb.currentIndex()),
                 "rand_seed": 1 if self.__rand_seed_ch.isChecked() else None}
 
     @staticmethod
@@ -946,7 +908,7 @@ def icon_path(basename):
     return pkg_resources.resource_filename(__name__, "icons/" + basename)
 
 
-PREPROCESSORS = [
+PREPROCESS_ACTIONS = [
     PreprocessAction(
         "Discretize", "orange.preprocess.discretize", "Discretization",
         Description("Discretize Continuous Variables",
@@ -1006,7 +968,7 @@ PREPROCESSORS = [
 
 
 # TODO: Extend with entry points here
-# PREPROCESSORS += iter_entry_points("Orange.widgets.data.owpreprocess")
+# PREPROCESS_ACTIONS += iter_entry_points("Orange.widgets.data.owpreprocess")
 
 # ####
 # The actual owwidget
@@ -1029,6 +991,7 @@ class OWPreprocess(widget.OWWidget):
     description = "Construct a data preprocessing pipeline."
     icon = "icons/Preprocess.svg"
     priority = 2105
+    keywords = ["process"]
 
     class Inputs:
         data = Input("Data", Orange.data.Table)
@@ -1038,7 +1001,9 @@ class OWPreprocess(widget.OWWidget):
         preprocessed_data = Output("Preprocessed Data", Orange.data.Table)
 
     storedsettings = settings.Setting({})
-    autocommit = settings.Setting(False)
+    autocommit = settings.Setting(True)
+    PREPROCESSORS = PREPROCESS_ACTIONS
+    CONTROLLER = Controller
 
     def __init__(self):
         super().__init__()
@@ -1073,13 +1038,14 @@ class OWPreprocess(widget.OWWidget):
         box.layout().addWidget(view)
 
         ####
-        self._qname2ppdef = {ppdef.qualname: ppdef for ppdef in PREPROCESSORS}
+        self._qname2ppdef = {ppdef.qualname: ppdef for
+                             ppdef in self.PREPROCESSORS}
 
         # List of 'selected' preprocessors and their parameters.
         self.preprocessormodel = None
 
         self.flow_view = SequenceFlow()
-        self.controler = Controller(self.flow_view, parent=self)
+        self.controler = self.CONTROLLER(self.flow_view, parent=self)
 
         self.overlay = OverlayWidget(self)
         self.overlay.setAttribute(Qt.WA_TransparentForMouseEvents)
@@ -1103,7 +1069,7 @@ class OWPreprocess(widget.OWWidget):
         self._initialize()
 
     def _initialize(self):
-        for pp_def in PREPROCESSORS:
+        for pp_def in self.PREPROCESSORS:
             description = pp_def.description
             if description.icon:
                 icon = QIcon(description.icon)
@@ -1217,7 +1183,7 @@ class OWPreprocess(widget.OWWidget):
     @Inputs.data
     @check_sql_input
     def set_data(self, data=None):
-        """Set the input data set."""
+        """Set the input dataset."""
         self.data = data
 
     def handleNewSignals(self):

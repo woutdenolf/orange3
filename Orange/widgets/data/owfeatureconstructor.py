@@ -14,10 +14,12 @@ import math
 import random
 import logging
 import ast
+import types
 
 from traceback import format_exception_only
 from collections import namedtuple, OrderedDict
 from itertools import chain, count
+from typing import List, Dict, Any  # pylint: disable=unused-import
 
 import numpy as np
 
@@ -34,7 +36,7 @@ from Orange.widgets import gui
 from Orange.widgets.settings import ContextSetting, DomainContextHandler
 from Orange.widgets.utils import itemmodels, vartype
 from Orange.widgets.utils.sql import check_sql_input
-from Orange.canvas import report
+from Orange.widgets import report
 from Orange.widgets.widget import OWWidget, Msg, Input, Output
 
 FeatureDescriptor = \
@@ -119,7 +121,7 @@ class FeatureEditor(QFrame):
 
         self.attrs_model = itemmodels.VariableListModel(
             ["Select Feature"], parent=self)
-        self.attributescb = QComboBox(
+        self.attributescb = gui.OrangeComboBox(
             minimumContentsLength=16,
             sizeAdjustPolicy=QComboBox.AdjustToMinimumContentsLengthWithIcon,
             sizePolicy=QSizePolicy(QSizePolicy.Minimum, QSizePolicy.Minimum)
@@ -135,7 +137,7 @@ class FeatureEditor(QFrame):
             [''],
             [self.FUNCTIONS[func].__doc__ for func in sorted_funcs])
 
-        self.functionscb = QComboBox(
+        self.functionscb = gui.OrangeComboBox(
             minimumContentsLength=16,
             sizeAdjustPolicy=QComboBox.AdjustToMinimumContentsLengthWithIcon,
             sizePolicy=QSizePolicy(QSizePolicy.Minimum, QSizePolicy.Minimum))
@@ -176,7 +178,7 @@ class FeatureEditor(QFrame):
         self.setModified(False)
         self.featureChanged.emit()
         self.attrs_model[:] = ["Select Feature"]
-        if domain is not None and (domain or domain.metas):
+        if domain is not None and not domain.empty():
             self.attrs_model[:] += chain(domain.attributes,
                                          domain.class_vars,
                                          domain.metas)
@@ -315,17 +317,23 @@ class FeatureConstructorHandler(DomainContextHandler):
         except Exception:
             return False
 
-        for name in freevars(exp_ast, []):
-            if not (name in attrs or name in metas):
-                return False
+        available = dict(globals()["__GLOBALS"])
+        for var in attrs:
+            available[sanitized_name(var)] = None
+        for var in metas:
+            available[sanitized_name(var)] = None
+
+        if freevars(exp_ast, available):
+            return False
         return True
 
 
 class OWFeatureConstructor(OWWidget):
     name = "Feature Constructor"
     description = "Construct new features (data columns) from a set of " \
-                  "existing features in the input data set."
+                  "existing features in the input dataset."
     icon = "icons/FeatureConstructor.svg"
+    keywords = []
 
     class Inputs:
         data = Input("Data", Orange.data.Table)
@@ -632,9 +640,6 @@ class OWFeatureConstructor(OWWidget):
             report.plural("Constructed feature{s}", len(items)), items)
 
 
-
-
-
 def freevars(exp, env):
     """
     Return names of all free variables in a parsed (expression) AST.
@@ -838,7 +843,7 @@ def bind_variable(descriptor, env):
         (descriptor, (instance -> value) | (table -> value list))
     """
     if not descriptor.expression.strip():
-        return (descriptor, lambda _: float("nan"))
+        return descriptor, FeatureFunc("nan", [], {"nan": float("nan")})
 
     exp_ast = ast.parse(descriptor.expression, mode="eval")
     freev = unique(freevars(exp_ast, []))
@@ -846,38 +851,68 @@ def bind_variable(descriptor, env):
     source_vars = [(name, variables[name]) for name in freev
                    if name in variables]
 
-    values = []
+    values = {}
     if isinstance(descriptor, DiscreteDescriptor):
         values = [sanitized_name(v) for v in descriptor.values]
-    return descriptor, FeatureFunc(exp_ast, source_vars, values)
+        values = {name: i for i, name in enumerate(values)}
+    return descriptor, FeatureFunc(descriptor.expression, source_vars, values)
 
 
-def make_lambda(expression, args, values):
-    def make_arg(name):
-        if sys.version_info >= (3, 0):
-            return ast.arg(arg=name, annotation=None)
-        else:
-            return ast.Name(id=name, ctx=ast.Param(), lineno=1, col_offset=0)
+def make_lambda(expression, args, env={}):
+    # type: (ast.Expression, List[str], Dict[str, Any]) -> types.FunctionType
+    """
+    Create an lambda function from a expression AST.
 
+    Parameters
+    ----------
+    expression : ast.Expression
+        The body of the lambda.
+    args : List[str]
+        A list of positional argument names
+    env : Dict[str, Any]
+        Extra environment to capture in the lambda's closure.
+
+    Returns
+    -------
+    func : types.FunctionType
+    """
+    # lambda *{args}* : EXPRESSION
     lambda_ = ast.Lambda(
         args=ast.arguments(
-            args=[make_arg(arg) for arg in args + values],
+            args=[ast.arg(arg=arg, annotation=None) for arg in args],
             varargs=None,
             varargannotation=None,
             kwonlyargs=[],
             kwarg=None,
             kwargannotation=None,
-            defaults=[ast.Num(i) for i in range(len(values))],
+            defaults=[],
             kw_defaults=[]),
         body=expression.body,
     )
     lambda_ = ast.copy_location(lambda_, expression.body)
-    exp = ast.Expression(body=lambda_, lineno=1, col_offset=0)
-    ast.dump(exp)
+    # lambda **{env}** : lambda *{args}*: EXPRESSION
+    outer = ast.Lambda(
+        args=ast.arguments(
+            args=[ast.arg(arg=name, annotation=None) for name in env],
+            varargs=None,
+            varargannotation=None,
+            kwonlyargs=[],
+            kwarg=None,
+            kwargannotation=None,
+            defaults=[],
+            kw_defaults=[],
+        ),
+        body=lambda_,
+    )
+    exp = ast.Expression(body=outer, lineno=1, col_offset=0)
     ast.fix_missing_locations(exp)
     GLOBALS = __GLOBALS.copy()
     GLOBALS["__builtins__"] = {}
-    return eval(compile(exp, "<lambda>", "eval"), GLOBALS)
+    fouter = eval(compile(exp, "<lambda>", "eval"), GLOBALS)
+    assert isinstance(fouter, types.FunctionType)
+    finner = fouter(**env)
+    assert isinstance(finner, types.FunctionType)
+    return finner
 
 
 __ALLOWED = [
@@ -934,11 +969,26 @@ __GLOBALS.update({
 
 
 class FeatureFunc:
-    def __init__(self, expression, args, values):
+    """
+    Parameters
+    ----------
+    expression : str
+        An expression string
+    args : List[Tuple[str, Orange.data.Variable]]
+        A list of (`name`, `variable`) tuples where `name` is the name of
+        a variable as used in `expression`, and `variable` is the variable
+        instance used to extract the corresponding column/value from a
+        Table/Instance.
+    extra_env : Dict[str, Any]
+        Extra environment specifying constant values to be made available
+        in expression. It must not shadow names in `args`
+    """
+    def __init__(self, expression, args, extra_env={}):
         self.expression = expression
         self.args = args
-        self.values = values
-        self.func = make_lambda(expression, [name for name, _ in args], values)
+        self.extra_env = dict(extra_env)
+        self.func = make_lambda(ast.parse(expression, mode="eval"),
+                                [name for name, _ in args], self.extra_env)
 
     def __call__(self, instance, *_):
         if isinstance(instance, Orange.data.Table):
@@ -946,6 +996,12 @@ class FeatureFunc:
         else:
             args = [instance[var] for _, var in self.args]
             return self.func(*args)
+
+    def __reduce__(self):
+        return type(self), (self.expression, self.args, self.extra_env)
+
+    def __repr__(self):
+        return "{0.__name__}{1!r}".format(*self.__reduce__())
 
 
 def unique(seq):
@@ -958,7 +1014,7 @@ def unique(seq):
     return unique_el
 
 
-def main(argv=None):
+def main(argv=None):  # pragma: no cover
     from AnyQt.QtWidgets import QApplication
     if argv is None:
         argv = sys.argv
@@ -980,6 +1036,7 @@ def main(argv=None):
     w.handleNewSignals()
     w.saveSettings()
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())

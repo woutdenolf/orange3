@@ -1,18 +1,25 @@
 # Test methods with long descriptive names can omit docstrings
 # pylint: disable=missing-docstring
+import os
+from itertools import chain
+import unittest
 from unittest.mock import patch, Mock
 
 import numpy as np
-from AnyQt.QtCore import QRectF, QPointF
 
+from Orange.data import Table
 from Orange.distance import Euclidean
+from Orange.misc import DistMatrix
 from Orange.widgets.settings import Context
-from Orange.widgets.unsupervised.owmds import OWMDS
-from Orange.widgets.tests.base import WidgetTest, WidgetOutputsTestMixin, datasets
+from Orange.widgets.tests.base import (
+    WidgetTest, WidgetOutputsTestMixin, datasets, ProjectionWidgetTestMixin
+)
 from Orange.widgets.tests.utils import simulate
+from Orange.widgets.unsupervised.owmds import OWMDS
 
 
-class TestOWMDS(WidgetTest, WidgetOutputsTestMixin):
+class TestOWMDS(WidgetTest, ProjectionWidgetTestMixin,
+                WidgetOutputsTestMixin):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
@@ -22,6 +29,10 @@ class TestOWMDS(WidgetTest, WidgetOutputsTestMixin):
         cls.signal_data = Euclidean(cls.data)
         cls.same_input_output_domain = False
 
+        my_dir = os.path.dirname(__file__)
+        datasets_dir = os.path.join(my_dir, '..', '..', '..', 'datasets')
+        cls.datasets_dir = os.path.realpath(datasets_dir)
+
     def setUp(self):
         self.widget = self.create_widget(
             OWMDS, stored_settings={
@@ -30,14 +41,12 @@ class TestOWMDS(WidgetTest, WidgetOutputsTestMixin):
                 "initialization": OWMDS.PCA,
             }
         )  # type: OWMDS
+        self.towns = DistMatrix.from_file(
+            os.path.join(self.datasets_dir, "slovenian-towns.dst"))
 
     def tearDown(self):
         self.widget.onDeleteWidget()
         super().tearDown()
-
-    def _select_data(self):
-        self.widget.graph.select_by_rectangle(QRectF(QPointF(-20, -20), QPointF(20, 20)))
-        return self.widget.graph.get_selection()
 
     def test_pca_init(self):
         self.send_signal(self.signal_name, self.signal_data)
@@ -52,7 +61,7 @@ class TestOWMDS(WidgetTest, WidgetOutputsTestMixin):
 
     def test_nan_plot(self):
         def combobox_run_through_all():
-            cb = self.widget.graph.controls
+            cb = self.widget.controls
             simulate.combobox_run_through_all(cb.attr_color)
             # simulate.combobox_run_through_all(cb.attr_shape)
             simulate.combobox_run_through_all(cb.attr_size)
@@ -106,21 +115,11 @@ class TestOWMDS(WidgetTest, WidgetOutputsTestMixin):
         signal_data.row_items = None
         self.send_signal("Distances", signal_data)
 
-    def test_send_report(self):
-        self.send_signal(self.widget.Inputs.data, None)
-        self.widget.send_report()
-        self.send_signal(self.widget.Inputs.data, self.data)
-        self.widget.send_report()
-
     def test_small_data(self):
         data = self.data[:1]
         self.assertFalse(self.widget.Error.not_enough_rows.is_shown())
         self.send_signal(self.widget.Inputs.data, data)
         # self.assertTrue(self.widget.Error.not_enough_rows.is_shown())
-
-    def test_subset_data(self):
-        self.send_signal(self.widget.Inputs.data_subset, self.data[::10])
-        self.send_signal(self.widget.Inputs.data, self.data)
 
     def test_run(self):
         self.send_signal(self.widget.Inputs.data, self.data)
@@ -161,16 +160,118 @@ class TestOWMDS(WidgetTest, WidgetOutputsTestMixin):
             'savedWidgetGeometry': None
         }
         w = self.create_widget(OWMDS, stored_settings=settings)
-        data = self.data
-        self.send_signal(w.Inputs.data, data, widget=w)
+        domain = self.data.domain
+        self.send_signal(w.Inputs.data, self.data, widget=w)
         g = w.graph
-        for a, value in ((g.attr_color, "iris"),
-                         (g.attr_shape, "iris"),
-                         (g.attr_size, "Stress"),
-                         (g.attr_label, "sepal length"),
+        for a, value in ((w.attr_color, domain["iris"]),
+                         (w.attr_shape, domain["iris"]),
+                         (w.attr_size, "Stress"),
+                         (w.attr_label, domain["sepal length"]),
                          (g.label_only_selected, True),
                          (g.alpha_value, 230),
                          (g.point_width, 8),
                          (g.jitter_size, 0.5)):
-            self.assertTrue(a, value)
+            self.assertEqual(a, value)
         self.assertFalse(w.auto_commit)
+
+    def test_attr_label_from_dist_matrix_from_file(self):
+        w = self.widget
+        # Don't run the MDS optimization to save time and to prevent the
+        # widget be in a blocking state when trying to send the next signal
+        w.start = Mock()
+        row_items = self.towns.row_items
+
+        # Distance matrix with labels
+        self.send_signal(w.Inputs.distances, self.towns)
+        self.assertIn(row_items.domain["label"], w.controls.attr_label.model())
+
+        # Distances matrix without labels
+        self.towns.row_items = None
+        self.send_signal(w.Inputs.distances, self.towns)
+        self.assertEqual(list(w.controls.attr_label.model()), [None])
+
+        # No data
+        self.send_signal(w.Inputs.distances, None)
+        self.assertEqual(list(w.controls.attr_label.model()), [None])
+
+        # Distances matrix with labels again
+        self.towns.row_items = row_items
+        self.send_signal(w.Inputs.distances, self.towns)
+        self.assertIn(row_items.domain["label"], w.controls.attr_label.model())
+
+        # Followed by no data
+        self.towns.row_items = None
+        self.send_signal(w.Inputs.distances, self.towns)
+        self.assertEqual(list(w.controls.attr_label.model()), [None])
+
+    def test_attr_label_from_dist_matrix_from_data(self):
+        w = self.widget
+        # Don't run the MDS optimization to save time and to prevent the
+        # widget be in a blocking state when trying to send the next signal
+        w.start = Mock()
+
+        data = Table("zoo")
+        dist = Euclidean(data)
+        self.send_signal(w.Inputs.distances, dist)
+        self.send_signal(w.Inputs.data, data)
+        self.assertTrue(set(chain(data.domain.variables, data.domain.metas))
+                        < set(w.controls.attr_label.model()))
+
+    def test_attr_label_from_data(self):
+        w = self.widget
+        # Don't run the MDS optimization to save time and to prevent the
+        # widget be in a blocking state when trying to send the next signal
+        w.start = Mock()
+
+        data = Table("zoo")
+        dist = Euclidean(data)
+        self.send_signal(w.Inputs.distances, dist)
+        self.assertTrue(set(chain(data.domain.variables, data.domain.metas))
+                        < set(w.controls.attr_label.model()))
+
+    def test_attr_label_matrix_and_data(self):
+        w = self.widget
+        # Don't run the MDS optimization to save time and to prevent the
+        # widget be in a blocking state when trying to send the next signal
+        w.start = Mock()
+
+        # Data and matrix
+        data = Table("zoo")
+        dist = Euclidean(data)
+        self.send_signal(w.Inputs.distances, dist)
+        self.send_signal(w.Inputs.data, data)
+        self.assertTrue(set(chain(data.domain.variables, data.domain.metas))
+                        < set(w.controls.attr_label.model()))
+
+        # Has data, but receives a signal without data: has to keep the label
+        self.send_signal(w.Inputs.distances, None)
+        self.assertTrue(set(chain(data.domain.variables, data.domain.metas))
+                        < set(w.controls.attr_label.model()))
+
+        # Has matrix without data, and loses the data: remove the label
+        self.send_signal(w.Inputs.data, None)
+        self.assertEqual(list(w.controls.attr_label.model()), [None])
+
+        # Has matrix without data, receives data: add attrs to combo, select
+        self.send_signal(w.Inputs.data, data)
+        self.assertTrue(set(chain(data.domain.variables, data.domain.metas))
+                        < set(w.controls.attr_label.model()))
+
+    def test_saved_matrix_and_data(self):
+        towns_data = self.towns.row_items
+        attr_label = self.widget.controls.attr_label
+        self.widget.start = Mock()
+        self.towns.row_items = None
+
+        # Matrix without data
+        self.send_signal(self.widget.Inputs.distances, self.towns)
+        self.assertIsNotNone(self.widget.graph.scatterplot_item)
+        self.assertEqual(list(attr_label.model()), [None])
+
+        # Data
+        self.send_signal(self.widget.Inputs.data, towns_data)
+        self.assertIn(towns_data.domain["label"], attr_label.model())
+
+
+if __name__ == "__main__":
+    unittest.main()

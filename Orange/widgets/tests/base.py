@@ -1,5 +1,6 @@
 from contextlib import contextmanager
 import os
+import pickle
 import time
 import unittest
 from unittest.mock import Mock
@@ -11,32 +12,35 @@ except ImportError:  # pragma: no cover
     pass
 
 import numpy as np
+import scipy.sparse as sp
 import sip
 
-from AnyQt.QtCore import Qt
+from AnyQt.QtCore import Qt, QRectF, QPointF
 from AnyQt.QtTest import QTest, QSignalSpy
 from AnyQt.QtWidgets import (
     QApplication, QComboBox, QSpinBox, QDoubleSpinBox, QSlider
 )
 
 from Orange.base import SklModel, Model
-from Orange.canvas.report.owreport import OWReport
 from Orange.classification.base_classification import (
     LearnerClassification, ModelClassification
 )
-from Orange.data import Table, Domain, DiscreteVariable, ContinuousVariable,\
-    Variable
+from Orange.data import (
+    Table, Domain, DiscreteVariable, ContinuousVariable, Variable
+)
 from Orange.modelling import Fitter
-from Orange.preprocess import RemoveNaNColumns, Randomize
+from Orange.preprocess import RemoveNaNColumns, Randomize, Continuize
 from Orange.preprocess.preprocess import PreprocessorList
 from Orange.regression.base_regression import (
     LearnerRegression, ModelRegression
 )
+from Orange.widgets.report.owreport import OWReport
+from Orange.widgets.tests.utils import simulate
 from Orange.widgets.utils.annotated_data import (
     ANNOTATED_DATA_FEATURE_NAME, ANNOTATED_DATA_SIGNAL_NAME
 )
-from Orange.widgets.widget import OWWidget
 from Orange.widgets.utils.owlearnerwidget import OWBaseLearner
+from Orange.widgets.widget import OWWidget
 
 sip.setdestroyonexit(False)
 
@@ -141,27 +145,27 @@ class WidgetTest(GuiTest):
         return widget
 
     @staticmethod
-    def reset_default_settings(cls):
+    def reset_default_settings(widget):
         """Reset default setting values for widget
 
         Discards settings read from disk and changes stored by fast_save
 
         Parameters
         ----------
-        cls : OWWidget
+        widget : OWWidget
             widget to reset settings for
         """
-        settings_handler = getattr(cls, "settingsHandler", None)
+        settings_handler = getattr(widget, "settingsHandler", None)
         if settings_handler:
             # Rebind settings handler to get fresh copies of settings
             # in known_settings
-            settings_handler.bind(cls)
+            settings_handler.bind(widget)
             # Reset defaults read from disk
             settings_handler.defaults = {}
             # Reset context settings
             settings_handler.global_contexts = []
 
-    def process_events(self, until: callable=None, timeout=DEFAULT_TIMEOUT):
+    def process_events(self, until: callable = None, timeout=DEFAULT_TIMEOUT):
         """Process Qt events, optionally until `until` returns
         something True-ish.
 
@@ -183,7 +187,7 @@ class WidgetTest(GuiTest):
         if until is None:
             until = lambda: True
 
-        started = time.clock()
+        started = time.perf_counter()
         while True:
             app.processEvents()
             try:
@@ -192,7 +196,7 @@ class WidgetTest(GuiTest):
                     return result
             except Exception:  # until can fail with anything; pylint: disable=broad-except
                 pass
-            if (time.clock() - started) * 1000 > timeout:
+            if (time.perf_counter() - started) * 1000 > timeout:
                 raise TimeoutError()
             time.sleep(.05)
 
@@ -244,7 +248,42 @@ class WidgetTest(GuiTest):
             spy = QSignalSpy(widget.blockingStateChanged)
             self.assertTrue(spy.wait(timeout=wait))
 
-    def get_output(self, output, widget=None, wait=5000):
+    def wait_until_stop_blocking(self, widget=None, wait=DEFAULT_TIMEOUT):
+        """Wait until the widget stops blocking i.e. finishes computation.
+
+        Parameters
+        ----------
+        widget : Optional[OWWidget]
+            widget to send signal to. If not set, self.widget is used
+        wait : int
+            The amount of time to wait for the widget to complete.
+
+        """
+        if widget is None:
+            widget = self.widget
+
+        if widget.isBlocking():
+            spy = QSignalSpy(widget.blockingStateChanged)
+            self.assertTrue(spy.wait(timeout=wait))
+
+    def commit_and_wait(self, widget=None, wait=DEFAULT_TIMEOUT):
+        """Unconditinal commit and wait to stop blocking if needed.
+
+        Parameters
+        ----------
+        widget : Optional[OWWidget]
+            widget to send signal to. If not set, self.widget is used
+        wait : int
+            The amount of time to wait for the widget to complete.
+
+        """
+        if widget is None:
+            widget = self.widget
+
+        widget.unconditional_commit()
+        self.wait_until_stop_blocking(widget=widget, wait=wait)
+
+    def get_output(self, output, widget=None, wait=DEFAULT_TIMEOUT):
         """Return the last output that has been sent from the widget.
 
         Parameters
@@ -273,7 +312,6 @@ class WidgetTest(GuiTest):
         assert output in (out.name for out in outputs), \
             "widget {} has no output {}".format(widget.name, output)
         return self.signal_manager.outputs.get((widget, output), None)
-
 
     @contextmanager
     def modifiers(self, modifiers):
@@ -480,13 +518,16 @@ class WidgetLearnerTestMixin:
         self.assertEqual(self.widget.data, None)
         self.send_signal("Data", self.data)
         self.assertEqual(self.widget.data, self.data)
+        self.wait_until_stop_blocking()
 
     def test_input_data_disconnect(self):
         """Check widget's data and model after disconnecting data from input"""
         self.send_signal("Data", self.data)
         self.assertEqual(self.widget.data, self.data)
         self.widget.apply_button.button.click()
+        self.wait_until_stop_blocking()
         self.send_signal("Data", None)
+        self.wait_until_stop_blocking()
         self.assertEqual(self.widget.data, None)
         self.assertIsNone(self.get_output(self.widget.Outputs.model))
 
@@ -495,9 +536,11 @@ class WidgetLearnerTestMixin:
         for inadequate in self.inadequate_dataset:
             self.send_signal("Data", inadequate)
             self.widget.apply_button.button.click()
+            self.wait_until_stop_blocking()
             self.assertTrue(self.widget.Error.data_error.is_shown())
         for valid in self.valid_datasets:
             self.send_signal("Data", valid)
+            self.wait_until_stop_blocking()
             self.assertFalse(self.widget.Error.data_error.is_shown())
 
     def test_input_preprocessor(self):
@@ -508,6 +551,7 @@ class WidgetLearnerTestMixin:
             randomize, self.widget.preprocessors,
             'Preprocessor not added to widget preprocessors')
         self.widget.apply_button.button.click()
+        self.wait_until_stop_blocking()
         self.assertEqual(
             (randomize,), self.widget.learner.preprocessors,
             'Preprocessors were not passed to the learner')
@@ -517,6 +561,7 @@ class WidgetLearnerTestMixin:
         pp_list = PreprocessorList([Randomize(), RemoveNaNColumns()])
         self.send_signal("Preprocessor", pp_list)
         self.widget.apply_button.button.click()
+        self.wait_until_stop_blocking()
         self.assertEqual(
             (pp_list,), self.widget.learner.preprocessors,
             '`PreprocessorList` was not added to preprocessors')
@@ -526,10 +571,12 @@ class WidgetLearnerTestMixin:
         randomize = Randomize()
         self.send_signal("Preprocessor", randomize)
         self.widget.apply_button.button.click()
+        self.wait_until_stop_blocking()
         self.assertEqual(randomize, self.widget.preprocessors)
 
         self.send_signal("Preprocessor", None)
         self.widget.apply_button.button.click()
+        self.wait_until_stop_blocking()
         self.assertIsNone(self.widget.preprocessors,
                           'Preprocessors not removed on disconnect.')
 
@@ -551,6 +598,7 @@ class WidgetLearnerTestMixin:
         self.assertIsNone(self.get_output(self.widget.Outputs.model))
         self.send_signal('Data', self.data)
         self.widget.apply_button.button.click()
+        self.wait_until_stop_blocking()
         model = self.get_output(self.widget.Outputs.model)
         self.assertIsNotNone(model)
         self.assertIsInstance(model, self.widget.LEARNER.__returns__)
@@ -564,6 +612,7 @@ class WidgetLearnerTestMixin:
                          self.widget.name_line_edit.text())
         self.widget.name_line_edit.setText(new_name)
         self.widget.apply_button.button.click()
+        self.wait_until_stop_blocking()
         self.assertEqual(self.get_output("Learner").name, new_name)
 
     def test_output_model_name(self):
@@ -572,7 +621,16 @@ class WidgetLearnerTestMixin:
         self.widget.name_line_edit.setText(new_name)
         self.send_signal("Data", self.data)
         self.widget.apply_button.button.click()
+        self.wait_until_stop_blocking()
         self.assertEqual(self.get_output(self.widget.Outputs.model).name, new_name)
+
+    def test_output_model_picklable(self):
+        """Check if model can be pickled"""
+        self.send_signal("Data", self.data)
+        self.widget.apply_button.button.click()
+        self.wait_until_stop_blocking()
+        model = self.get_output(self.widget.Outputs.model)
+        pickle.dumps(model)
 
     def _get_param_value(self, learner, param):
         if isinstance(learner, Fitter):
@@ -592,6 +650,7 @@ class WidgetLearnerTestMixin:
         for dataset in self.valid_datasets:
             self.send_signal("Data", dataset)
             self.widget.apply_button.button.click()
+            self.wait_until_stop_blocking()
             for parameter in self.parameters:
                 # Skip if the param isn't used for the given data type
                 if self._should_check_parameter(parameter, dataset):
@@ -605,6 +664,7 @@ class WidgetLearnerTestMixin:
         # to only certain problem types
         for dataset in self.valid_datasets:
             self.send_signal("Data", dataset)
+            self.wait_until_stop_blocking()
 
             for parameter in self.parameters:
                 # Skip if the param isn't used for the given data type
@@ -616,6 +676,7 @@ class WidgetLearnerTestMixin:
                 for value in parameter.values:
                     parameter.set_value(value)
                     self.widget.apply_button.button.click()
+                    self.wait_until_stop_blocking()
                     param = self._get_param_value(self.widget.learner, parameter)
                     self.assertEqual(
                         param, parameter.get_value(),
@@ -640,6 +701,7 @@ class WidgetLearnerTestMixin:
         """Check that the learner gets updated whenever a param is changed."""
         for dataset in self.valid_datasets:
             self.send_signal("Data", dataset)
+            self.wait_until_stop_blocking()
 
             for parameter in self.parameters:
                 # Skip if the param isn't used for the given data type
@@ -743,6 +805,182 @@ class WidgetOutputsTestMixin:
         self.assertLess(set(selected_vars), set(annotated_vars))
 
 
+class ProjectionWidgetTestMixin:
+    """Class for projection widget testing"""
+
+    def init(self):
+        Variable._clear_all_caches()
+        self.data = Table("iris")
+
+    def _select_data(self):
+        rect = QRectF(QPointF(-20, -20), QPointF(20, 20))
+        self.widget.graph.select_by_rectangle(rect)
+        return self.widget.graph.get_selection()
+
+    def _compare_selected_annotated_domains(self, selected, annotated):
+        selected_vars = selected.domain.variables
+        annotated_vars = annotated.domain.variables
+        self.assertLessEqual(set(selected_vars), set(annotated_vars))
+
+    def test_setup_graph(self):
+        """Plot should exist after data has been sent in order to be
+        properly set/updated"""
+        self.send_signal(self.widget.Inputs.data, self.data)
+        self.assertIsNotNone(self.widget.graph.scatterplot_item)
+
+    def test_default_attrs(self, timeout=DEFAULT_TIMEOUT):
+        """Check default values for 'Color', 'Shape', 'Size' and 'Label'"""
+        self.send_signal(self.widget.Inputs.data, self.data)
+        self.assertIs(self.widget.attr_color, self.data.domain.class_var)
+        self.assertIsNone(self.widget.attr_label)
+        self.assertIsNone(self.widget.attr_shape)
+        self.assertIsNone(self.widget.attr_size)
+        if self.widget.isBlocking():
+            spy = QSignalSpy(self.widget.blockingStateChanged)
+            self.assertTrue(spy.wait(timeout))
+        self.send_signal(self.widget.Inputs.data, None)
+        self.assertIsNone(self.widget.attr_color)
+
+    def test_attr_models(self):
+        """Check possible values for 'Color', 'Shape', 'Size' and 'Label'"""
+        self.send_signal(self.widget.Inputs.data, self.data)
+        controls = self.widget.controls
+        self.assertEqual(len(controls.attr_color.model()), 8)
+        self.assertEqual(len(controls.attr_shape.model()), 3)
+        self.assertTrue(5 < len(controls.attr_size.model()) < 8)
+        self.assertEqual(len(controls.attr_label.model()), 8)
+
+        # color and label should contain all variables
+        # size should contain only continuous variables
+        # shape should contain only discrete variables
+        for var in self.data.domain.variables + self.data.domain.metas:
+            self.assertIn(var, controls.attr_color.model())
+            self.assertIn(var, controls.attr_label.model())
+            if var.is_continuous:
+                self.assertIn(var, controls.attr_size.model())
+                self.assertNotIn(var, controls.attr_shape.model())
+            if var.is_discrete:
+                self.assertNotIn(var, controls.attr_size.model())
+                self.assertIn(var, controls.attr_shape.model())
+
+    def test_attr_label_metas(self, timeout=DEFAULT_TIMEOUT):
+        """Set 'Label' from string meta attribute"""
+        cont = Continuize(multinomial_treatment=Continuize.AsOrdinal)
+        data = cont(Table("zoo"))
+        self.send_signal(self.widget.Inputs.data, data)
+        if self.widget.isBlocking():
+            spy = QSignalSpy(self.widget.blockingStateChanged)
+            self.assertTrue(spy.wait(timeout))
+        simulate.combobox_activate_item(self.widget.controls.attr_label,
+                                        data.domain[-1].name)
+
+    def test_handle_primitive_metas(self):
+        """Set 'Color' from continuous meta attribute"""
+        d, attrs = self.data.domain, self.data.domain.attributes
+        data = self.data.transform(Domain(attrs[:2], d.class_vars, attrs[2:]))
+        self.send_signal(self.widget.Inputs.data, data)
+        simulate.combobox_activate_item(self.widget.controls.attr_color,
+                                        data.domain.metas[0].name)
+
+    def test_datasets(self, timeout=DEFAULT_TIMEOUT):
+        """Test widget for datasets with missing values and constant features"""
+        for ds in datasets.datasets():
+            self.send_signal(self.widget.Inputs.data, ds)
+            if self.widget.isBlocking():
+                spy = QSignalSpy(self.widget.blockingStateChanged)
+                self.assertTrue(spy.wait(timeout))
+
+    def test_none_data(self):
+        """Test widget for empty dataset"""
+        self.send_signal(self.widget.Inputs.data, self.data[:0])
+
+    def test_subset_data(self, timeout=DEFAULT_TIMEOUT):
+        """Test widget for subset data"""
+        self.send_signal(self.widget.Inputs.data, self.data)
+        if self.widget.isBlocking():
+            spy = QSignalSpy(self.widget.blockingStateChanged)
+            self.assertTrue(spy.wait(timeout))
+        self.send_signal(self.widget.Inputs.data_subset, self.data[::10])
+
+    def test_class_density(self, timeout=DEFAULT_TIMEOUT):
+        """Check class density update"""
+        self.send_signal(self.widget.Inputs.data, self.data)
+        self.widget.cb_class_density.click()
+        if self.widget.isBlocking():
+            spy = QSignalSpy(self.widget.blockingStateChanged)
+            self.assertTrue(spy.wait(timeout))
+        self.send_signal(self.widget.Inputs.data, None)
+        self.widget.cb_class_density.click()
+
+    def test_dragging_tooltip(self):
+        """Dragging tooltip depends on data being jittered"""
+        text = self.widget.graph.tiptexts[0]
+        self.send_signal(self.widget.Inputs.data, Table("heart_disease"))
+        self.assertEqual(self.widget.graph.tip_textitem.toPlainText(), text)
+        self.widget.graph.controls.jitter_size.setValue(1)
+        self.assertGreater(self.widget.graph.tip_textitem.toPlainText(), text)
+
+    def test_sparse_data(self, timeout=DEFAULT_TIMEOUT):
+        """Test widget for sparse data"""
+        table = Table("iris")
+        table.X = sp.csr_matrix(table.X)
+        self.assertTrue(sp.issparse(table.X))
+        self.send_signal(self.widget.Inputs.data, table)
+        if self.widget.isBlocking():
+            spy = QSignalSpy(self.widget.blockingStateChanged)
+            self.assertTrue(spy.wait(timeout))
+        self.send_signal(self.widget.Inputs.data_subset, table[::30])
+        self.assertEqual(len(self.widget.subset_indices), 5)
+
+    def test_send_report(self, timeout=DEFAULT_TIMEOUT):
+        """Test report """
+        self.send_signal(self.widget.Inputs.data, self.data)
+        self.widget.report_button.click()
+        if self.widget.isBlocking():
+            spy = QSignalSpy(self.widget.blockingStateChanged)
+            self.assertTrue(spy.wait(timeout))
+        self.send_signal(self.widget.Inputs.data, None)
+        self.widget.report_button.click()
+
+
+class AnchorProjectionWidgetTestMixin(ProjectionWidgetTestMixin):
+    def test_embedding_missing_values(self):
+        table = Table("heart_disease")
+        table.X[0] = np.nan
+        self.send_signal(self.widget.Inputs.data, table)
+        self.assertFalse(np.all(self.widget.valid_data))
+        output = self.get_output(ANNOTATED_DATA_SIGNAL_NAME)
+        embedding_mask = np.all(np.isnan(output.metas[:, :2]), axis=1)
+        np.testing.assert_array_equal(~embedding_mask, self.widget.valid_data)
+
+    def test_sparse_data(self):
+        table = Table("iris")
+        table.X = sp.csr_matrix(table.X)
+        self.assertTrue(sp.issparse(table.X))
+        self.send_signal(self.widget.Inputs.data, table)
+        self.assertTrue(self.widget.Error.sparse_data.is_shown())
+        self.send_signal(self.widget.Inputs.data_subset, table[::30])
+        self.assertEqual(len(self.widget.subset_indices), 5)
+        self.send_signal(self.widget.Inputs.data, None)
+        self.assertFalse(self.widget.Error.sparse_data.is_shown())
+
+    def test_manual_move(self):
+        self.send_signal(self.widget.Inputs.data, self.data)
+        self.widget.graph.select_by_indices(list(range(0, len(self.data), 10)))
+        selection = self.widget.graph.selection
+        components = self.get_output(self.widget.Outputs.components)
+        self.widget._manual_move_start()
+        self.widget._manual_move(0, 1, 1)
+        self.assertEqual(len(self.widget.graph.scatterplot_item.data),
+                         self.widget.SAMPLE_SIZE)
+        self.widget._manual_move_finish(0, 1, 2)
+        self.assertEqual(len(self.widget.graph.scatterplot_item.data),
+                         len(self.data))
+        self.assertNotEqual(components,
+                            self.get_output(self.widget.Outputs.components))
+        np.testing.assert_equal(self.widget.graph.selection, selection)
+
+
 class datasets:
     @staticmethod
     def path(filename):
@@ -752,7 +990,7 @@ class datasets:
     @classmethod
     def missing_data_1(cls):
         """
-        Data set with 3 continuous features (X{1,2,3}) where all the columns
+        Dataset with 3 continuous features (X{1,2,3}) where all the columns
         and rows contain at least one NaN value.
 
         One discrete class D with NaN values
@@ -767,7 +1005,7 @@ class datasets:
     @classmethod
     def missing_data_2(cls):
         """
-        Data set with 3 continuous features (X{1,2,3}) where all the columns
+        Dataset with 3 continuous features (X{1,2,3}) where all the columns
         and rows contain at least one NaN value and X1, X2 are constant.
 
         One discrete constant class D with NaN values.
@@ -782,7 +1020,7 @@ class datasets:
     @classmethod
     def missing_data_3(cls):
         """
-        Data set with 3 discrete features D{1,2,3} where all the columns and
+        Dataset with 3 discrete features D{1,2,3} where all the columns and
         rows contain at least one NaN value
 
         One discrete class D with NaN values
@@ -797,7 +1035,7 @@ class datasets:
     @classmethod
     def data_one_column_vals(cls, value=np.nan):
         """
-        Data set with two continuous features and one discrete. One continuous
+        Dataset with two continuous features and one discrete. One continuous
         columns has custom set values (default nan).
 
         Returns
@@ -821,7 +1059,7 @@ class datasets:
     @classmethod
     def data_one_column_nans(cls):
         """
-        Data set with two continuous features and one discrete. One continuous
+        Dataset with two continuous features and one discrete. One continuous
         columns has missing values (NaN).
 
         Returns
@@ -833,3 +1071,26 @@ class datasets:
     @classmethod
     def data_one_column_infs(cls):
         return cls.data_one_column_vals(value=np.inf)
+
+    @classmethod
+    def datasets(cls):
+        """
+        Yields multiple datasets.
+
+        Returns
+        -------
+        data : Generator of Orange.data.Table
+        """
+        ds_cls = Table(cls.path("testing_dataset_cls"))
+        ds_reg = Table(cls.path("testing_dataset_reg"))
+        for ds in (ds_cls, ds_reg):
+            d, a = ds.domain, ds.domain.attributes
+            for i in range(0, len(a), 2):
+                yield ds.transform(Domain(a[i: i + 2], d.class_vars, d.metas))
+            yield ds.transform(Domain(a[:2] + a[8: 10], d.class_vars, d.metas))
+        yield cls.missing_data_1()
+        yield cls.missing_data_2()
+        yield cls.missing_data_3()
+        yield cls.data_one_column_nans()
+        yield ds_cls
+        yield ds_reg

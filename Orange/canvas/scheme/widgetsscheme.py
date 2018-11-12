@@ -20,19 +20,23 @@ import sys
 import logging
 import traceback
 import enum
+import itertools
 from collections import namedtuple, deque
 from urllib.parse import urlencode
-
+from typing import List, Tuple, Union
 import sip
 
 from AnyQt.QtWidgets import QWidget, QShortcut, QLabel, QSizePolicy, QAction
 from AnyQt.QtGui import QKeySequence, QWhatsThisClickedEvent
 
-from AnyQt.QtCore import Qt, QObject, QCoreApplication, QTimer, QEvent
+from AnyQt.QtCore import (
+    Qt, QObject, QCoreApplication, QTimer, QEvent, QByteArray
+)
+
 from AnyQt.QtCore import pyqtSignal as Signal
 
 from .signalmanager import SignalManager, compress_signals, can_enable_dynamic
-from .scheme import Scheme, SchemeNode, SchemeLink
+from .scheme import Scheme, SchemeNode
 from .node import UserMessage
 from ..utils import name_lookup
 from ..resources import icon_loader
@@ -51,6 +55,11 @@ class WidgetsScheme(Scheme):
     propagation to an instance of `WidgetsSignalManager`.
     """
 
+    #: Emitted when a report_view is requested for the first time, before a
+    #: default instance is created. Clients can connect to this signal to
+    #: set a report view (`set_report_view`) to use instead.
+    report_view_requested = Signal()
+
     def __init__(self, parent=None, title=None, description=None, env={}):
         Scheme.__init__(self, parent, title, description, env=env)
 
@@ -66,6 +75,7 @@ class WidgetsScheme(Scheme):
 
         self.signal_manager.stateChanged.connect(onchanged)
         self.widget_manager.set_scheme(self)
+        self.__report_view = None  # type: Optional[OWReport]
 
     def widget_for_node(self, node):
         """
@@ -78,6 +88,26 @@ class WidgetsScheme(Scheme):
         Return the SchemeNode instance for the `widget`.
         """
         return self.widget_manager.node_for_widget(widget)
+
+    def save_widget_geometry_for_node(self, node):
+        # type: (SchemeNode) -> bytes
+        """
+        Save and return the current geometry and state for node
+
+        Parameters
+        ----------
+        node : Scheme
+        """
+        w = self.widget_for_node(node)  # type: OWWidget
+        return bytes(w.saveGeometryAndLayoutState())
+
+    def restore_widget_geometry_for_node(self, node, state):
+        # type: (SchemeNode, bytes) -> bool
+        w = self.widget_for_node(node)
+        if w is not None:
+            return w.restoreGeometryAndLayoutState(QByteArray(state))
+        else:
+            return False
 
     def sync_node_properties(self):
         """
@@ -96,10 +126,58 @@ class WidgetsScheme(Scheme):
         return changed
 
     def show_report_view(self):
-        from Orange.canvas.report.owreport import OWReport
-        inst = OWReport.get_instance()
+        inst = self.report_view()
         inst.show()
         inst.raise_()
+
+    def has_report(self):
+        """
+        Does this workflow have an associated report
+
+        Returns
+        -------
+        has_report: bool
+        """
+        return self.__report_view is not None
+
+    def report_view(self):
+        """
+        Return a OWReport instance used by the workflow.
+
+        If a report window has not been set then the `report_view_requested`
+        signal is emitted to allow the framework to setup the report window.
+        If the report window is still not set after the signal is emitted, a
+        new default OWReport instance is constructed and returned.
+
+        Returns
+        -------
+        report : OWReport
+        """
+        from Orange.canvas.report.owreport import OWReport
+        if self.__report_view is None:
+            self.report_view_requested.emit()
+
+        if self.__report_view is None:
+            parent = self.parent()
+            if isinstance(parent, QWidget):
+                window = parent.window()  # type: QWidget
+            else:
+                window = None
+
+            self.__report_view = OWReport()
+            if window is not None:
+                self.__report_view.setParent(window, Qt.Window)
+        return self.__report_view
+
+    def set_report_view(self, view):
+        """
+        Set the designated OWReport view for this workflow.
+
+        Parameters
+        ----------
+        view : Optional[OWReport]
+        """
+        self.__report_view = view
 
     def dump_settings(self, node: SchemeNode):
         from Orange.widgets.settings import SettingsPrinter
@@ -107,6 +185,29 @@ class WidgetsScheme(Scheme):
 
         pp = SettingsPrinter(indent=4)
         pp.pprint(widget.settingsHandler.pack_data(widget))
+
+    def event(self, event):
+        if event.type() == QEvent.Close and \
+                self.__report_view is not None:
+            self.__report_view.close()
+        return super().event(event)
+
+    def close(self):
+        QCoreApplication.sendEvent(self, QEvent(QEvent.Close))
+
+
+class ActivationMonitor(QObject):
+    """
+    An event filter for monitoring QWidgets for `WindowActivation` events.
+    """
+    #: Signal emitted with the `QWidget` instance that was activated.
+    activated = Signal(QWidget)
+
+    def eventFilter(self, obj, event):
+        # type: (QObject, QEvent) -> bool
+        if event.type() == QEvent.WindowActivate:
+            self.activated.emit(obj)
+        return False
 
 
 class WidgetManager(QObject):
@@ -135,6 +236,10 @@ class WidgetManager(QObject):
         Initializing = 8
 
     InputUpdate, BlockingUpdate, ProcessingUpdate, Initializing = ProcessingState
+
+    #: State mask for widgets that cannot be deleted immediately
+    #: (see __try_delete)
+    _DelayDeleteMask = InputUpdate | BlockingUpdate
 
     #: Widget initialization states
     Delayed = namedtuple(
@@ -183,9 +288,6 @@ class WidgetManager(QObject):
         # immediately
         self.__delay_delete = set()
 
-        #: Deleted/removed during creation/initialization.
-        self.__delete_after_create = []
-
         #: processing state flags for all widgets (including the ones
         #: in __delay_delete).
         #: Note: widgets which have not yet been created do not have an entry
@@ -193,6 +295,13 @@ class WidgetManager(QObject):
 
         # Tracks the widget in the update loop by the SignalManager
         self.__updating_widget = None
+
+        # Widgets float above other windows
+        self.__float_widgets_on_top = False
+
+        self.__activation_monitor = ActivationMonitor(self)
+        self.__activation_counter = itertools.count()
+        self.__activation_monitor.activated.connect(self.__mark_activated)
 
     def set_scheme(self, scheme):
         """
@@ -343,6 +452,7 @@ class WidgetManager(QObject):
 
         state = WidgetManager.Materialized(node, widget)
         self.__initstate_for_node[node] = state
+        widget.installEventFilter(self.__activation_monitor)
         self.widget_for_node_added.emit(node, widget)
 
         return state
@@ -366,7 +476,8 @@ class WidgetManager(QObject):
             del self.__node_for_widget[state.widget]
             node.title_changed.disconnect(state.widget.setCaption)
             state.widget.progressBarValueChanged.disconnect(node.set_progress)
-
+            state.widget.removeEventFilter(self.__activation_monitor)
+            del state.widget._Report__report_view
             self.widget_for_node_removed.emit(node, state.widget)
             self._delete_widget(state.widget)
         elif isinstance(state, WidgetManager.PartiallyInitialized):
@@ -387,19 +498,27 @@ class WidgetManager(QObject):
         Delete the OWBaseWidget instance.
         """
         widget.close()
-
         # Save settings to user global settings.
         widget.saveSettings()
-
         # Notify the widget it will be deleted.
         widget.onDeleteWidget()
 
-        if self.__widget_processing_state[widget] != 0:
+        state = self.__widget_processing_state[widget]
+        if state & WidgetManager._DelayDeleteMask:
             # If the widget is in an update loop and/or blocking we
             # delay the scheduled deletion until the widget is done.
+            log.debug("Widget %s removed but still in state :%s. "
+                      "Deferring deletion.", widget, state)
             self.__delay_delete.add(widget)
         else:
             widget.deleteLater()
+            name = "{} '{}'".format(type(widget).__name__, widget.captionTitle)
+            if log.isEnabledFor(logging.DEBUG):
+                widget.destroyed.connect(
+                    lambda: log.debug("Destroyed: %s", name))
+                widget.__marker = QObject()
+                widget.__marker.destroyed.connect(
+                    lambda: log.debug("Destroyed namespace: %s", name))
             del self.__widget_processing_state[widget]
 
     def create_widget_instance(self, node):
@@ -532,6 +651,10 @@ class WidgetManager(QObject):
             icon_loader.from_description(desc).get(desc.icon)
         )
         widget.setCaption(node.title)
+        # befriend class Report
+        widget._Report__report_view = self.scheme().report_view
+
+        self.__set_float_on_top_flag(widget)
 
         # Schedule an update with the signal manager, due to the cleared
         # implicit Initializing flag
@@ -563,6 +686,97 @@ class WidgetManager(QObject):
         """
         return self.__widget_processing_state[widget]
 
+    def set_float_widgets_on_top(self, float_on_top):
+        """
+        Set `Float Widgets on Top` flag on all widgets.
+        """
+        self.__float_widgets_on_top = float_on_top
+        for widget in self.__widget_for_node.values():
+            self.__set_float_on_top_flag(widget)
+
+    def save_window_state(self):
+        # type: () -> List[Tuple[SchemeNode, bytes]]
+        """
+        Save current open window arrangement.
+        """
+        workflow = self.__scheme  # type: WidgetsScheme
+        state = []
+        for node in workflow.nodes:  # type: SchemeNode
+            w = self.__widget_for_node.get(node, None)
+            if w is None:
+                continue
+            stackorder = w.property("__activation_order") or -1
+            if w.isVisible():
+                data = workflow.save_widget_geometry_for_node(node)
+                state.append((stackorder, node, data))
+
+        state = [(node, data)
+                 for _, node, data in sorted(state, key=lambda t: t[0])]
+        return state
+
+    def restore_window_state(self, state):
+        # type: (List[Tuple[SchemeNode, bytes]]) -> None
+        """
+        Restore the window state.
+        """
+        workflow = self.__scheme  # type: WidgetsScheme
+        visible = {node for node, _ in state}
+        # first hide all other widgets
+        for node in workflow.nodes:
+            if node not in visible:
+                # avoid creating widgets if not needed
+                w = self.__widget_for_node.get(node, None)
+                if w is not None:
+                    w.hide()
+        allnodes = set(workflow.nodes)
+        # restore state for visible group; windows are stacked as they appear
+        # in the state list.
+        w = None
+        for node, state in filter(lambda t: t[0] in allnodes, state):
+            w = self.widget_for_node(node)  # also create it if needed
+            w.show()
+            w.restoreGeometryAndLayoutState(QByteArray(state))
+            w.raise_()
+            self.__mark_activated(w)
+
+        # activate (give focus to) the last window
+        if w is not None:
+            w.activateWindow()
+
+    def activate_window_group(self, group):
+        # type: (Scheme.WindowGroup) -> None
+        self.restore_window_state(group.state)
+
+    def raise_widgets_to_front(self):
+        """
+        Raise all current visible widgets to the front.
+
+        The widgets will be stacked by activation order.
+        """
+        workflow = self.__scheme  # type: WidgetsScheme
+        if workflow is None:
+            return
+
+        widgets = filter(
+            lambda w: w.isVisible() if w is not None else False,
+            map(self.__widget_for_node.get, workflow.nodes))
+        widgets = sorted(
+            widgets, key=lambda _: _.property("__activation_order") or 0,
+        )
+        widgets = list(widgets)
+        w = None
+        for w in widgets:
+            w.raise_()
+        if w is not None:
+            # give focus to the top window
+            w.activateWindow()
+
+    def __mark_activated(self, widget):
+        # type: (QWidget) ->  None
+        # Update tracked stacking order for `widget`
+        widget.setProperty("__activation_order",
+                           next(self.__activation_counter))
+
     def __create_delayed(self):
         if self.__init_queue:
             state = self.__init_queue.popleft()
@@ -583,9 +797,7 @@ class WidgetManager(QObject):
                 widget.close()
                 widget.saveSettings()
                 widget.onDeleteWidget()
-
-            event.accept()
-            return True
+                widget.deleteLater()
 
         return QObject.eventFilter(self, receiver, event)
 
@@ -640,16 +852,21 @@ class WidgetManager(QObject):
         A widget processing state has changed (progressBarInit/Finished)
         """
         widget = self.sender()
-        try:
-            node = self.node_for_widget(widget)
-        except KeyError:
-            return
 
         if state:
             self.__widget_processing_state[widget] |= self.ProcessingUpdate
         else:
             self.__widget_processing_state[widget] &= ~self.ProcessingUpdate
-        self.__update_node_processing_state(node)
+
+        # propagate the change to the workflow model.
+        try:
+            # we can still track widget state after it was removed from the
+            # workflow model (`__delay_delete`)
+            node = self.node_for_widget(widget)
+        except KeyError:
+            pass
+        else:
+            self.__update_node_processing_state(node)
 
     def __on_processing_started(self, node):
         """
@@ -707,21 +924,45 @@ class WidgetManager(QObject):
         node.set_processing_state(1 if state else 0)
 
     def __try_delete(self, widget):
-        if self.__widget_processing_state[widget] == 0:
+        if not (self.__widget_processing_state[widget]
+                & WidgetManager._DelayDeleteMask):
+            log.debug("Delayed delete for widget %s", widget)
             self.__delay_delete.remove(widget)
-            widget.deleteLater()
             del self.__widget_processing_state[widget]
+            widget.blockingStateChanged.disconnect(
+                self.__on_blocking_state_changed)
+            widget.processingStateChanged.disconnect(
+                self.__on_processing_state_changed)
+            widget.deleteLater()
 
     def __on_env_changed(self, key, newvalue, oldvalue):
         # Notify widgets of a runtime environment change
         for widget in self.__widget_for_node.values():
             widget.workflowEnvChanged(key, newvalue, oldvalue)
 
+    def __set_float_on_top_flag(self, widget):
+        """Set or unset widget's float on top flag"""
+        should_float_on_top = self.__float_widgets_on_top
+        float_on_top = bool(widget.windowFlags() & Qt.WindowStaysOnTopHint)
+
+        if float_on_top == should_float_on_top:
+            return
+
+        widget_was_visible = widget.isVisible()
+        if should_float_on_top:
+            widget.setWindowFlags(widget.windowFlags() | Qt.WindowStaysOnTopHint)
+        else:
+            widget.setWindowFlags(widget.windowFlags() & ~Qt.WindowStaysOnTopHint)
+
+        # Changing window flags hid the widget
+        if widget_was_visible:
+            widget.show()
+
 
 def user_message_from_state(message_group):
     return UserMessage(
         severity=message_group.severity,
-        message_id=message_group,
+        message_id="{0.__name__}.{0.__qualname__}".format(type(message_group)),
         contents="<br/>".join(msg.formatted
                               for msg in message_group.active) or None,
         data={"content-type": "text/html"})

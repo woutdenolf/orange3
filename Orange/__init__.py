@@ -1,13 +1,3 @@
-import pickle
-from unittest.mock import patch
-# Needed because the pure-Python Unpickler that dill uses can also fail
-# with struct.error Exception. This seems to work, side effects unknown.
-with patch('pickle._Unpickler', pickle.Unpickler):
-    import dill
-dill.settings['protocol'] = pickle.HIGHEST_PROTOCOL
-dill.settings['recurse'] = True
-dill.settings['byref'] = True
-
 from .misc.lazy_module import _LazyModule
 from .misc.datasets import _DatasetInfo
 from .version import \
@@ -42,3 +32,14 @@ else:
 
         AnyQt.importhooks.install_backport_hook('pyqt4')
     del AnyQt
+
+
+# A hack that prevents segmentation fault with Nvidia drives on Linux if Qt's browser window
+# is shown (seen in https://github.com/spyder-ide/spyder/pull/7029/files)
+try:
+    import ctypes
+    ctypes.CDLL("libGL.so.1", mode=ctypes.RTLD_GLOBAL)
+except:  # pylint: disable=bare-except
+    pass
+finally:
+    del ctypes

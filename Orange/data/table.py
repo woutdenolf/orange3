@@ -17,7 +17,8 @@ from Orange.data import (
     Domain, Variable, Storage, StringVariable, Unknown, Value, Instance,
     ContinuousVariable, DiscreteVariable, MISSING_VALUES
 )
-from Orange.data.util import SharedComputeValue, vstack, hstack, assure_array_dense, assure_array_sparse, \
+from Orange.data.util import SharedComputeValue, vstack, hstack, \
+    assure_array_dense, assure_array_sparse, \
     assure_column_dense, assure_column_sparse
 from Orange.statistics.util import bincount, countnans, contingency, \
     stats as fast_stats, sparse_has_implicit_zeros, sparse_count_implicit_zeros, \
@@ -361,7 +362,8 @@ class Table(MutableSequence, Storage):
                     table = cls.from_table_rows(source, row_indices)
                     # assure resulting domain is the instance passed on input
                     table.domain = domain
-                    # since sparse flags are not considered when checking for domain equality, fix manually.
+                    # since sparse flags are not considered when checking for
+                    # domain equality, fix manually.
                     table = assure_domain_conversion_sparsity(table, source)
                     return table
 
@@ -395,12 +397,12 @@ class Table(MutableSequence, Storage):
                 if self.metas.ndim == 1:
                     self.metas = self.metas.reshape(-1, len(self.domain.metas))
                 if source.has_weights():
-                    self.W = np.array(source.W[row_indices])
+                    self.W = source.W[row_indices]
                 else:
                     self.W = np.empty((n_rows, 0))
                 self.name = getattr(source, 'name', '')
                 if hasattr(source, 'ids'):
-                    self.ids = np.array(source.ids[row_indices])
+                    self.ids = source.ids[row_indices]
                 else:
                     cls._init_ids(self)
                 self.attributes = getattr(source, 'attributes', {})
@@ -1363,18 +1365,16 @@ class Table(MutableSequence, Storage):
             if len(rr):
                 stats = np.vstack(tuple(rr))
         else:
-            columns = [self.domain.index(c) for c in columns]
             nattrs = len(self.domain.attributes)
-            Xs = any(0 <= c < nattrs for c in columns) and fast_stats(self.X, W)
-            Ys = any(c >= nattrs for c in columns) and fast_stats(self._Y, W)
-            ms = any(c < 0 for c in columns) and fast_stats(self.metas, W)
             for column in columns:
-                if 0 <= column < nattrs:
-                    stats.append(Xs[column, :])
-                elif column >= nattrs:
-                    stats.append(Ys[column - nattrs, :])
+                c = self.domain.index(column)
+                if 0 <= c < nattrs:
+                    S = fast_stats(self.X[:, [c]], W and W[:, [c]])
+                elif c >= nattrs:
+                    S = fast_stats(self._Y[:, [c-nattrs]], W and W[:, [c-nattrs]])
                 else:
-                    stats.append(ms[-1 - column])
+                    S = fast_stats(self.metas[:, [-1-c]], W and W[:, [-1-c]])
+                stats.append(S[0])
         return stats
 
     def _compute_distributions(self, columns=None):
@@ -1517,7 +1517,7 @@ class Table(MutableSequence, Storage):
             cont_vars = [v for v in vars if v[2].is_continuous]
             if cont_vars:
 
-                classes = row_data.astype(dtype=np.int8)
+                classes = row_data.astype(dtype=np.intp)
                 if W is not None:
                     W = W.astype(dtype=np.float64)
                 if sp.issparse(arr):
@@ -1565,7 +1565,7 @@ class Table(MutableSequence, Storage):
                       for row in table] if feature_names_column else \
             [ContinuousVariable(feature_name + " " + str(i + 1).zfill(
                 int(np.ceil(np.log10(n_cols))))) for i in range(n_cols)]
-        if old_domain and feature_names_column:
+        if old_domain is not None and feature_names_column:
             for i, _ in enumerate(attributes):
                 if attributes[i].name in old_domain:
                     var = old_domain[attributes[i].name]
@@ -1606,7 +1606,7 @@ class Table(MutableSequence, Storage):
 
         # class_vars - attributes of attributes to class - from old domain
         class_vars = []
-        if old_domain:
+        if old_domain is not None:
             class_vars = old_domain.class_vars
         self.Y = get_table_from_attributes_of_attributes(class_vars)
 
@@ -1627,16 +1627,15 @@ class Table(MutableSequence, Storage):
             orig_vals = M[:, i]
             val_map, vals, var_type = Orange.data.io.guess_data_type(orig_vals)
             values, variable = Orange.data.io.sanitize_variable(
-                val_map, vals, orig_vals, var_type,
-                {}, _metas, None, var_name)
+                val_map, vals, orig_vals, var_type, {}, name=var_name)
             M[:, i] = values
             return variable
 
         _metas = [StringVariable(n) for n in names]
-        if old_domain:
+        if old_domain is not None:
             _metas = [m for m in old_domain.metas if m.name != meta_attr_name]
         M = get_table_from_attributes_of_attributes(_metas, _dtype=object)
-        if not old_domain:
+        if old_domain is None:
             _metas = [guessed_var(i, m.name) for i, m in enumerate(_metas)]
         if _metas:
             self.metas = np.hstack((self.metas, M))
@@ -1728,22 +1727,59 @@ def _check_inf(array):
 
 
 def _subarray(arr, rows, cols):
+    rows = _optimize_indices(rows, arr.shape[0])
+    cols = _optimize_indices(cols, arr.shape[1])
     return arr[_rxc_ix(rows, cols)]
+
+
+def _optimize_indices(indices, maxlen):
+    """
+    Convert integer indices to slice if possible. It only converts increasing
+    integer ranges with positive steps and valid starts and ends.
+    Only convert valid ends so that invalid ranges will still raise
+    an exception.
+
+    Allows numpy to reuse the data array, because it defaults to copying
+    if given indices.
+
+    Parameters
+    ----------
+    indices : 1D sequence, slice or Ellipsis
+    """
+    if isinstance(indices, slice):
+        return indices
+
+    if indices is ...:
+        return slice(None, None, 1)
+
+    if len(indices) >= 1:
+        indices = np.asarray(indices)
+        if indices.dtype != np.bool:
+            begin = indices[0]
+            end = indices[-1]
+            steps = np.diff(indices) if len(indices) > 1 else np.array([1])
+            step = steps[0]
+
+            # continuous ranges with constant step and valid start and stop index can be slices
+            if np.all(steps == step) and step > 0 and begin >= 0 and end < maxlen:
+                return slice(begin, end + step, step)
+
+    return indices
 
 
 def _rxc_ix(rows, cols):
     """
     Construct an index object to index the `rows` x `cols` cross product.
 
-    Rows and columns can be a 1d bool or int sequence, a slice or an
-    Ellipsis (`...`). The later is a convenience and is interpreted the same
+    Rows and columns can be a 1d bool or int sequence, or a slice.
+    The later is a convenience and is interpreted the same
     as `slice(None, None, -1)`
 
     Parameters
     ----------
-    rows : 1D sequence, slice or Ellipsis
+    rows : 1D sequence, slice
         Row indices.
-    cols : 1D sequence, slice or Ellipsis
+    cols : 1D sequence, slice
         Column indices.
 
     See Also
@@ -1757,13 +1793,10 @@ def _rxc_ix(rows, cols):
     >>> a[_rxc_ix([0, 1], [3, 4])]
     array([[3, 4],
            [8, 9]])
-    >>> a[_rxc_ix([False, True], ...)]
+    >>> a[_rxc_ix([False, True], slice(None, None, 1))]
     array([[5, 6, 7, 8, 9]])
 
     """
-    rows = slice(None, None, 1) if rows is ... else rows
-    cols = slice(None, None, 1) if cols is ... else cols
-
     isslice = (isinstance(rows, slice), isinstance(cols, slice))
     if isslice == (True, True):
         return rows, cols

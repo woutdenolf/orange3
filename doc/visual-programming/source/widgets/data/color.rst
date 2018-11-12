@@ -1,27 +1,16 @@
 Color
 =====
 
-.. figure:: icons/color.png
-
 Set color legend for variables. 
 
-Signals
--------
+Inputs
+    Data
+        input dataset
 
-**Inputs**:
+Outputs
+    Data
+        dataset with a new color legend
 
--  **Data**
-
-   An input data set. 
-
-**Outputs**:
-
-- **Data**
-
-   A data set with a new color legend. 
-
-Description
------------
 
 The **Color** widget enables you to set the color legend in your visualizations 
 according to your own preferences. This option provides you with the tools for 
@@ -65,7 +54,7 @@ Numeric variables
 Example
 -------
 
-We chose to work with the *Iris* data set. We opened the color palette and selected three new colors for the three types of Irises. Then we opened the :doc:`Scatter Plot<../visualize/scatterplot>` widget and viewed the changes made to the scatter plot. 
+We chose to work with the *Iris* dataset. We opened the color palette and selected three new colors for the three types of Irises. Then we opened the :doc:`Scatter Plot<../visualize/scatterplot>` widget and viewed the changes made to the scatter plot. 
 
 .. figure:: images/Color-Example-1.png
 

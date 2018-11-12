@@ -7,7 +7,7 @@ from AnyQt.QtCore import Qt
 import numpy as np
 import sklearn.cross_validation as skl_cross_validation
 
-from Orange.widgets import widget, gui
+from Orange.widgets import gui
 from Orange.widgets.settings import Setting
 from Orange.data import Table
 from Orange.data.sql.table import SqlTable
@@ -18,11 +18,13 @@ from Orange.util import Reprable
 class OWDataSampler(OWWidget):
     name = "Data Sampler"
     description = "Randomly draw a subset of data points " \
-                  "from the input data set."
+                  "from the input dataset."
     icon = "icons/DataSampler.svg"
     priority = 100
     category = "Data"
-    keywords = ["data", "sample"]
+    keywords = ["random"]
+
+    _MAX_SAMPLE_SIZE = 2 ** 31 - 1
 
     class Inputs:
         data = Input("Data", Table)
@@ -50,10 +52,15 @@ class OWDataSampler(OWWidget):
     number_of_folds = Setting(10)
     selectedFold = Setting(1)
 
+    class Warning(OWWidget.Warning):
+        could_not_stratify = Msg("Stratification failed\n{}")
+        bigger_sample = Msg('Sample is bigger than input')
+
     class Error(OWWidget.Error):
         too_many_folds = Msg("Number of folds exceeds data size")
         sample_larger_than_data = Msg("Sample must be smaller than data")
         not_enough_to_stratify = Msg("Data is too small to stratify")
+        no_data = Msg("Dataset is empty")
 
     def __init__(self):
         super().__init__()
@@ -70,10 +77,10 @@ class OWDataSampler(OWWidget):
                                     callback=self.sampling_type_changed)
 
         def set_sampling_type(i):
-            def f():
+            def set_sampling_type_i():
                 self.sampling_type = i
                 self.sampling_type_changed()
-            return f
+            return set_sampling_type_i
 
         gui.appendRadioButton(sampling, "Fixed proportion of data:")
         self.sampleSizePercentageSlider = gui.hSlider(
@@ -87,8 +94,9 @@ class OWDataSampler(OWWidget):
         ibox = gui.indentedBox(sampling)
         self.sampleSizeSpin = gui.spin(
             ibox, self, "sampleSizeNumber", label="Instances: ",
-            minv=1, maxv=2 ** 31 - 1,
-            callback=set_sampling_type(self.FixedSize))
+            minv=1, maxv=self._MAX_SAMPLE_SIZE,
+            callback=set_sampling_type(self.FixedSize),
+            controlWidth=90)
         gui.checkBox(
             ibox, self, "replacement", "Sample with replacement",
             callback=set_sampling_type(self.FixedSize),
@@ -128,7 +136,6 @@ class OWDataSampler(OWWidget):
         spin.setSuffix(" %")
         self.sql_box.setVisible(False)
 
-
         self.options_box = gui.vBox(self.controlArea, "Options")
         self.cb_seed = gui.checkBox(
             self.options_box, self, "use_seed",
@@ -158,6 +165,7 @@ class OWDataSampler(OWWidget):
         self.sampling_type = self.CrossValidation
 
     def settings_changed(self):
+        self._update_sample_max_size()
         self.indices = None
 
     @Inputs.data
@@ -171,11 +179,11 @@ class OWDataSampler(OWWidget):
             self.cb_stratify.setVisible(not sql)
             self.cb_sql_dl.setVisible(sql)
             self.dataInfoLabel.setText(
-                '{}{} instances in input data set.'.format(*(
+                '{}{} instances in input dataset.'.format(*(
                     ('~', dataset.approx_len()) if sql else
                     ('', len(dataset)))))
             if not sql:
-                self.sampleSizeSpin.setMaximum(len(dataset))
+                self._update_sample_max_size()
                 self.updateindices()
         else:
             self.dataInfoLabel.setText('No data on input.')
@@ -183,6 +191,13 @@ class OWDataSampler(OWWidget):
             self.indices = None
             self.clear_messages()
         self.commit()
+
+    def _update_sample_max_size(self):
+        """Limit number of instances to input size unless using replacement."""
+        if not self.data or self.replacement:
+            self.sampleSizeSpin.setMaximum(self._MAX_SAMPLE_SIZE)
+        else:
+            self.sampleSizeSpin.setMaximum(len(self.data))
 
     def commit(self):
         if self.data is None:
@@ -227,6 +242,7 @@ class OWDataSampler(OWWidget):
 
     def updateindices(self):
         self.Error.clear()
+        self.Warning.clear()
         repl = True
         data_length = len(self.data)
         num_classes = len(self.data.domain.class_var.values) \
@@ -254,9 +270,14 @@ class OWDataSampler(OWWidget):
             self.indices = None
             return
 
-        rnd = self.RandomSeed if self.use_seed else None
+        # By the above, we can safely assume there is data
+        if self.sampling_type == self.FixedSize and repl and size and \
+                size > len(self.data):
+            # This should only be possible when using replacement
+            self.Warning.bigger_sample()
+
         stratified = (self.stratify and
-                      type(self.data) == Table and
+                      isinstance(self.data, Table) and
                       self.data.domain.has_discrete_class)
         if self.sampling_type == self.FixedSize:
             self.indices = sample_random_n(
@@ -264,9 +285,9 @@ class OWDataSampler(OWWidget):
                 stratified=stratified, replace=self.replacement,
                 random_state=rnd)
         elif self.sampling_type == self.FixedProportion:
-            self.indices = sample_random_p(
-                self.data, self.sampleSizePercentage / 100,
-                stratified=stratified, random_state=rnd)
+            self.indice_gen = SampleRandomP(
+                self.sampleSizePercentage / 100, stratified=stratified,
+                random_state=rnd)
         elif self.sampling_type == self.Bootstrap:
             self.indices = sample_bootstrap(data_length, random_state=rnd)
         else:
@@ -305,29 +326,62 @@ class OWDataSampler(OWWidget):
         self.report_items(items)
 
 
-def sample_fold_indices(table, folds=10, stratified=False, random_state=None):
-    """
-    :param Orange.data.Table table:
-    :param int folds: Number of folds
-    :param bool stratified: Return stratified indices (if applicable).
-    :param Random random_state:
-    :rval tuple-of-arrays: A tuple of array indices one for each fold.
-    """
-    if stratified and table.domain.has_discrete_class:
-        # XXX: StratifiedKFold does not support random_state
-        ind = skl_cross_validation.StratifiedKFold(
-            table.Y.ravel(), folds, random_state=random_state)
-    else:
-        ind = skl_cross_validation.KFold(
-            len(table), folds, shuffle=True, random_state=random_state)
-    return tuple(ind)
+class SampleFoldIndices(Reprable):
+    def __init__(self, folds=10, stratified=False, random_state=None):
+        """Samples data based on a number of folds.
+
+        Args:
+            folds (int): Number of folds
+            stratified (bool): Return stratified indices (if applicable).
+            random_state (Random): An initial state for replicable random
+            behavior
+
+        Returns:
+            tuple-of-arrays: A tuple of array indices one for each fold.
+
+        """
+        self.folds = folds
+        self.stratified = stratified
+        self.random_state = random_state
+
+    def __call__(self, table):
+        if self.stratified and table.domain.has_discrete_class:
+            splitter = skl.StratifiedKFold(
+                self.folds, random_state=self.random_state)
+            splitter.get_n_splits(table.X, table.Y)
+            ind = splitter.split(table.X, table.Y)
+        else:
+            splitter = skl.KFold(
+                self.folds, random_state=self.random_state)
+            splitter.get_n_splits(table)
+            ind = splitter.split(table)
+        return tuple(ind)
 
 
-def sample_random_n(table, n, stratified=False, replace=False,
-                    random_state=None):
-    if replace:
-        if random_state is None:
-            rgen = np.random
+class SampleRandomN(Reprable):
+    def __init__(self, n=0, stratified=False, replace=False,
+                 random_state=None):
+        self.n = n
+        self.stratified = stratified
+        self.replace = replace
+        self.random_state = random_state
+
+    def __call__(self, table):
+        if self.replace:
+            rgen = np.random.RandomState(self.random_state)
+            sample = rgen.random_integers(0, len(table) - 1, self.n)
+            o = np.ones(len(table))
+            o[sample] = 0
+            others = np.nonzero(o)[0]
+            return others, sample
+        if self.stratified and table.domain.has_discrete_class:
+            test_size = max(len(table.domain.class_var.values), self.n)
+            splitter = skl.StratifiedShuffleSplit(
+                n_splits=1, test_size=test_size,
+                train_size=len(table) - test_size,
+                random_state=self.random_state)
+            splitter.get_n_splits(table.X, table.Y)
+            ind = splitter.split(table.X, table.Y)
         else:
             rgen = np.random.mtrand.RandomState(random_state)
         sample = rgen.randint(len(table), size=n)

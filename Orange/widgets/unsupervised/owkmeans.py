@@ -1,19 +1,25 @@
-import re
-from itertools import chain
+from concurrent.futures import Future  # pylint: disable=unused-import
+from typing import Optional, List, Dict  # pylint: disable=unused-import
 
 import numpy as np
-
-from AnyQt.QtWidgets import QGridLayout, QTableView
+from AnyQt.QtCore import Qt, QTimer, QAbstractTableModel, QModelIndex, QThread, \
+    pyqtSlot as Slot
 from AnyQt.QtGui import QIntValidator
-from AnyQt.QtCore import Qt, QTimer, QAbstractTableModel, QModelIndex
+from AnyQt.QtWidgets import QGridLayout, QTableView
 
 from Orange.clustering import KMeans
+from Orange.clustering.kmeans import KMeansModel, SILHOUETTE_MAX_SAMPLES  # pylint: disable=unused-import
 from Orange.data import Table, Domain, DiscreteVariable, ContinuousVariable
 from Orange.widgets import widget, gui
 from Orange.widgets.settings import Setting
-from Orange.widgets.utils.annotated_data import get_next_name
+from Orange.widgets.utils.annotated_data import get_next_name, \
+    ANNOTATED_DATA_SIGNAL_NAME, add_columns
+from Orange.widgets.utils.concurrent import ThreadExecutor, FutureSetWatcher
 from Orange.widgets.utils.sql import check_sql_input
 from Orange.widgets.widget import Input, Output
+
+
+RANDOM_STATE = 0
 
 
 class ClusterTableModel(QAbstractTableModel):
@@ -39,6 +45,12 @@ class ClusterTableModel(QAbstractTableModel):
         self.start_k = start_k
         self.modelReset.emit()
 
+    def clear_scores(self):
+        self.modelAboutToBeReset.emit()
+        self.scores = []
+        self.start_k = 0
+        self.modelReset.emit()
+
     def data(self, index, role=Qt.DisplayRole):
         score = self.scores[index.row()]
         valid = not isinstance(score, str)
@@ -56,28 +68,61 @@ class ClusterTableModel(QAbstractTableModel):
             return str(row + self.start_k)
 
 
+class Task:
+    futures = []    # type: List[Future]
+    watcher = ...   # type: FutureSetWatcher
+    cancelled = False
+
+    def __init__(self, futures, watcher):
+        self.futures = futures
+        self.watcher = watcher
+
+    def cancel(self):
+        self.cancelled = True
+        for f in self.futures:
+            f.cancel()
+
+
+class NotEnoughData(ValueError):
+    pass
+
+
 class OWKMeans(widget.OWWidget):
     name = "k-Means"
     description = "k-Means clustering algorithm with silhouette-based " \
                   "quality estimation."
     icon = "icons/KMeans.svg"
     priority = 2100
+    keywords = ["kmeans", "clustering"]
 
     class Inputs:
         data = Input("Data", Table)
 
     class Outputs:
-        annotated_data = Output("Annotated Data", Table, default=True)
+        annotated_data = Output(
+            ANNOTATED_DATA_SIGNAL_NAME, Table, default=True,
+            replaces=["Annotated Data"]
+        )
         centroids = Output("Centroids", Table)
 
     class Error(widget.OWWidget.Error):
         failed = widget.Msg("Clustering failed\nError: {}")
+        not_enough_data = widget.Msg(
+            "Too few ({}) unique data instances for {} clusters"
+        )
+        no_attributes = widget.Msg("Data is missing features.")
 
     class Warning(widget.OWWidget.Warning):
         no_silhouettes = widget.Msg(
-            "Silhouette scores are not computed for >5000 samples")
+            "Silhouette scores are not computed for >{} samples".format(
+                SILHOUETTE_MAX_SAMPLES)
+        )
+        not_enough_data = widget.Msg(
+            "Too few ({}) unique data instances for {} clusters"
+        )
 
-    INIT_METHODS = "Initialize with KMeans++", "Random initialization"
+    INIT_METHODS = (("Initialize with KMeans++", "k-means++"),
+                    ("Random initialization", "random"))
 
     resizing_enabled = False
     buttons_area_orientation = Qt.Vertical
@@ -89,18 +134,33 @@ class OWKMeans(widget.OWWidget):
     max_iterations = Setting(300)
     n_init = Setting(10)
     smart_init = Setting(0)  # KMeans++
-    auto_run = Setting(True)
+    auto_commit = Setting(True)
+
+    settings_version = 2
+
+    @classmethod
+    def migrate_settings(cls, settings, version):
+        # type: (Dict, int) -> None
+        if version < 2:
+            if 'auto_apply' in settings:
+                settings['auto_commit'] = settings.get('auto_apply', True)
+                settings.pop('auto_apply', None)
 
     def __init__(self):
         super().__init__()
 
-        self.data = None
+        self.data = None  # type: Optional[Table]
         self.clusterings = {}
+
+        self.__executor = ThreadExecutor(parent=self)
+        self.__task = None  # type: Optional[Task]
 
         layout = QGridLayout()
         bg = gui.radioButtonsInBox(
             self.controlArea, self, "optimize_k", orientation=layout,
-            box="Number of Clusters", callback=self.invalidate)
+            box="Number of Clusters", callback=self.update_method,
+        )
+
         layout.addWidget(
             gui.appendRadioButton(bg, "Fixed:", addToLayout=False), 1, 1)
         sb = gui.hBox(None, margin=0)
@@ -128,7 +188,7 @@ class OWKMeans(widget.OWWidget):
 
         box = gui.vBox(self.controlArea, "Initialization")
         gui.comboBox(
-            box, self, "smart_init", items=self.INIT_METHODS,
+            box, self, "smart_init", items=[m[0] for m in self.INIT_METHODS],
             callback=self.invalidate)
 
         layout = QGridLayout()
@@ -148,13 +208,15 @@ class OWKMeans(widget.OWWidget):
             validator=QIntValidator(), callback=self.invalidate)
 
         self.apply_button = gui.auto_commit(
-            self.buttonsArea, self, "auto_run", "Apply", box=None,
-            commit=self.apply)
+            self.buttonsArea, self, "auto_commit", "Apply", box=None,
+            commit=self.commit)
         gui.rubber(self.controlArea)
 
         box = gui.vBox(self.mainArea, box="Silhouette Scores")
+        self.mainArea.setVisible(self.optimize_k)
+        self.table_model = ClusterTableModel(self)
         table = self.table_view = QTableView(self.mainArea)
-        table.setModel(ClusterTableModel(self))
+        table.setModel(self.table_model)
         table.setSelectionMode(QTableView.SingleSelection)
         table.setSelectionBehavior(QTableView.SelectRows)
         table.setItemDelegate(gui.ColoredBarItemDelegate(self, color=Qt.cyan))
@@ -170,116 +232,209 @@ class OWKMeans(widget.OWWidget):
         s = self.sizeHint()
         self.resize(s)
 
+    def update_method(self):
+        self.table_model.clear_scores()
+        self.commit()
+
     def update_k(self):
         self.optimize_k = False
-        self.apply()
+        self.table_model.clear_scores()
+        self.commit()
 
     def update_from(self):
         self.k_to = max(self.k_from + 1, self.k_to)
         self.optimize_k = True
-        self.apply()
+        self.table_model.clear_scores()
+        self.commit()
 
     def update_to(self):
         self.k_from = min(self.k_from, self.k_to - 1)
         self.optimize_k = True
-        self.apply()
+        self.table_model.clear_scores()
+        self.commit()
 
-    def check_data_size(self, n, msg_group):
-        msg_group.add_message(
-            "not_enough_data",
-            "Too few ({}) unique data instances for {} clusters")
-        data_ok = n <= len(self.data)
-        msg_group.not_enough_data(len(self.data), n, shown=not data_ok)
-        return data_ok
+    def enough_data_instances(self, k):
+        """k cannot be larger than the number of data instances."""
+        return len(self.data) >= k
 
-    def _compute_clustering(self, k):
-        # False positives (Setting is not recognized as int)
-        # pylint: disable=invalid-sequence-index
-        # pylint: disable=broad-except
-        try:
-            if k > len(self.data):
-                self.clusterings[k] = "not enough data"
-            else:
-                self.clusterings[k] = KMeans(
-                    n_clusters=k,
-                    init=['random', 'k-means++'][self.smart_init],
-                    n_init=self.n_init,
-                    max_iter=self.max_iterations,
-                    compute_silhouette_score=True)(self.data)
-        except Exception as exc:
-            self.clusterings[k] = str(exc)
-            return False
-        else:
-            return True
+    @property
+    def has_attributes(self):
+        return len(self.data.domain.attributes)
 
-    def run_optimization(self):
-        # Disabling is needed since this function is not reentrant
-        # Fast clicking on, say, "To: " causes multiple calls
-        try:
-            self.controlArea.setDisabled(True)
-            if not self.check_data_size(self.k_from, self.Error):
-                return False
-            self.check_data_size(self.k_to, self.Warning)
-            needed_ks = [k for k in range(self.k_from, self.k_to + 1)
-                         if k not in self.clusterings]
-            if not needed_ks:
-                return True  # Skip showing progress bar
-            with self.progressBar(len(needed_ks)) as progress:
-                for k in needed_ks:
-                    progress.advance()
-                    self._compute_clustering(k)
-            if all(isinstance(score, str)
-                   for score in self.clusterings.values()):
-                # Tooltip shows just the last error
-                # pylint: disable=undefined-loop-variable
-                self.Error.failed(self.clusterings[k])
-                self.mainArea.hide()
-        finally:
-            self.controlArea.setDisabled(False)
-        return True
+    @staticmethod
+    def _compute_clustering(data, k, init, n_init, max_iter, silhouette, random_state):
+        # type: (Table, int, str, int, int, bool) -> KMeansModel
+        if k > len(data):
+            raise NotEnoughData()
 
-    def cluster(self):
-        if self.k in self.clusterings or \
-                not self.check_data_size(self.k, self.Error):
-            return
-        try:
-            self.controlArea.setDisabled(True)
-            if not self._compute_clustering(self.k):
-                self.Error.failed(self.clusterings[self.k])
-        finally:
-            self.controlArea.setDisabled(False)
+        return KMeans(
+            n_clusters=k, init=init, n_init=n_init, max_iter=max_iter,
+            compute_silhouette_score=silhouette, random_state=random_state,
+        )(data)
 
-    def apply(self):
-        self.clear_messages()
-        if self.data is not None:
-            if self.optimize_k and self.run_optimization():
-                self.mainArea.show()
-                self.update_results()
-            else:
-                self.cluster()
-                self.mainArea.hide()
-        else:
-            self.mainArea.hide()
-        QTimer.singleShot(100, self.adjustSize)
+    @Slot(int, int)
+    def __progress_changed(self, n, d):
+        assert QThread.currentThread() is self.thread()
+        assert self.__task is not None
+        self.progressBarSet(100 * n / d)
+
+    @Slot(int, Exception)
+    def __on_exception(self, idx, ex):
+        assert QThread.currentThread() is self.thread()
+        assert self.__task is not None
+
+        if isinstance(ex, NotEnoughData):
+            self.Error.not_enough_data(len(self.data), self.k_from + idx)
+
+        # Only show failed message if there is only 1 k to compute
+        elif not self.optimize_k:
+            self.Error.failed(str(ex))
+
+        self.clusterings[self.k_from + idx] = str(ex)
+
+    @Slot(int, object)
+    def __clustering_complete(self, _, result):
+        # type: (int, KMeansModel) -> None
+        assert QThread.currentThread() is self.thread()
+        assert self.__task is not None
+
+        self.clusterings[result.k] = result
+
+    @Slot()
+    def __commit_finished(self):
+        assert QThread.currentThread() is self.thread()
+        assert self.__task is not None
+        assert self.data is not None
+
+        self.__task = None
+        self.setBlocking(False)
+        self.progressBarFinished()
+
+        if self.optimize_k:
+            self.update_results()
+
+        if self.optimize_k and all(isinstance(self.clusterings[i], str)
+                                   for i in range(self.k_from, self.k_to + 1)):
+            # Show the error of the last clustering
+            self.Error.failed(self.clusterings[self.k_to])
+
         self.send_data()
 
-    def invalidate(self, force_apply=False):
+    def __launch_tasks(self, ks):
+        # type: (List[int]) -> None
+        """Execute clustering in separate threads for all given ks."""
+        futures = [self.__executor.submit(
+            self._compute_clustering,
+            data=self.data,
+            k=k,
+            init=self.INIT_METHODS[self.smart_init][1],
+            n_init=self.n_init,
+            max_iter=self.max_iterations,
+            silhouette=True,
+            random_state=RANDOM_STATE,
+        ) for k in ks]
+        watcher = FutureSetWatcher(futures)
+        watcher.resultReadyAt.connect(self.__clustering_complete)
+        watcher.progressChanged.connect(self.__progress_changed)
+        watcher.exceptionReadyAt.connect(self.__on_exception)
+        watcher.doneAll.connect(self.__commit_finished)
+
+        self.__task = Task(futures, watcher)
+        self.progressBarInit(processEvents=False)
+        self.setBlocking(True)
+
+    def cancel(self):
+        if self.__task is not None:
+            task, self.__task = self.__task, None
+            task.cancel()
+
+            task.watcher.resultReadyAt.disconnect(self.__clustering_complete)
+            task.watcher.progressChanged.disconnect(self.__progress_changed)
+            task.watcher.exceptionReadyAt.disconnect(self.__on_exception)
+            task.watcher.doneAll.disconnect(self.__commit_finished)
+
+            self.progressBarFinished()
+            self.setBlocking(False)
+
+    def run_optimization(self):
+        if not self.enough_data_instances(self.k_from):
+            self.Error.not_enough_data(len(self.data), self.k_from)
+            return
+
+        if not self.enough_data_instances(self.k_to):
+            self.Warning.not_enough_data(len(self.data), self.k_to)
+            return
+
+        needed_ks = [k for k in range(self.k_from, self.k_to + 1)
+                     if k not in self.clusterings]
+
+        if needed_ks:
+            self.__launch_tasks(needed_ks)
+        else:
+            # If we don't need to recompute anything, just set the results to
+            # what they were before
+            self.update_results()
+
+    def cluster(self):
+        # Check if the k already has a computed clustering
+        if self.k in self.clusterings:
+            self.send_data()
+            return
+
+        # Check if there is enough data
+        if not self.enough_data_instances(self.k):
+            self.Error.not_enough_data(len(self.data), self.k)
+            return
+
+        self.__launch_tasks([self.k])
+
+    def commit(self):
+        self.cancel()
+        self.clear_messages()
+
+        # Some time may pass before the new scores are computed, so clear the
+        # old scores to avoid potential confusion. Hiding the mainArea could
+        # cause flickering when the clusters are computed quickly, so this is
+        # the better alternative
+        self.table_model.clear_scores()
+        self.mainArea.setVisible(self.optimize_k and self.data is not None and
+                                 self.has_attributes)
+
+        if self.data is None:
+            self.send_data()
+            return
+
+        if not self.has_attributes:
+            self.Error.no_attributes()
+            self.send_data()
+            return
+
+        if self.optimize_k:
+            self.run_optimization()
+        else:
+            self.cluster()
+
+        QTimer.singleShot(100, self.adjustSize)
+
+    def invalidate(self):
+        self.cancel()
         self.Error.clear()
         self.Warning.clear()
         self.clusterings = {}
-        if force_apply:
-            self.unconditional_apply()
-        else:
-            self.apply()
+        self.table_model.clear_scores()
+
+        self.commit()
 
     def update_results(self):
         scores = [
             mk if isinstance(mk, str) else mk.silhouette for mk in (
-                self.clusterings[k] for k in range(self.k_from, self.k_to + 1))]
+                self.clusterings[k] for k in range(self.k_from, self.k_to + 1))
+        ]
         best_row = max(
             range(len(scores)), default=0,
-            key=lambda x: 0 if isinstance(scores[x], str) else scores[x])
-        self.table_view.model().set_scores(scores, self.k_from)
+            key=lambda x: 0 if isinstance(scores[x], str) else scores[x]
+        )
+        self.table_model.set_scores(scores, self.k_from)
         self.table_view.selectRow(best_row)
         self.table_view.setFocus(Qt.OtherFocusReason)
         self.table_view.resizeRowsToContents()
@@ -298,32 +453,30 @@ class OWKMeans(widget.OWWidget):
             k = self.k_from + row if row is not None else None
         else:
             k = self.k
+
         km = self.clusterings.get(k)
-        if not self.data or km is None or isinstance(km, str):
+        if self.data is None or km is None or isinstance(km, str):
             self.Outputs.annotated_data.send(None)
             self.Outputs.centroids.send(None)
             return
 
         domain = self.data.domain
-        existing_vars = [var.name for var in chain(domain.variables, domain.metas)]
-        clust_var = DiscreteVariable(
-            get_next_name(existing_vars, "Cluster"),
-            values=["C%d" % (x + 1) for x in range(km.k)])
+        cluster_var = DiscreteVariable(
+            get_next_name(domain, "Cluster"),
+            values=["C%d" % (x + 1) for x in range(km.k)]
+        )
         clust_ids = km(self.data)
-        silhouette_var = ContinuousVariable(
-            get_next_name(existing_vars, "Silhouette"))
+        silhouette_var = ContinuousVariable(get_next_name(domain, "Silhouette"))
         if km.silhouette_samples is not None:
             self.Warning.no_silhouettes.clear()
             scores = np.arctan(km.silhouette_samples) / np.pi + 0.5
         else:
             self.Warning.no_silhouettes()
             scores = np.nan
-        new_domain = Domain(
-            domain.attributes,
-            [clust_var, silhouette_var],
-            domain.metas + domain.class_vars)
+
+        new_domain = add_columns(domain, metas=[cluster_var, silhouette_var])
         new_table = self.data.transform(new_domain)
-        new_table.get_column_view(clust_var)[0][:] = clust_ids.X.ravel()
+        new_table.get_column_view(cluster_var)[0][:] = clust_ids.X.ravel()
         new_table.get_column_view(silhouette_var)[0][:] = scores
 
         centroids = Table(Domain(km.pre_domain.attributes), km.centroids)
@@ -334,8 +487,14 @@ class OWKMeans(widget.OWWidget):
     @Inputs.data
     @check_sql_input
     def set_data(self, data):
-        self.data = data
-        self.invalidate(True)
+        self.data, old_data = data, self.data
+
+        # Do not needlessly recluster the data if X hasn't changed
+        if old_data and self.data and np.array_equal(self.data.X, old_data.X):
+            if self.auto_commit:
+                self.send_data()
+        else:
+            self.invalidate()
 
     def send_report(self):
         # False positives (Setting is not recognized as int)
@@ -344,7 +503,7 @@ class OWKMeans(widget.OWWidget):
             k_clusters = self.k_from + self.selected_row()
         else:
             k_clusters = self.k
-        init_method = self.INIT_METHODS[self.smart_init]
+        init_method = self.INIT_METHODS[self.smart_init][0]
         init_method = init_method[0].lower() + init_method[1:]
         self.report_items((
             ("Number of clusters", k_clusters),
@@ -357,6 +516,10 @@ class OWKMeans(widget.OWWidget):
                     "Silhouette scores for different numbers of clusters",
                     self.table_view)
 
+    def onDeleteWidget(self):
+        self.cancel()
+        super().onDeleteWidget()
+
 
 def main():  # pragma: no cover
     import sys
@@ -364,11 +527,12 @@ def main():  # pragma: no cover
 
     a = QApplication(sys.argv)
     ow = OWKMeans()
-    d = Table("iris.tab")
+    d = Table(sys.argv[1] if len(sys.argv) > 1 else "iris.tab")
     ow.set_data(d)
     ow.show()
     a.exec()
     ow.saveSettings()
+
 
 if __name__ == "__main__":  # pragma: no cover
     main()

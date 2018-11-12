@@ -1,36 +1,23 @@
 MDS
 ===
 
-.. figure:: icons/mds.png
-
 Multidimensional scaling (MDS) projects items onto a plane fitted to
 given distances between points.
 
-Signals
--------
+Inputs
+    Data
+        input dataset
+    Distances
+        distance matrix
+    Data Subset
+        subset of instances
 
-**Inputs**:
+Outputs
+    Selected Data
+        instances selected from the plot
+    Data
+        dataset with MDS coordinates
 
--  **Distances**
-
-   A distance matrix
-
--  **Data**
-
-   A data set
-
-**Outputs**:
-
--  **Data**
-
-   A data set with MDS coordinates.
-
--  **Data subset**
-
-   Selected data
-
-Description
------------
 
 `Multidimensional scaling <https://en.wikipedia.org/wiki/Multidimensional_scaling>`_ is a
 technique which finds a low-dimensional (in our case a two-dimensional)
@@ -39,7 +26,7 @@ well as possible. The perfect fit is typically impossible to obtain
 since the data is high-dimensional or the distances are not
 `Euclidean <https://en.wikipedia.org/wiki/Euclidean_distance>`_.
 
-In the input, the widget needs either a data set or a matrix of
+In the input, the widget needs either a dataset or a matrix of
 distances. When visualizing distances between rows, you can also adjust
 the color of the points, change their shape, mark them, and output them
 upon selection.
@@ -66,7 +53,7 @@ corresponds to the sum of forces acting on it.
       the animation more visually appealing, but can be slow if the
       number of points is high.
 
-2. Defines how the points are visualized. These options are available only when visalizing distances between rows (selected in the :doc:`Distances<../unsupervised/distances>` widget).
+2. Defines how the points are visualized. These options are available only when visualizing distances between rows (selected in the :doc:`Distances<../unsupervised/distances>` widget).
 
    -  **Color**: Color of points by attribute (gray for continuous,
       colored for discrete).
@@ -83,11 +70,11 @@ corresponds to the sum of forces acting on it.
 3. Adjust the graph with *Zoom/Select*. The arrow enables you to select data instances. The magnifying glass enables zooming, which can be also done by scrolling in and out. The hand allows you to move the graph around. The rectangle readjusts the graph proportionally.
 4. Select the desired output:
 
-   -  **Original features only** (input data set)
+   -  **Original features only** (input dataset)
    -  **Coordinates only** (MDS coordinates)
-   -  **Coordinates as features** (input data set + MDS coordinates as
+   -  **Coordinates as features** (input dataset + MDS coordinates as
       regular attributes)
-   -  **Coordinates as meta attributes** (input data set + MDS
+   -  **Coordinates as meta attributes** (input dataset + MDS
       coordinates as meta attributes) 
 
 5. Sending the instances can be automatic if *Send selected automatically* is ticked. Alternatively, click *Send selected*.
@@ -102,7 +89,7 @@ recommend reading that widget's description as well.
 Example
 -------
 
-The above graphs were drawn using the following simple schema. We used the *iris.tab* data set. Using the
+The above graphs were drawn using the following simple schema. We used the *iris.tab* dataset. Using the
 :doc:`Distances <../unsupervised/distances>` widget we input the distance matrix into the **MDS**
 widget, where we see the *Iris* data displayed in a 2-dimensional plane.
 We can see the appended coordinates in the :doc:`Data Table <../data/datatable>` widget.

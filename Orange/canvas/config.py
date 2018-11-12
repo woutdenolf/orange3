@@ -8,6 +8,7 @@ import sys
 import logging
 import pickle as pickle
 import itertools
+import warnings
 
 import pkg_resources
 
@@ -44,6 +45,7 @@ def init():
     # Make it a null op.
     global init
     init = lambda: None
+
 
 rc = {}
 
@@ -83,6 +85,9 @@ spec = \
       "Use a popover menu to select a widget when clicking on a category "
       "button"),
 
+     ("mainwindow/widgets-float-on-top", bool, False,
+      "Float widgets on top of other windows"),
+
      ("mainwindow/number-of-recent-schemes", int, 15,
       "Number of recent workflows to keep in history"),
 
@@ -120,10 +125,23 @@ spec = \
       "Open help in an external browser"),
 
      ("error-reporting/machine-id", str, '',
-     "Report custom name instead of machine ID"),
+      "Report custom name instead of machine ID"),
 
-     ("add-ons/allow-conda-experimental", bool, False,
+     ("error-reporting/send-statistics", bool, False,
+      "Share anonymous usage statistics to improve Orange"),
+
+     ("error-reporting/permission-requested", bool, False,
+      "Has the user already been asked to share statistics"),
+
+     ("add-ons/allow-conda", bool, True,
       "Install add-ons with conda"),
+
+     ("add-ons/pip-install-arguments", str, '',
+      'Arguments to pass to "pip install" when installing add-ons.'),
+
+     ("network/http-proxy", str, '', 'HTTP proxy.'),
+
+     ("network/https-proxy", str, '', 'HTTPS proxy.'),
      ]
 
 spec = [config_slot(*t) for t in spec]
@@ -187,18 +205,18 @@ def widget_settings_dir():
 
 
 def open_config():
-    global rc
-    app_dir = data_dir()
-    filename = os.path.join(app_dir, "canvas-rc.pck")
-    if os.path.exists(filename):
-        with open(os.path.join(app_dir, "canvas-rc.pck"), "rb") as f:
-            rc.update(pickle.load(f))
+    warnings.warn(
+        "open_config was never used and will be removed in the future",
+        DeprecationWarning, stacklevel=2
+    )
+    return
 
 
 def save_config():
-    app_dir = data_dir()
-    with open(os.path.join(app_dir, "canvas-rc.pck"), "wb") as f:
-        pickle.dump(rc, f)
+    warnings.warn(
+        "save_config was never used and will be removed in the future",
+        DeprecationWarning, stacklevel=2
+    )
 
 
 def recent_schemes():
@@ -262,9 +280,6 @@ def widgets_entry_points(with_default_entry=True):
         chain = [ep_iter]
     return itertools.chain(*chain)
 
-#: Parameters for searching add-on packages in PyPi using xmlrpc api.
-ADDON_KEYWORD = 'orange3 add-on'
-ADDON_PYPI_SEARCH_SPEC = {"keywords": ADDON_KEYWORD}
 #: Entry points by which add-ons register with pkg_resources.
 ADDON_ENTRY = "orange3.addon"
 
@@ -306,4 +321,3 @@ def application_icon():
         __name__, "icons/orange-canvas.svg"
     )
     return QIcon(path)
-

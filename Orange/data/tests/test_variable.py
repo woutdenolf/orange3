@@ -107,6 +107,19 @@ class TestVariable(unittest.TestCase):
         self.assertTrue(a.is_string)
         self.assertFalse(a.is_primitive())
 
+    def test_properties_as_predicates(self):
+        a = ContinuousVariable()
+        self.assertTrue(Variable.is_continuous(a))
+        self.assertFalse(Variable.is_discrete(a))
+        self.assertFalse(Variable.is_string(a))
+        self.assertTrue(Variable.is_primitive(a))
+
+        a = StringVariable()
+        self.assertFalse(Variable.is_continuous(a))
+        self.assertFalse(Variable.is_discrete(a))
+        self.assertTrue(Variable.is_string(a))
+        self.assertFalse(Variable.is_primitive(a))
+
     def test_strange_eq(self):
         a = ContinuousVariable()
         b = ContinuousVariable()
@@ -252,6 +265,23 @@ class TestDiscreteVariable(VariableTest):
         self.assertRaises(TypeError, DiscreteVariable, "foo", values=["a", 42])
         a = DiscreteVariable("foo", values=["a", "b", "c"])
         self.assertRaises(TypeError, a.add_value, 42)
+
+    def test_unpickle(self):
+        d1 = DiscreteVariable("A", values=["two", "one"])
+        s = pickle.dumps(d1)
+        d2 = DiscreteVariable.make("A", values=["one", "two", "three"])
+        d2_values = tuple(d2.values)
+        d1c = pickle.loads(s)
+        # See: gh-3238
+        # The unpickle reconstruction picks an existing variable (d2), on which
+        # __setstate__ or __dict__.update is called
+        self.assertSequenceEqual(d2.values, d2_values)
+        self.assertSequenceEqual(d1c.values, d1.values)
+        s = pickle.dumps(d2)
+        DiscreteVariable._clear_all_caches()  # [comment redacted]
+        d1 = DiscreteVariable("A", values=["one", "two"])
+        d2 = pickle.loads(s)
+        self.assertSequenceEqual(d2.values, ["two", "one", "three"])
 
 
 @variabletest(ContinuousVariable)
@@ -404,6 +434,12 @@ time,continuous
         var = TimeVariable('time')
         self.assertEqual(var.repr_val(Value(var, 416.3)), '416.3')
 
+    def test_have_date_have_time_in_construct(self):
+        """Test if have_time and have_date is correctly set"""
+        var = TimeVariable('time', have_date=1)
+        self.assertTrue(var.have_date)
+        self.assertFalse(var.have_time)
+
 
 PickleContinuousVariable = create_pickling_tests(
     "PickleContinuousVariable",
@@ -455,9 +491,9 @@ class VariableTestMakeProxy(unittest.TestCase):
         self.assertEqual(abc1p, abc)
 
         abcp, abc1p, abc2p = pickle.loads(pickle.dumps((abc, abc1, abc2)))
-        self.assertIs(abcp.master, abcp)
-        self.assertIs(abc1p.master, abcp)
-        self.assertIs(abc2p.master, abcp)
+        self.assertIs(abcp.master, abcp.master)
+        self.assertIs(abc1p.master, abcp.master)
+        self.assertIs(abc2p.master, abcp.master)
         self.assertEqual(abcp, abc1p)
         self.assertEqual(abcp, abc2p)
         self.assertEqual(abc1p, abc2p)

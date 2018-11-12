@@ -16,7 +16,7 @@ from Orange.widgets import widget, gui, settings
 from Orange.widgets.evaluate.utils import check_results_adequacy
 from Orange.widgets.utils import colorpalette, colorbrewer
 from Orange.widgets.widget import Input
-from Orange.canvas import report
+from Orange.widgets import report
 
 
 Curve = namedtuple(
@@ -37,6 +37,7 @@ class OWCalibrationPlot(widget.OWWidget):
     description = "Calibration plot based on evaluation of classifiers."
     icon = "icons/CalibrationPlot.svg"
     priority = 1030
+    keywords = []
 
     class Inputs:
         evaluation_results = Input("Evaluation Results", Orange.evaluation.Results)

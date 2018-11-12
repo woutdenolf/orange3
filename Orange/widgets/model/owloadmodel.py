@@ -1,6 +1,6 @@
 import os
+import pickle
 
-import dill as pickle
 from AnyQt.QtCore import QTimer
 from AnyQt.QtWidgets import (
     QSizePolicy, QHBoxLayout, QComboBox, QStyle, QFileDialog
@@ -20,6 +20,7 @@ class OWLoadModel(widget.OWWidget):
     priority = 3050
     replaces = ["Orange.widgets.classify.owloadclassifier.OWLoadClassifier"]
     icon = "icons/LoadModel.svg"
+    keywords = ["file", "open"]
 
     class Outputs:
         model = Output("Model", Model)

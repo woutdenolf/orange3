@@ -1,983 +1,643 @@
 """
-Linear projection widget
+Linear Projection widget
 ------------------------
-
 """
 
-from functools import reduce
-from operator import itemgetter
-from types import SimpleNamespace as namespace
-from xml.sax.saxutils import escape
-import pkg_resources
+from itertools import islice, permutations, chain
+from math import factorial
 
-import numpy
+import numpy as np
 
-from AnyQt.QtWidgets import (
-    QListView, QSlider, QToolButton, QFormLayout, QHBoxLayout,
-    QSizePolicy, QAction, QActionGroup, QGraphicsLineItem, QGraphicsPathItem,
-    QGraphicsRectItem, QPinchGesture, QApplication
-)
-from AnyQt.QtGui import (
-    QColor, QPen, QBrush, QKeySequence, QPainterPath, QPainter, QTransform,
-    QCursor, QIcon
-)
-from AnyQt.QtCore import Qt, QObject, QEvent, QSize, QRectF, QLineF, QPointF, QMimeData
-from AnyQt.QtCore import pyqtSignal as Signal, pyqtSlot as Slot
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+from sklearn.neighbors import NearestNeighbors
+from sklearn.metrics import r2_score
 
-import pyqtgraph.graphicsItems.ScatterPlotItem
+from AnyQt.QtWidgets import QApplication, QSizePolicy
+from AnyQt.QtGui import QStandardItem, QColor
+from AnyQt.QtCore import Qt, QRectF, QLineF, pyqtSignal as Signal
+
 import pyqtgraph as pg
 
-from Orange.data import Table, Variable
-from Orange.data.sql.table import SqlTable
-from Orange.widgets import widget, gui, settings
-from Orange.widgets.utils import colorpalette
-from Orange.widgets.utils.annotated_data import (
-    create_annotated_table, ANNOTATED_DATA_SIGNAL_NAME
-)
+from Orange.data import Table, Domain, StringVariable
+from Orange.preprocess import Normalize
+from Orange.preprocess.score import ReliefF, RReliefF
+from Orange.projection import PCA
+from Orange.util import Enum
+from Orange.widgets import gui, report
+from Orange.widgets.gui import OWComponent
+from Orange.widgets.settings import Setting, ContextSetting, SettingProvider
+from Orange.widgets.utils import vartype
 from Orange.widgets.utils.itemmodels import VariableListModel
-from Orange.widgets.utils.plot import OWPlotGUI
-from Orange.widgets.visualize.owscatterplotgraph import LegendItem, \
-    legend_anchor_pos
-from Orange.widgets.utils import classdensity
-from Orange.widgets.widget import Input, Output
-from Orange.canvas import report
+from Orange.widgets.utils.plot import VariablesSelection
+from Orange.widgets.visualize.utils import VizRankDialog
+from Orange.widgets.visualize.utils.component import OWGraphWithAnchors
+from Orange.widgets.visualize.utils.plotutils import AnchorItem
+from Orange.widgets.visualize.utils.widget import OWAnchorProjectionWidget
+from Orange.widgets.widget import Input, Msg
 
 
-class ScatterPlotItem(pg.ScatterPlotItem):
-    Symbols = pyqtgraph.graphicsItems.ScatterPlotItem.Symbols
+class LinearProjectionVizRank(VizRankDialog, OWComponent):
+    captionTitle = "Score Plots"
+    n_attrs = Setting(3)
+    minK = 10
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    attrsSelected = Signal([])
+    _AttrRole = next(gui.OrangeUserRole)
 
-    def paint(self, painter, option, widget=None):
-        if self.opts["pxMode"]:
-            painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+    def __init__(self, master):
+        # Add the spin box for a number of attributes to take into account.
+        VizRankDialog.__init__(self, master)
+        OWComponent.__init__(self, master)
 
-        if self.opts["antialias"]:
-            painter.setRenderHint(QPainter.Antialiasing, True)
+        box = gui.hBox(self)
+        max_n_attrs = len(master.model_selected) + len(master.model_other)
+        self.n_attrs_spin = gui.spin(
+            box, self, "n_attrs", 3, max_n_attrs, label="Number of variables: ",
+            controlWidth=50, alignment=Qt.AlignRight, callback=self._n_attrs_changed)
+        gui.rubber(box)
+        self.last_run_n_attrs = None
+        self.attr_color = master.attr_color
 
-        super().paint(painter, option, widget)
+    def initialize(self):
+        super().initialize()
+        self.attr_color = self.master.attr_color
 
-
-class TextItem(pg.TextItem):
-    if not hasattr(pg.TextItem, "setAnchor"):
-        # Compatibility with pyqtgraph <= 0.9.10; in (as of yet unreleased)
-        # 0.9.11 the TextItem has a `setAnchor`, but not `updateText`
-        def setAnchor(self, anchor):
-            self.anchor = pg.Point(anchor)
-            self.updateText()
-
-
-class AxisItem(pg.GraphicsObject):
-    def __init__(self, parent=None, line=None, label=None, *args):
-        super().__init__(parent, *args)
-        self.setFlag(pg.GraphicsObject.ItemHasNoContents)
-
-        if line is None:
-            line = QLineF(0, 0, 1, 0)
-
-        self._spine = QGraphicsLineItem(line, self)
-        dx = line.x2() - line.x1()
-        dy = line.y2() - line.y1()
-        rad = numpy.arctan2(dy, dx)
-        angle = (rad * 180 / numpy.pi) % 360
-
-        self._arrow = pg.ArrowItem(parent=self, angle=180 - angle)
-        self._arrow.setPos(self._spine.line().p2())
-
-        self._label = TextItem(text=label, color=(10, 10, 10))
-        self._label.setParentItem(self)
-        self._label.setPos(self._spine.line().p2())
-
-    def setLabel(self, label):
-        if label != self._label:
-            self._label = label
-            self._label.setText(label)
-
-    def setPen(self, pen):
-        self._spine.setPen(pen)
-
-    def paint(self, painter, option, widget):
-        pass
-
-    def boundingRect(self):
-        return QRectF()
-
-    def viewTransformChanged(self):
-        self.__updateLabelPos()
-
-    def __updateLabelPos(self):
-        T = self.viewTransform()
-        if T is not None:
-            Tinv, ok = T.inverted()
-        else:
-            Tinv, ok = None, False
-        if not ok:
-            T = Tinv = QTransform()
-
-        # map the axis spine to viewbox coord. system
-        viewbox_line = Tinv.map(self._spine.line())
-        angle = viewbox_line.angle()
-        # note in Qt the y axis is inverted (90 degree angle 'points' down)
-        left_quad = 270 <= angle <= 360 or -0.0 <= angle < 90
-
-        # position the text label along the viewbox_line
-        label_pos = viewbox_line.pointAt(0.90)
-
-        if left_quad:
-            anchor = (0.5, -0.1)
-        else:
-            anchor = (0.5, 1.1)
-
-        pos = T.map(label_pos)
-        self._label.setPos(pos)
-        self._label.setAnchor(pg.Point(*anchor))
-        self._label.setRotation(angle if left_quad else angle - 180)
-
-
-class LegendItem(LegendItem):
-    def __init__(self):
-        super().__init__()
-        self.items = []
-
-    def clear(self):
+    def before_running(self):
         """
-        Clear all legend items.
+        Disable the spin for number of attributes before running and
+        enable afterwards. Also, if the number of attributes is different than
+        in the last run, reset the saved state (if it was paused).
         """
-        items = list(self.items)
-        self.items = []
-        for sample, label in items:
-            # yes, the LegendItem shadows QGraphicsWidget.layout() with
-            # an instance attribute.
-            self.layout.removeItem(sample)
-            self.layout.removeItem(label)
-            sample.hide()
-            label.hide()
+        if self.n_attrs != self.last_run_n_attrs:
+            self.saved_state = None
+            self.saved_progress = 0
+        if self.saved_state is None:
+            self.scores = []
+            self.rank_model.clear()
+        self.last_run_n_attrs = self.n_attrs
+        self.n_attrs_spin.setDisabled(True)
 
-        self.updateSize()
+    def stopped(self):
+        self.n_attrs_spin.setDisabled(False)
 
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            event.accept()
+    def check_preconditions(self):
+        master = self.master
+        if not super().check_preconditions():
+            return False
+        elif not master.btn_vizrank.isEnabled():
+            return False
+        n_cont_var = len([v for v in master.continuous_variables
+                          if v is not master.attr_color])
+        self.n_attrs_spin.setMaximum(n_cont_var)
+        return True
+
+    def state_count(self):
+        n_all_attrs = len(self.attrs)
+        n_attrs = self.n_attrs
+        return factorial(n_all_attrs) // (2 * factorial(n_all_attrs - n_attrs) * n_attrs)
+
+    def iterate_states(self, state):
+        if state is None:  # on the first call, compute order
+            self.attrs = self._score_heuristic()
+            state = list(range(self.n_attrs))
         else:
-            event.ignore()
+            state = list(state)
 
-    def mouseMoveEvent(self, event):
-        if event.buttons() & Qt.LeftButton:
-            event.accept()
-            if self.parentItem() is not None:
-                self.autoAnchor(
-                    self.pos() + (event.pos() - event.lastPos()) / 2)
+        def combinations(n, s):
+            while True:
+                yield s
+                for up, _ in enumerate(s):
+                    s[up] += 1
+                    if up + 1 == len(s) or s[up] < s[up + 1]:
+                        break
+                    s[up] = up
+                if s[-1] == n:
+                    break
+
+        for c in combinations(len(self.attrs), state):
+            for p in islice(permutations(c[1:]), factorial(len(c) - 1) // 2):
+                yield (c[0], ) + p
+
+    def compute_score(self, state):
+        master = self.master
+        _, ec, _ = master.prepare_projection_data(
+            [self.attrs[i] for i in state])
+        y = column_data(master.data, self.attr_color, dtype=float)
+        if ec.shape[0] < self.minK:
+            return None
+        n_neighbors = min(self.minK, len(ec) - 1)
+        knn = NearestNeighbors(n_neighbors=n_neighbors).fit(ec)
+        ind = knn.kneighbors(return_distance=False)
+        if self.attr_color.is_discrete:
+            return -np.sum(y[ind] == y.reshape(-1, 1)) / n_neighbors / len(y)
+        return -r2_score(y, np.mean(y[ind], axis=1)) * (len(y) / len(master.data))
+
+    def bar_length(self, score):
+        return max(0, -score)
+
+    def _score_heuristic(self):
+        def normalized(col):
+            if not col.size:
+                return col.copy()
+            col_min, col_max = np.nanmin(col), np.nanmax(col)
+            if np.isnan(col_min):
+                return col.copy()
+            span = col_max - col_min
+            return (col - col_min) / (span or 1)
+        domain = self.master.data.domain
+        attr_color = self.master.attr_color
+        domain = Domain(
+            attributes=[v for v in chain(domain.variables, domain.metas)
+                        if v.is_continuous and v is not attr_color],
+            class_vars=attr_color
+        )
+        data = self.master.data.transform(domain)
+        for i, col in enumerate(data.X.T):
+            data.X.T[i] = normalized(col)
+        relief = ReliefF if attr_color.is_discrete else RReliefF
+        weights = relief(n_iterations=100, k_nearest=self.minK)(data)
+        results = sorted(zip(weights, domain.attributes), key=lambda x: (-x[0], x[1].name))
+        return [attr for _, attr in results]
+
+    def row_for_state(self, score, state):
+        attrs = [self.attrs[i] for i in state]
+        item = QStandardItem(", ".join(a.name for a in attrs))
+        item.setData(attrs, self._AttrRole)
+        return [item]
+
+    def on_selection_changed(self, selected, deselected):
+        attrs = selected.indexes()[0].data(self._AttrRole)
+        self.selectionChanged.emit([attrs])
+
+    def _n_attrs_changed(self):
+        if self.n_attrs != self.last_run_n_attrs or self.saved_state is None:
+            self.button.setText("Start")
         else:
-            event.ignore()
+            self.button.setText("Continue")
+        self.button.setEnabled(self.check_preconditions())
 
-    def mouseReleaseEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            event.accept()
+
+class OWLinProjGraph(OWGraphWithAnchors):
+    hide_radius = Setting(0)
+
+    @property
+    def always_show_axes(self):
+        return self.master.placement == self.master.Placement.Circular
+
+    @property
+    def scaled_radius(self):
+        return self.hide_radius / 100 + 1e-5
+
+    def update_radius(self):
+        self.update_circle()
+        self.update_anchors()
+
+    def set_view_box_range(self):
+        def min_max(a, b):
+            return (min(np.amin(a), np.amin(b), -1.05),
+                    max(np.amax(a), np.amax(b), 1.05))
+
+        points, _ = self.master.get_anchors()
+        coords = self.master.get_coordinates_data()
+        if points is None or coords is None:
+            return
+
+        min_x, max_x = min_max(points[:, 0], coords[0])
+        min_y, max_y = min_max(points[:, 1], coords[1])
+        rect = QRectF(min_x, min_y, max_x - min_x, max_y - min_y)
+        self.view_box.setRange(rect, padding=0.025)
+
+    def update_anchors(self):
+        points, labels = self.master.get_anchors()
+        if points is None:
+            return
+        r = self.scaled_radius * np.max(np.linalg.norm(points, axis=1))
+        if self.anchor_items is None:
+            self.anchor_items = []
+            for point, label in zip(points, labels):
+                anchor = AnchorItem(line=QLineF(0, 0, *point), text=label)
+                visible = self.always_show_axes or np.linalg.norm(point) > r
+                anchor.setVisible(visible)
+                anchor.setPen(pg.mkPen((100, 100, 100)))
+                self.plot_widget.addItem(anchor)
+                self.anchor_items.append(anchor)
         else:
-            event.ignore()
+            for anchor, point, label in zip(self.anchor_items, points, labels):
+                anchor.setLine(QLineF(0, 0, *point))
+                visible = self.always_show_axes or np.linalg.norm(point) > r
+                anchor.setVisible(visible)
+
+    def update_circle(self):
+        super().update_circle()
+
+        if self.always_show_axes:
+            self.plot_widget.removeItem(self.circle_item)
+            self.circle_item = None
+
+        if self.circle_item is not None:
+            points, _ = self.master.get_anchors()
+            if points is None:
+                return
+
+            r = self.scaled_radius * np.max(np.linalg.norm(points, axis=1))
+            self.circle_item.setRect(QRectF(-r, -r, 2 * r, 2 * r))
+            pen = pg.mkPen(QColor(Qt.lightGray), width=1, cosmetic=True)
+            self.circle_item.setPen(pen)
 
 
-class OWLinearProjection(widget.OWWidget):
+class OWLinearProjection(OWAnchorProjectionWidget):
     name = "Linear Projection"
     description = "A multi-axis projection of data onto " \
                   "a two-dimensional plane."
     icon = "icons/LinearProjection.svg"
     priority = 240
+    keywords = []
 
-    class Inputs:
-        data = Input("Data", Table, default=True)
-        data_subset = Input("Data Subset", Table)
+    class Inputs(OWAnchorProjectionWidget.Inputs):
+        projection_input = Input("Projection", Table)
 
-#              #TODO: Allow for axes to be supplied from an external source.
-#               ("Projection", numpy.ndarray, "set_axes"),]
+    Placement = Enum("Placement", dict(Circular=0, LDA=1, PCA=2, Projection=3),
+                     type=int, qualname="OWLinearProjection.Placement")
 
-    class Outputs:
-        selected_data = Output("Selected Data", Table, default=True)
-        annotated_data = Output(ANNOTATED_DATA_SIGNAL_NAME, Table)
+    Component_name = {Placement.Circular: "C", Placement.LDA: "LD",
+                      Placement.PCA: "PC"}
+    Variable_name = {Placement.Circular: "circular",
+                     Placement.LDA: "lda",
+                     Placement.PCA: "pca",
+                     Placement.Projection: "projection"}
+    Projection_name = {Placement.Circular: "Circular Placement",
+                       Placement.LDA: "Linear Discriminant Analysis",
+                       Placement.PCA: "Principal Component Analysis",
+                       Placement.Projection: "Use input projection"}
 
-    settings_version = 2
-    settingsHandler = settings.DomainContextHandler()
+    settings_version = 4
 
-    variable_state = settings.ContextSetting({})
+    placement = Setting(Placement.Circular)
+    selected_vars = ContextSetting([])
+    vizrank = SettingProvider(LinearProjectionVizRank)
+    GRAPH_CLASS = OWLinProjGraph
+    graph = SettingProvider(OWLinProjGraph)
 
-    attr_color = settings.ContextSetting(None)
-    attr_label = settings.ContextSetting(None)
-    attr_shape = settings.ContextSetting(None)
-    attr_size = settings.ContextSetting(None)
+    class Warning(OWAnchorProjectionWidget.Warning):
+        not_enough_comp = Msg("Input projection has less than two components")
+        trivial_components = Msg(
+            "All components of the PCA are trivial (explain zero variance). "
+            "Input data is constant (or near constant).")
 
-    selection_indices = settings.Setting(None, schema_only=True)
-
-    point_width = settings.Setting(10)
-    alpha_value = settings.Setting(128)
-    jitter_value = settings.Setting(0)
-
-    class_density = settings.Setting(False)
-    resolution = 256
-
-    auto_commit = settings.Setting(True)
-
-    legend_anchor = settings.Setting(((1, 0), (1, 0)))
-    MinPointSize = 6
-
-    ReplotRequest = QEvent.registerEventType()
-
-    graph_name = "viewbox"
+    class Error(OWAnchorProjectionWidget.Error):
+        no_cont_features = Msg("Plotting requires numeric features")
+        proj_and_domain_match = Msg("Projection and Data domains do not match")
 
     def __init__(self):
+        self.model_selected = VariableListModel(enable_dnd=True)
+        self.model_selected.rowsInserted.connect(self.__model_selected_changed)
+        self.model_selected.rowsRemoved.connect(self.__model_selected_changed)
+        self.model_other = VariableListModel(enable_dnd=True)
+
+        self.vizrank, self.btn_vizrank = LinearProjectionVizRank.add_vizrank(
+            None, self, "Suggest Features", self.__vizrank_set_attrs)
+
         super().__init__()
+        self.projection_input = None
+        self.variables = None
 
-        self.data = None
-        self.subset_data = None
-        self._subset_mask = None
-        self._selection_mask = None
-        self._item = None
-        self._density_img = None
-        self.__legend = None
-        self.__selection_item = None
-        self.__replot_requested = False
-        #: Remember the saved state to restore
-        self.__pending_selection_restore = self.selection_indices
-        self.selection_indices = None
+    def _add_controls(self):
+        self._add_controls_variables()
+        self._add_controls_placement()
+        super()._add_controls()
+        self.graph.gui.add_control(
+            self._effects_box, gui.hSlider, "Hide radius:", master=self.graph,
+            value="hide_radius", minValue=0, maxValue=100, step=10,
+            createLabel=False, callback=self.__radius_slider_changed
+        )
+        self.controlArea.layout().removeWidget(self.control_area_stretch)
+        self.control_area_stretch.setParent(None)
 
-        box = gui.vBox(self.controlArea, "Axes")
-
-        box1 = gui.vBox(box, "Displayed", margin=0)
-        box1.setFlat(True)
-        self.active_view = view = QListView(
-            sizePolicy=QSizePolicy(QSizePolicy.Preferred, QSizePolicy.Ignored),
-            selectionMode=QListView.ExtendedSelection,
-            dragEnabled=True,
-            defaultDropAction=Qt.MoveAction,
-            dragDropOverwriteMode=False,
-            dragDropMode=QListView.DragDrop,
-            showDropIndicator=True,
-            minimumHeight=100,
+    def _add_controls_variables(self):
+        self.variables_selection = VariablesSelection(
+            self, self.model_selected, self.model_other, self.controlArea
+        )
+        self.variables_selection.add_remove.layout().addWidget(
+            self.btn_vizrank
         )
 
-        view.viewport().setAcceptDrops(True)
-        movedown = QAction(
-            "Move down", view,
-            shortcut=QKeySequence(Qt.AltModifier | Qt.Key_Down),
-            triggered=self.__deactivate_selection
+    def _add_controls_placement(self):
+        box = gui.widgetBox(
+            self.controlArea, True,
+            sizePolicy=(QSizePolicy.Minimum, QSizePolicy.Maximum)
         )
-        view.addAction(movedown)
-
-        self.varmodel_selected = model = VariableListModel(
-            parent=self, enable_dnd=True)
-
-        model.rowsInserted.connect(self._invalidate_plot)
-        model.rowsRemoved.connect(self._invalidate_plot)
-        model.rowsMoved.connect(self._invalidate_plot)
-
-        view.setModel(model)
-
-        box1.layout().addWidget(view)
-
-        box1 = gui.vBox(box, "Other", margin=0)
-        box1.setFlat(True)
-        self.other_view = view = QListView(
-            sizePolicy=QSizePolicy(QSizePolicy.Preferred, QSizePolicy.Ignored),
-            selectionMode=QListView.ExtendedSelection,
-            dragEnabled=True,
-            defaultDropAction=Qt.MoveAction,
-            dragDropOverwriteMode=False,
-            dragDropMode=QListView.DragDrop,
-            showDropIndicator=True,
-            minimumHeight=100
+        self.radio_placement = gui.radioButtonsInBox(
+            box, self, "placement",
+            btnLabels=[self.Projection_name[x] for x in self.Placement],
+            callback=self.__placement_radio_changed
         )
-        view.viewport().setAcceptDrops(True)
-        moveup = QAction(
-            "Move up", view,
-            shortcut=QKeySequence(Qt.AltModifier | Qt.Key_Up),
-            triggered=self.__activate_selection
-        )
-        view.addAction(moveup)
 
-        self.varmodel_other = model = VariableListModel(parent=self, enable_dnd=True)
-        view.setModel(model)
+    @property
+    def continuous_variables(self):
+        if self.data is None or self.data.domain is None:
+            return []
+        dom = self.data.domain
+        return [v for v in chain(dom.variables, dom.metas) if v.is_continuous]
 
-        box1.layout().addWidget(view)
+    def __vizrank_set_attrs(self, attrs):
+        if not attrs:
+            return
+        self.model_selected[:] = attrs[:]
+        self.model_other[:] = [var for var in self.continuous_variables
+                               if var not in attrs]
 
-        # Main area plot
-        self.view = pg.GraphicsView(background="w")
-        self.view.setRenderHint(QPainter.Antialiasing, True)
-        self.view.setFrameStyle(pg.GraphicsView.StyledPanel)
-        self.viewbox = pg.ViewBox(enableMouse=True, enableMenu=False)
-        self.viewbox.setAspectLocked(True)
-        self.viewbox.grabGesture(Qt.PinchGesture)
-        self.view.setCentralItem(self.viewbox)
-        self.mainArea.layout().addWidget(self.view)
-        self.replot = None
+    def __model_selected_changed(self):
+        self.selected_vars = [(var.name, vartype(var)) for var
+                              in self.model_selected]
+        self.projection = None
+        self.variables = None
+        self._check_options()
+        self.setup_plot()
+        self.commit()
 
-        g = OWPlotGUI(self)
-        g.point_properties_box(self.controlArea)
-        self.controls.attr_label.parent().setVisible(False)
-        self.models = g.points_models
+    def __placement_radio_changed(self):
+        self.variables_selection.set_enabled(
+            self.placement in [self.Placement.Circular, self.Placement.LDA])
+        self.controls.graph.hide_radius.setEnabled(
+            self.placement != self.Placement.Circular)
+        self.projection = None
+        self.variables = None
+        self._init_vizrank()
+        self.setup_plot()
+        self.commit()
 
-        box = gui.widgetBox(self.controlArea, "Plot")
-        form = QFormLayout(
-            formAlignment=Qt.AlignLeft,
-            labelAlignment=Qt.AlignLeft,
-            fieldGrowthPolicy=QFormLayout.AllNonFixedFieldsGrow,
-            spacing=8
-        )
-        box.layout().addLayout(form)
+    def __radius_slider_changed(self):
+        self.graph.update_radius()
 
-        self.jitter_combo = gui.comboBox(
-            box, self, "jitter_value",
-            items=["None", "0.01 %", "0.1 %", "0.5 %", "1 %", "2 %"],
-            callback=self._invalidate_plot)
-        form.addRow("Jittering:", self.jitter_combo)
+    def colors_changed(self):
+        super().colors_changed()
+        self._init_vizrank()
 
-        self.cb_class_density = gui.checkBox(
-            box, self, "class_density", "", callback=self._update_density)
-        form.addRow("Class density", self.cb_class_density)
+    def set_data(self, data):
+        super().set_data(data)
+        if self.data is not None and len(self.selected_vars):
+            d, selected = self.data.domain, [v[0] for v in self.selected_vars]
+            self.model_selected[:] = [d[attr] for attr in selected]
+            self.model_other[:] = [d[attr.name] for attr in
+                                   self.continuous_variables
+                                   if attr.name not in selected]
+        elif self.data is not None:
+            self.model_selected[:] = self.continuous_variables[:3]
+            self.model_other[:] = self.continuous_variables[3:]
 
-        toolbox = gui.vBox(self.controlArea, "Zoom/Select")
-        toollayout = QHBoxLayout()
-        toolbox.layout().addLayout(toollayout)
+        self._check_options()
+        self._init_vizrank()
 
-        self.controlArea.layout().addStretch(1)
+    def _check_options(self):
+        buttons = self.radio_placement.buttons
+        for btn in buttons:
+            btn.setEnabled(True)
+        if self.data is not None:
+            has_discrete_class = self.data.domain.has_discrete_class
+            if not has_discrete_class or len(np.unique(self.data.Y)) < 2:
+                buttons[self.Placement.LDA].setEnabled(False)
+                if self.placement == self.Placement.LDA:
+                    self.placement = self.Placement.Circular
+            if not self.projection_input:
+                buttons[self.Placement.Projection].setEnabled(False)
+                if self.placement == self.Placement.Projection:
+                    self.placement = self.Placement.Circular
 
-        gui.auto_commit(self.controlArea, self, "auto_commit", "Send Selection",
-                        auto_label="Send Automatically")
+        self.variables_selection.set_enabled(
+            self.placement in [self.Placement.Circular, self.Placement.LDA])
+        self.controls.graph.hide_radius.setEnabled(
+            self.placement != self.Placement.Circular)
 
-        self.selection = PlotSelectionTool(self)
-        self.selection.setViewBox(self.viewbox)
-        self.selection.selectionFinished.connect(self._selection_finish)
+    def _init_vizrank(self):
+        is_enabled, msg = False, ""
+        if self.data is None:
+            msg = "There is no data."
+        elif self.placement not in [self.Placement.Circular,
+                                    self.Placement.LDA]:
+            msg = "Suggest Features works only for Circular and " \
+                  "Linear Discriminant Analysis Projection"
+        elif self.attr_color is None:
+            msg = "Color variable has to be selected"
+        elif self.attr_color.is_continuous and \
+                self.placement == self.Placement.LDA:
+            msg = "Suggest Features does not work for Linear " \
+                  "Discriminant Analysis Projection when " \
+                  "continuous color variable is selected."
+        elif len([v for v in self.continuous_variables
+                  if v is not self.attr_color]) < 3:
+            msg = "Not enough available continuous variables"
+        elif len(self.data[self.valid_data]) < 2:
+            msg = "Not enough valid data instances"
+        else:
+            is_enabled = not np.isnan(self.data.get_column_view(
+                self.attr_color)[0].astype(float)).all()
+        self.btn_vizrank.setToolTip(msg)
+        self.btn_vizrank.setEnabled(is_enabled)
+        if is_enabled:
+            self.vizrank.initialize()
 
-        self.zoomtool = PlotZoomTool(self)
-        self.pantool = PlotPanTool(self)
-        self.pinchtool = PlotPinchZoomTool(self)
-        self.pinchtool.setViewBox(self.viewbox)
+    def check_data(self):
+        def error(err):
+            err()
+            self.data = None
 
-        def icon(name):
-            path = "icons/Dlg_{}.png".format(name)
-            path = pkg_resources.resource_filename(widget.__name__, path)
-            return QIcon(path)
-
-        actions = namespace(
-            zoomtofit=QAction(
-                "Zoom to fit", self, icon=icon("zoom_reset"),
-                shortcut=QKeySequence(Qt.ControlModifier | Qt.Key_0),
-                triggered=lambda:
-                    self.viewbox.setRange(QRectF(-1.05, -1.05, 2.1, 2.1))),
-            zoomin=QAction(
-                "Zoom in", self,
-                shortcut=QKeySequence(QKeySequence.ZoomIn),
-                triggered=lambda: self.viewbox.scaleBy((1 / 1.25, 1 / 1.25))),
-            zoomout=QAction(
-                "Zoom out", self,
-                shortcut=QKeySequence(QKeySequence.ZoomOut),
-                triggered=lambda: self.viewbox.scaleBy((1.25, 1.25))),
-            select=QAction(
-                "Select", self, checkable=True, icon=icon("arrow"),
-                shortcut=QKeySequence(Qt.ControlModifier + Qt.Key_1)),
-            zoom=QAction(
-                "Zoom", self, checkable=True, icon=icon("zoom"),
-                shortcut=QKeySequence(Qt.ControlModifier + Qt.Key_2)),
-            pan=QAction(
-                "Pan", self, checkable=True, icon=icon("pan_hand"),
-                shortcut=QKeySequence(Qt.ControlModifier + Qt.Key_3)),
-        )
-        self.addActions([actions.zoomtofit, actions.zoomin, actions.zoomout])
-
-        group = QActionGroup(self, exclusive=True)
-        group.addAction(actions.select)
-        group.addAction(actions.zoom)
-        group.addAction(actions.pan)
-
-        actions.select.setChecked(True)
-
-        currenttool = self.selection
-
-        def activated(action):
-            nonlocal currenttool
-            if action is actions.select:
-                tool, cursor = self.selection, Qt.ArrowCursor
-            elif action is actions.zoom:
-                tool, cursor = self.zoomtool, Qt.ArrowCursor
-            elif action is actions.pan:
-                tool, cursor = self.pantool, Qt.OpenHandCursor
-            else:
-                assert False
-            currenttool.setViewBox(None)
-            tool.setViewBox(self.viewbox)
-            self.viewbox.setCursor(QCursor(cursor))
-            currenttool = tool
-
-        group.triggered[QAction].connect(activated)
-
-        def button(action):
-            b = QToolButton()
-            b.setDefaultAction(action)
-            return b
-
-        toollayout.addWidget(button(actions.select))
-        toollayout.addWidget(button(actions.zoom))
-        toollayout.addWidget(button(actions.pan))
-
-        toollayout.addSpacing(4)
-        toollayout.addWidget(button(actions.zoomtofit))
-        toollayout.addStretch()
-        toolbox.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
-
-    def sizeHint(self):
-        return QSize(800, 500)
-
-    def clear(self):
-        self.data = None
-        self.selection_indices = None
-        self._subset_mask = None
-        self._selection_mask = None
-        self.varmodel_selected[:] = []
-        self.varmodel_other[:] = []
-        self.clear_plot()
-
-    def clear_item(self):
-        if self._item is not None:
-            self._item.setParentItem(None)
-            self.viewbox.removeItem(self._item)
-            self._item = None
-
-    def clear_density_img(self):
-        if self._density_img is not None:
-            self._density_img.setParentItem(None)
-            self.viewbox.removeItem(self._density_img)
-            self._density_img = None
-
-    def clear_legend(self):
-        if self.__legend is not None:
-            anchor = legend_anchor_pos(self.__legend)
-            if anchor is not None:
-                self.legend_anchor = anchor
-
-            self.__legend.setParentItem(None)
-            self.__legend.clear()
-            self.__legend.setVisible(False)
-
-    def clear_plot(self):
-        self.clear_item()
-        self.clear_density_img()
-        self.clear_legend()
-        self.viewbox.clear()
-
-    def _invalidate_plot(self):
-        """
-        Schedule a delayed replot.
-        """
-        if not self.__replot_requested:
-            self.__replot_requested = True
-            QApplication.postEvent(self, QEvent(self.ReplotRequest),
-                                   Qt.LowEventPriority - 10)
+        super().check_data()
+        if self.data is not None:
+            if not len(self.continuous_variables):
+                error(self.Error.no_cont_features)
 
     def init_attr_values(self):
-        domain = self.data and len(self.data) and self.data.domain or None
-        for model in self.models:
-            model.set_domain(domain)
-        self.attr_color = domain and self.data.domain.class_var or None
-        self.attr_shape = None
-        self.attr_size = None
-        self.attr_label = None
+        super().init_attr_values()
+        self.selected_vars = []
 
-    @Inputs.data
-    def set_data(self, data):
-        """
-        Set the input dataset.
+    @Inputs.projection_input
+    def set_projection(self, projection):
+        self.Warning.not_enough_comp.clear()
+        if projection and len(projection) < 2:
+            self.Warning.not_enough_comp()
+            projection = None
+        if projection is not None:
+            self.placement = self.Placement.Projection
+        self.projection_input = projection
+        self._check_options()
 
-        Args:
-            data (Orange.data.table): data instances
-        """
-        self.closeContext()
-        self.clear()
-        self.information()
-        if isinstance(data, SqlTable):
-            if data.approx_len() < 4000:
-                data = Table(data)
-            else:
-                self.information("Data has been sampled")
-                data_sample = data.sample_time(1, no_cache=True)
-                data_sample.download_data(2000, partial=True)
-                data = Table(data_sample)
-        self.data = data
-        self.init_attr_values()
-        if data is not None and len(data):
-            self._initialize(data)
-            # get the default encoded state, replacing the position with Inf
-            state = self._encode_var_state(
-                [list(self.varmodel_selected), list(self.varmodel_other)]
-            )
-            state = {key: (source_ind, numpy.inf) for key, (source_ind, _)
-                     in state.items()}
+    def get_embedding(self):
+        self.valid_data = None
+        if self.data is None or not self.variables:
+            return None
 
-            self.openContext(data.domain)
-            selected_keys = [key
-                             for key, (sind, _) in self.variable_state.items()
-                             if sind == 0]
-
-            if set(selected_keys).issubset(set(state.keys())):
-                pass
-
-            if self.__pending_selection_restore is not None:
-                self.select_indices(self.__pending_selection_restore)
-                self.__pending_selection_restore = None
-
-            # update the defaults state (the encoded state must contain
-            # all variables in the input domain)
-            state.update(self.variable_state)
-            # ... and restore it with saved positions taking precedence over
-            # the defaults
-            selected, other = self._decode_var_state(
-                state, [list(self.varmodel_selected),
-                        list(self.varmodel_other)]
-            )
-            self.varmodel_selected[:] = selected
-            self.varmodel_other[:] = other
-            self._invalidate_plot()
-
-    @Inputs.data_subset
-    def set_subset_data(self, subset):
-        """
-        Set the supplementary input subset dataset.
-
-        Args:
-            subset (Orange.data.table): subset of data instances
-        """
-        self.subset_data = subset
-        self._subset_mask = None
-
-    def handleNewSignals(self):
-        if self.subset_data is not None and self._subset_mask is None:
-            # Update the plot's highlight items
-            if self.data is not None:
-                dataids = self.data.ids.ravel()
-                subsetids = numpy.unique(self.subset_data.ids)
-                self._subset_mask = numpy.in1d(
-                    dataids, subsetids, assume_unique=True)
-                self._invalidate_plot()
-
-        self.commit()
-
-    def customEvent(self, event):
-        if event.type() == OWLinearProjection.ReplotRequest:
-            self.__replot_requested = False
-            self._setup_plot()
+        if self.placement == self.Placement.PCA:
+            self.valid_data, ec, self.projection = self._get_pca()
+            self.variables = self._pca.orig_domain.attributes
         else:
-            super().customEvent(event)
+            self.valid_data, ec, self.projection = \
+                self.prepare_projection_data(self.variables)
 
-    def closeContext(self):
-        self.variable_state = self._encode_var_state(
-            [list(self.varmodel_selected), list(self.varmodel_other)]
-        )
-        super().closeContext()
+        self.Error.no_valid_data.clear()
+        if self.valid_data is None or not sum(self.valid_data) or \
+                self.projection is None or ec is None:
+            self.Error.no_valid_data()
+            return None
 
-    @staticmethod
-    def _encode_var_state(lists):
-        return {(type(var), var.name): (source_ind, pos)
-                for source_ind, var_list in enumerate(lists)
-                for pos, var in enumerate(var_list)
-                if isinstance(var, Variable)}
+        embedding = np.full((len(self.data), 2), np.nan)
+        embedding[self.valid_data] = ec
+        return embedding
 
-    @staticmethod
-    def _decode_var_state(state, lists):
-        all_vars = reduce(list.__iadd__, lists, [])
+    def prepare_projection_data(self, variables):
+        def projection(_vars):
+            attrs = self.projection_input.domain.attributes
+            if set(attrs).issuperset(_vars):
+                return self.projection_input[:2, _vars].X
+            elif set(f.name for f in attrs).issuperset(f.name for f in _vars):
+                return self.projection_input[:2, [f.name for f in _vars]].X
+            else:
+                self.Error.proj_and_domain_match()
+                return None
 
-        newlists = [[] for _ in lists]
-        for var in all_vars:
-            source, pos = state[(type(var), var.name)]
-            newlists[source].append((pos, var))
-        return [[var for _, var in sorted(newlist, key=itemgetter(0))]
-                for newlist in newlists]
+        def get_axes(_vars):
+            self.Error.proj_and_domain_match.clear()
+            if self.placement == self.Placement.Circular:
+                return LinProj.defaultaxes(len(_vars))
+            elif self.placement == self.Placement.LDA:
+                return self._get_lda(self.data, _vars)
+            elif self.placement == self.Placement.Projection and \
+                    self.projection_input is not None:
+                return projection(_vars)
+            else:
+                return None
 
-    def _initialize(self, data):
-        # Initialize the GUI controls from data's domain.
-        cont_vars = [var for var in data.domain.variables
-                     if var.is_continuous]
-        self.warning("Plotting requires numeric features.",
-                     shown=not len(cont_vars))
-        self.varmodel_selected[:] = cont_vars[:3]
-        self.varmodel_other[:] = cont_vars[3:]
+        coords = np.vstack(column_data(self.data, v, float) for v in variables)
+        axes = get_axes(variables)
+        if axes is None:
+            return None, None, None
 
-    def __activate_selection(self):
-        view = self.other_view
-        model = self.varmodel_other
-        indices = view.selectionModel().selectedRows()
-
-        variables = [model.data(ind, Qt.EditRole) for ind in indices]
-
-        for i in sorted((ind.row() for ind in indices), reverse=True):
-            del model[i]
-
-        self.varmodel_selected.extend(variables)
-
-    def __deactivate_selection(self):
-        view = self.active_view
-        model = self.varmodel_selected
-        indices = view.selectionModel().selectedRows()
-
-        variables = [model.data(ind, Qt.EditRole) for ind in indices]
-
-        for i in sorted((ind.row() for ind in indices), reverse=True):
-            del model[i]
-
-        self.varmodel_other.extend(variables)
-
-    def _get_data(self, var, dtype):
-        """
-        Return the column data and mask for variable `var`
-        """
-        X, _ = self.data.get_column_view(var)
-        return column_data(self.data, var, dtype)
-
-    def _setup_plot(self, reset_view=True):
-        self.__replot_requested = False
-        self.clear_plot()
-
-        variables = list(self.varmodel_selected)
-        if not variables:
-            return
-
-        coords = [self._get_data(var, dtype=float)[0] for var in variables]
-        coords = numpy.vstack(coords)
-        p, N = coords.shape
-        assert N == len(self.data), p == len(variables)
-
-        axes = linproj.defaultaxes(len(variables))
-
-        assert axes.shape == (2, p)
-
-        mask = ~numpy.logical_or.reduce(numpy.isnan(coords), axis=0)
-        coords = coords[:, mask]
-
-        X, Y = numpy.dot(axes, coords)
+        valid_mask = ~np.isnan(coords).any(axis=0)
+        X, Y = np.dot(axes, coords[:, valid_mask])
         if X.size and Y.size:
-            X = plotutils.normalized(X)
-            Y = plotutils.normalized(Y)
+            X = normalized(X)
+            Y = normalized(Y)
+        return valid_mask, np.stack((X, Y), axis=1), axes.T
 
-        pen_data, brush_data = self._color_data(mask)
-        size_data = self._size_data(mask)
-        shape_data = self._shape_data(mask)
+    def get_anchors(self):
+        if self.projection is None:
+            return None, None
+        return self.projection, [v.name for v in self.variables]
 
-        if self.jitter_value > 0:
-            value = [0, 0.01, 0.1, 0.5, 1, 2][self.jitter_value]
+    def setup_plot(self):
+        self.init_projection_variables()
+        super().setup_plot()
 
-            rstate = numpy.random.RandomState(0)
-            jitter_x = (rstate.random_sample(X.shape) * 2 - 1) * value / 100
-            rstate = numpy.random.RandomState(1)
-            jitter_y = (rstate.random_sample(Y.shape) * 2 - 1) * value / 100
-            X += jitter_x
-            Y += jitter_y
-
-        self._item = ScatterPlotItem(
-            X, Y,
-            pen=pen_data,
-            brush=brush_data,
-            size=size_data,
-            symbol=shape_data,
-            antialias=True,
-            data=numpy.arange(len(self.data))[mask]
-        )
-        self._item._mask = mask
-
-        self.viewbox.addItem(self._item)
-
-        for i, axis in enumerate(axes.T):
-            axis_item = AxisItem(line=QLineF(0, 0, axis[0], axis[1]),
-                                 label=variables[i].name)
-            axis_item.setPen(QPen(Qt.darkGray, 0))
-            self.viewbox.addItem(axis_item)
-
-        if reset_view:
-            self.viewbox.setRange(QRectF(-1.05, -1.05, 2.1, 2.1))
-        self._update_legend()
-
-        if self.class_density and \
-                self.attr_color is not None and self.attr_color.is_discrete:
-            [min_x, max_x], [min_y, max_y] = self.viewbox.viewRange()
-            rgb_data = [brush.color().getRgb()[:3] for brush in brush_data]
-            self._density_img = classdensity.class_density_image(
-                min_x, max_x, min_y, max_y, self.resolution, X, Y, rgb_data)
-            self.viewbox.addItem(self._density_img)
-
-    def _color_data(self, mask=None):
-        if self.attr_color is not None:
-            color_data, _ = self._get_data(self.attr_color, dtype=float)
-            if self.attr_color.is_continuous:
-                color_data = plotutils.continuous_colors(
-                    color_data, None, *self.attr_color.colors)
-            else:
-                color_data = plotutils.discrete_colors(
-                    color_data, len(self.attr_color.values),
-                    color_index=self.attr_color.colors
-                )
-            if mask is not None:
-                color_data = color_data[mask]
-
-            pen_data = numpy.array(
-                [pg.mkPen((r, g, b), width=1.5)
-                 for r, g, b in color_data * 0.8],
-                dtype=object)
-
-            brush_data = numpy.array(
-                [pg.mkBrush((r, g, b, self.alpha_value))
-                 for r, g, b in color_data],
-                dtype=object)
-        else:
-            color = QColor(Qt.darkGray)
-            pen_data = QPen(color, 1.5)
-            pen_data.setCosmetic(True)
-            color = QColor(Qt.lightGray)
-            color.setAlpha(self.alpha_value)
-            brush_data = QBrush(color)
-
-        if self._subset_mask is not None:
-            assert self._subset_mask.shape == (len(self.data),)
-            if mask is not None:
-                subset_mask = self._subset_mask[mask]
-            else:
-                subset_mask = self._subset_mask
-
-            if isinstance(brush_data, QBrush):
-                brush_data = numpy.array([brush_data] * subset_mask.size,
-                                         dtype=object)
-
-            brush_data[~subset_mask] = QBrush(Qt.NoBrush)
-
-        if self._selection_mask is not None:
-            assert self._selection_mask.shape == (len(self.data),)
-            if mask is not None:
-                selection_mask = self._selection_mask[mask]
-            else:
-                selection_mask = self._selection_mask
-
-            if isinstance(pen_data, QPen):
-                pen_data = numpy.array([pen_data] * selection_mask.size,
-                                       dtype=object)
-
-            pen_data[selection_mask] = pg.mkPen((200, 200, 0, 150), width=4)
-        return pen_data, brush_data
-
-    def _on_color_change(self):
-        if self.data is None or self._item is None:
-            return
-
-        pen, brush = self._color_data()
-
-        if isinstance(pen, QPen):
-            # Reset the brush for all points
-            self._item.data["pen"] = None
-            self._item.setPen(pen)
-        else:
-            self._item.setPen(pen[self._item._mask])
-
-        if isinstance(brush, QBrush):
-            # Reset the brush for all points
-            self._item.data["brush"] = None
-            self._item.setBrush(brush)
-        else:
-            self._item.setBrush(brush[self._item._mask])
-
-        if self.attr_color is not None and self.attr_color.is_discrete:
-            self.cb_class_density.setEnabled(True)
-            if self.class_density:
-                self._setup_plot(reset_view=False)
-        else:
-            self.clear_density_img()
-            self.cb_class_density.setEnabled(False)
-
-        self._update_legend()
-
-    def _shape_data(self, mask):
-        if self.attr_shape is None:
-            shape_data = numpy.array(["o"] * len(self.data))
-        else:
-            assert self.attr_shape.is_discrete
-            symbols = numpy.array(list(ScatterPlotItem.Symbols))
-            max_symbol = symbols.size - 1
-            shapeidx, shape_mask = column_data(self.data, self.attr_shape,
-                                               dtype=int)
-            shapeidx[shape_mask] = max_symbol
-            shapeidx[~shape_mask] %= max_symbol -1
-            shape_data = symbols[shapeidx]
-        if mask is None:
-            return shape_data
-        else:
-            return shape_data[mask]
-
-    def _on_shape_change(self):
+    def init_projection_variables(self):
+        self.variables = None
         if self.data is None:
             return
 
-        self.set_shape(self._shape_data(mask=None))
-        self._update_legend()
+        if self.placement in [self.Placement.Circular, self.Placement.LDA]:
+            self.variables = self.model_selected[:]
+        elif self.placement == self.Placement.Projection:
+            self.variables = self.model_selected[:] + self.model_other[:]
+        elif self.placement == self.Placement.PCA:
+            self.variables = [var for var in self.data.domain.attributes
+                              if var.is_continuous]
 
-    def _size_data(self, mask=None):
-        if self.attr_size is None:
-            size_data = numpy.full((len(self.data),), self.point_width,
-                                   dtype=float)
-        else:
-            nan_size = OWLinearProjection.MinPointSize - 2
-            size_data, size_mask = self._get_data(self.attr_size, dtype=float)
-            size_data_valid = size_data[~size_mask]
-            if size_data_valid.size:
-                smin, smax = numpy.min(size_data_valid), numpy.max(size_data_valid)
-                sspan = smax - smin
+    def _get_lda(self, data, variables):
+        data = data.transform(Domain(variables, data.domain.class_vars))
+        lda = LinearDiscriminantAnalysis(solver='eigen', n_components=2)
+        lda.fit(data.X, data.Y)
+        scalings = lda.scalings_[:, :2].T
+        if scalings.shape == (1, 1):
+            scalings = np.array([[1.], [0.]])
+        return scalings
+
+    def _get_pca(self):
+        pca_projector = PCA(n_components=2)
+        pca_projector.component = 2
+        pca_projector.preprocessors = PCA.preprocessors + [Normalize()]
+
+        pca = pca_projector(self.data)
+        variance_ratio = pca.explained_variance_ratio_
+        cumulative = np.cumsum(variance_ratio)
+
+        self._pca = pca
+        if not np.isfinite(cumulative[-1]):
+            self.Warning.trivial_components()
+
+        coords = pca(self.data).X
+        valid_mask = ~np.isnan(coords).any(axis=1)
+        # scale axes
+        max_radius = np.min([np.abs(np.min(coords, axis=0)),
+                             np.max(coords, axis=0)])
+        axes = pca.components_.T.copy()
+        axes *= max_radius / np.max(np.linalg.norm(axes, axis=1))
+        return valid_mask, coords, axes
+
+    def send_components(self):
+        components = None
+        if self.data is not None and self.valid_data is not None and \
+                self.projection is not None:
+            if self.placement in [self.Placement.Circular, self.Placement.LDA]:
+                axes = self.projection
+                attrs = self.model_selected
+            elif self.placement == self.Placement.PCA:
+                axes = self._pca.components_.T
+                attrs = self._pca.orig_domain.attributes
+            if self.placement != self.Placement.Projection:
+                meta_attrs = [StringVariable(name='component')]
+                metas = np.array(
+                    [["{}{}".format(self.Component_name[self.placement], i + 1)
+                      for i in range(axes.shape[1])]], dtype=object).T
+                components = Table(Domain(attrs, metas=meta_attrs),
+                                   axes.T, metas=metas)
+                components.name = self.data.name
             else:
-                sspan = smin = 0
-            size_data[~size_mask] -= smin
-            if sspan > 0:
-                size_data[~size_mask] /= sspan
-            size_data = \
-                size_data * self.point_width + OWLinearProjection.MinPointSize
-            size_data[size_mask] = nan_size
-        if mask is None:
-            return size_data
-        else:
-            return size_data[mask]
+                components = self.projection_input
+        self.Outputs.components.send(components)
 
-    def _on_size_change(self):
-        if self.data is None:
-            return
-        self.set_size(self._size_data(mask=None))
+    def _get_projection_variables(self):
+        pn = self.Variable_name[self.placement]
+        self.embedding_variables_names = ("{}-x".format(pn), "{}-y".format(pn))
+        return super()._get_projection_variables()
 
-    update_point_size = update_sizes = _on_size_change
-    update_alpha_value = update_colors = _on_color_change
-    update_shapes = _on_shape_change
+    def _get_send_report_caption(self):
+        def projection_name():
+            return self.Projection_name[self.placement]
 
-    def _update_density(self):
-        self._setup_plot(reset_view=False)
+        return report.render_items_vert((
+            ("Projection", projection_name()),
+            ("Color", self._get_caption_var_name(self.attr_color)),
+            ("Label", self._get_caption_var_name(self.attr_label)),
+            ("Shape", self._get_caption_var_name(self.attr_shape)),
+            ("Size", self._get_caption_var_name(self.attr_size)),
+            ("Jittering", self.graph.jitter_size != 0 and
+             "{} %".format(self.graph.jitter_size))))
 
-    def _update_legend(self):
-        if self.__legend is None:
-            self.__legend = legend = LegendItem()
-            legend.setParentItem(self.viewbox)
-            legend.setZValue(self.viewbox.zValue() + 10)
-            legend.restoreAnchor(self.legend_anchor)
-        else:
-            legend = self.__legend
-
-        legend.clear()
-
-        color_var, shape_var = self.attr_color, self.attr_shape
-        if color_var is not None and not color_var.is_discrete:
-            color_var = None
-        assert shape_var is None or shape_var.is_discrete
-        if color_var is None and shape_var is None:
-            legend.setParentItem(None)
-            legend.hide()
-            return
-        else:
-            if legend.parentItem() is None:
-                legend.setParentItem(self.viewbox)
-            legend.setVisible(True)
-
-        symbols = list(ScatterPlotItem.Symbols)
-
-        if shape_var is color_var:
-            items = [(QColor(*color_var.colors[i]), symbols[i], name)
-                     for i, name in enumerate(color_var.values)]
-        else:
-            colors = shapes = []
-            if color_var is not None:
-                colors = [(QColor(*color_var.colors[i]), "o", name)
-                          for i, name in enumerate(color_var.values)]
-            if shape_var is not None:
-                shapes = [(QColor(Qt.gray),
-                           symbols[i % (len(symbols) - 1)], name)
-                          for i, name in enumerate(shape_var.values)]
-            items = colors + shapes
-
-        for color, symbol, name in items:
-            legend.addItem(
-                ScatterPlotItem(pen=color, brush=color, symbol=symbol, size=10),
-                escape(name)
-            )
-
-    def set_shape(self, shape):
-        """
-        Set (update) the current point shape map.
-        """
-        if self._item is not None:
-            self._item.setSymbol(shape[self._item._mask])
-
-    def set_size(self, size):
-        """
-        Set (update) the current point size.
-        """
-        if self._item is not None:
-            self._item.setSize(size[self._item._mask])
-
-    def _set_alpha(self, value):
-        self.alpha_value = value
-        self._on_color_change()
-
-    def _set_size(self, value):
-        self.point_size = value
-        self._on_size_change()
-
-    def _selection_finish(self, path):
-        self.select(path)
-
-    def select(self, selectionshape):
-        item = self._item
-        if item is None:
-            return
-
-        indices = [spot.data()
-                   for spot in item.points()
-                   if selectionshape.contains(spot.pos())]
-
-        self.select_indices(indices, QApplication.keyboardModifiers())
-
-    def select_indices(self, indices, modifiers=Qt.NoModifier):
-        if self.data is None:
-            return
-
-        if self._selection_mask is None or \
-                not modifiers & (Qt.ControlModifier | Qt.ShiftModifier |
-                                 Qt.AltModifier):
-            self._selection_mask = numpy.zeros(len(self.data), dtype=bool)
-
-        if modifiers & Qt.AltModifier:
-            self._selection_mask[indices] = False
-        elif modifiers & Qt.ControlModifier:
-            self._selection_mask[indices] = ~self._selection_mask[indices]
-        else:
-            self._selection_mask[indices] = True
-
-        self._on_color_change()
-        self.selection_indices = numpy.flatnonzero(self._selection_mask).tolist()
-        self.commit()
-
-    def commit(self):
-        subset = None
-        indices = None
-        if self.data is not None and self._selection_mask is not None:
-            indices = numpy.flatnonzero(self._selection_mask)
-            if len(indices) > 0:
-                subset = self.data[indices]
-
-        self.Outputs.selected_data.send(subset)
-        self.Outputs.annotated_data.send(create_annotated_table(self.data, indices))
-
-    def send_report(self):
-        self.report_plot(name="", plot=self.viewbox.getViewBox())
-        caption = report.render_items_vert((
-            ("Colors", self.attr_color),
-            ("Shape", self.attr_shape),
-            ("Size", self.attr_size)
-        ))
-        jitter_caption = report.render_items_vert(
-            (("Jittering",
-              self.jitter_value > 0 and self.jitter_combo.currentText()),))
-        caption = ";<br/>".join(x for x in (caption, jitter_caption) if x)
-        self.report_caption(caption)
+    def clear(self):
+        self.variables = None
+        if self.model_selected:
+            self.model_selected.clear()
+        if self.model_other:
+            self.model_other.clear()
+        super().clear()
 
     @classmethod
     def migrate_settings(cls, settings_, version):
         if version < 2:
             settings_["point_width"] = settings_["point_size"]
+        if version < 3:
+            settings_graph = {}
+            settings_graph["jitter_size"] = settings_["jitter_value"]
+            settings_graph["point_width"] = settings_["point_width"]
+            settings_graph["alpha_value"] = settings_["alpha_value"]
+            settings_graph["class_density"] = settings_["class_density"]
+            settings_["graph"] = settings_graph
+        if version < 4:
+            if "radius" in settings_:
+                settings_["graph"]["hide_radius"] = settings_["radius"]
+            if "selection_indices" in settings_ and \
+                    settings_["selection_indices"] is not None:
+                selection = settings_["selection_indices"]
+                settings_["selection"] = [(i, 1) for i, selected in
+                                          enumerate(selection) if selected]
 
     @classmethod
     def migrate_context(cls, context, version):
@@ -991,593 +651,72 @@ class OWLinearProjection(widget.OWWidget):
                 index = context.values[old_val][0] - 1
                 context.values[new_val] = (d[index][0], d[index][1] + 100) \
                     if 0 <= index < len(d) else None
-
-
-class PlotTool(QObject):
-    """
-    An abstract tool operating on a pg.ViewBox.
-
-    Subclasses of `PlotTool` implement various actions responding to
-    user input events. For instance `PlotZoomTool` when active allows
-    the user to select/draw a rectangular region on a plot in which to
-    zoom.
-
-    The tool works by installing itself as an `eventFilter` on to the
-    `pg.ViewBox` instance and dispatching events to the appropriate
-    event handlers `mousePressEvent`, ...
-
-    When subclassing note that the event handlers (`mousePressEvent`, ...)
-    are actually event filters and need to return a boolean value
-    indicating if the event was handled (filtered) and should not propagate
-    further to the view box.
-
-    See Also
-    --------
-    QObject.eventFilter
-
-    """
-    def __init__(self, parent=None, **kwargs):
-        super().__init__(parent, **kwargs)
-        self.__viewbox = None
-
-    def setViewBox(self, viewbox):
-        """
-        Set the view box to operate on.
-
-        Call ``setViewBox(None)`` to remove the tool from the current
-        view box. If an existing view box is already set it is first
-        removed.
-
-        .. note::
-            The PlotTool will install itself as an event filter on the
-            view box.
-
-        Parameters
-        ----------
-        viewbox : pg.ViewBox or None
-
-        """
-        if self.__viewbox is viewbox:
-            return
-        if self.__viewbox is not None:
-            self.__viewbox.removeEventFilter(self)
-            self.__viewbox.destroyed.disconnect(self.__viewdestroyed)
-
-        self.__viewbox = viewbox
-
-        if self.__viewbox is not None:
-            self.__viewbox.installEventFilter(self)
-            self.__viewbox.destroyed.connect(self.__viewdestroyed)
-
-    def viewBox(self):
-        """
-        Return the view box.
-
-        Returns
-        -------
-        viewbox : pg.ViewBox
-        """
-        return self.__viewbox
-
-    @Slot(QObject)
-    def __viewdestroyed(self, _):
-        self.__viewbox = None
-
-    def mousePressEvent(self, event):
-        """
-        Handle a mouse press event.
-
-        Parameters
-        ----------
-        event : QGraphicsSceneMouseEvent
-            The event.
-
-        Returns
-        -------
-        status : bool
-            True if the event was handled (and should not
-            propagate further to the view box) and False otherwise.
-        """
-        return False
-
-    def mouseMoveEvent(self, event):
-        """
-        Handle a mouse move event.
-
-        Parameters
-        ----------
-        event : QGraphicsSceneMouseEvent
-            The event
-
-        Returns
-        -------
-        status : bool
-            True if the event was handled (and should not
-            propagate further to the view box) and False otherwise.
-        """
-        return False
-
-    def mouseReleaseEvent(self, event):
-        """
-        Handle a mouse release event.
-
-        Parameters
-        ----------
-        event : QGraphicsSceneMouseEvent
-            The event
-
-        Returns
-        -------
-        status : bool
-            True if the event was handled (and should not
-            propagate further to the view box) and False otherwise.
-        """
-        return False
-
-    def mouseDoubleClickEvent(self, event):
-        """
-        Handle a mouse double click event.
-
-        Parameters
-        ----------
-        event : QGraphicsSceneMouseEvent
-            The event.
-
-        Returns
-        -------
-        status : bool
-            True if the event was handled (and should not
-            propagate further to the view box) and False otherwise.
-        """
-        return False
-
-    def gestureEvent(self, event):
-        """
-        Handle a gesture event.
-
-        Parameters
-        ----------
-        event : QGraphicsSceneGestureEvent
-            The event.
-
-        Returns
-        -------
-        status : bool
-            True if the event was handled (and should not
-            propagate further to the view box) and False otherwise.
-        """
-        return False
-
-    def eventFilter(self, obj, event):
-        """
-        Reimplemented from `QObject.eventFilter`.
-        """
-        if obj is self.__viewbox:
-            if event.type() == QEvent.GraphicsSceneMousePress:
-                return self.mousePressEvent(event)
-            elif event.type() == QEvent.GraphicsSceneMouseMove:
-                return self.mouseMoveEvent(event)
-            elif event.type() == QEvent.GraphicsSceneMouseRelease:
-                return self.mouseReleaseEvent(event)
-            elif event.type() == QEvent.GraphicsSceneMouseDoubleClick:
-                return self.mouseDoubleClickEvent(event)
-            elif event.type() == QEvent.Gesture:
-                return self.gestureEvent(event)
-        return super().eventFilter(obj, event)
-
-
-class PlotSelectionTool(PlotTool):
-    """
-    A tool for selecting a region on a plot.
-
-    """
-    #: Selection modes
-    Rect, Lasso = 1, 2
-
-    #: Selection was started by the user.
-    selectionStarted = Signal(QPainterPath)
-    #: The current selection has been updated
-    selectionUpdated = Signal(QPainterPath)
-    #: The selection has finished (user has released the mouse button)
-    selectionFinished = Signal(QPainterPath)
-
-    def __init__(self, parent=None, selectionMode=Rect, **kwargs):
-        super().__init__(parent, **kwargs)
-        self.__mode = selectionMode
-        self.__path = None
-        self.__item = None
-
-    def setSelectionMode(self, mode):
-        """
-        Set the selection mode (rectangular or lasso selection).
-
-        Parameters
-        ----------
-        mode : int
-            PlotSelectionTool.Rect or PlotSelectionTool.Lasso
-
-        """
-        assert mode in {PlotSelectionTool.Rect, PlotSelectionTool.Lasso}
-        if self.__mode != mode:
-            if self.__path is not None:
-                self.selectionFinished.emit()
-            self.__mode = mode
-            self.__path = None
-
-    def selectionMode(self):
-        """
-        Return the current selection mode.
-        """
-        return self.__mode
-
-    def selectionShape(self):
-        """
-        Return the current selection shape.
-
-        This is the area selected/drawn by the user.
-
-        Returns
-        -------
-        shape : QPainterPath
-            The selection shape in view coordinates.
-        """
-        if self.__path is not None:
-            shape = QPainterPath(self.__path)
-            shape.closeSubpath()
-        else:
-            shape = QPainterPath()
-        viewbox = self.viewBox()
-
-        if viewbox is None:
-            return QPainterPath()
-
-        return viewbox.childGroup.mapFromParent(shape)
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            pos = event.pos()
-            if self.__mode == PlotSelectionTool.Rect:
-                rect = QRectF(pos, pos)
-                self.__path = QPainterPath()
-                self.__path.addRect(rect)
-            else:
-                self.__path = QPainterPath()
-                self.__path.moveTo(event.pos())
-            self.selectionStarted.emit(self.selectionShape())
-            self.__updategraphics()
-            event.accept()
-            return True
-        else:
-            return False
-
-    def mouseMoveEvent(self, event):
-        if event.buttons() & Qt.LeftButton:
-            if self.__mode == PlotSelectionTool.Rect:
-                rect = QRectF(event.buttonDownPos(Qt.LeftButton), event.pos())
-                self.__path = QPainterPath()
-                self.__path.addRect(rect)
-            else:
-                self.__path.lineTo(event.pos())
-            self.selectionUpdated.emit(self.selectionShape())
-            self.__updategraphics()
-            event.accept()
-            return True
-        else:
-            return False
-
-    def mouseReleaseEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            if self.__mode == PlotSelectionTool.Rect:
-                rect = QRectF(event.buttonDownPos(Qt.LeftButton), event.pos())
-                self.__path = QPainterPath()
-                self.__path.addRect(rect)
-            else:
-                self.__path.lineTo(event.pos())
-            self.selectionFinished.emit(self.selectionShape())
-            self.__path = QPainterPath()
-            self.__updategraphics()
-            event.accept()
-            return True
-        else:
-            return False
-
-    def __updategraphics(self):
-        viewbox = self.viewBox()
-        if viewbox is None:
-            return
-
-        if self.__path.isEmpty():
-            if self.__item is not None:
-                self.__item.setParentItem(None)
-                viewbox.removeItem(self.__item)
-                if self.__item.scene():
-                    self.__item.scene().removeItem(self.__item)
-                self.__item = None
-        else:
-            if self.__item is None:
-                item = QGraphicsPathItem()
-                color = QColor(Qt.yellow)
-                item.setPen(QPen(color, 0))
-                color.setAlpha(50)
-                item.setBrush(QBrush(color))
-                self.__item = item
-                viewbox.addItem(item)
-
-            self.__item.setPath(self.selectionShape())
-
-
-class PlotZoomTool(PlotTool):
-    """
-    A zoom tool.
-
-    Allows the user to draw a rectangular region to zoom in.
-    """
-
-    zoomStarted = Signal(QRectF)
-    zoomUpdated = Signal(QRectF)
-    zoomFinished = Signal(QRectF)
-
-    def __init__(self, parent=None, autoZoom=True, **kwargs):
-        super().__init__(parent, **kwargs)
-        self.__zoomrect = QRectF()
-        self.__zoomitem = None
-        self.__autozoom = autoZoom
-
-    def zoomRect(self):
-        """
-        Return the current drawn rectangle (region of interest)
-
-        Returns
-        -------
-        zoomrect : QRectF
-        """
-        view = self.viewBox()
-        if view is None:
-            return QRectF()
-        return view.childGroup.mapRectFromParent(self.__zoomrect)
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self.__zoomrect = QRectF(event.pos(), event.pos())
-            self.zoomStarted.emit(self.zoomRect())
-            self.__updategraphics()
-            event.accept()
-            return True
-        elif event.button() == Qt.RightButton:
-            event.accept()
-            return True
-        else:
-            return False
-
-    def mouseMoveEvent(self, event):
-        if event.buttons() & Qt.LeftButton:
-            self.__zoomrect = QRectF(
-                event.buttonDownPos(Qt.LeftButton), event.pos()).normalized()
-            self.zoomUpdated.emit(self.zoomRect())
-            self.__updategraphics()
-            event.accept()
-            return True
-        elif event.buttons() & Qt.RightButton:
-            event.accept()
-            return True
-        else:
-            return False
-
-    def mouseReleaseEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self.__zoomrect = QRectF(
-                event.buttonDownPos(Qt.LeftButton), event.pos()).normalized()
-
-            if self.__autozoom:
-                PlotZoomTool.pushZoomRect(self.viewBox(), self.zoomRect())
-
-            self.zoomFinished.emit(self.zoomRect())
-            self.__zoomrect = QRectF()
-            self.__updategraphics()
-            event.accept()
-            return True
-        elif event.button() == Qt.RightButton:
-            PlotZoomTool.popZoomStack(self.viewBox())
-            event.accept()
-            return True
-        else:
-            return False
-
-    def __updategraphics(self):
-        viewbox = self.viewBox()
-        if viewbox is None:
-            return
-        if not self.__zoomrect.isValid():
-            if self.__zoomitem is not None:
-                self.__zoomitem.setParentItem(None)
-                viewbox.removeItem(self.__zoomitem)
-                if self.__zoomitem.scene() is not None:
-                    self.__zoomitem.scene().removeItem(self.__zoomitem)
-                self.__zoomitem = None
-        else:
-            if self.__zoomitem is None:
-                self.__zoomitem = QGraphicsRectItem()
-                color = QColor(Qt.yellow)
-                self.__zoomitem.setPen(QPen(color, 0))
-                color.setAlpha(50)
-                self.__zoomitem.setBrush(QBrush(color))
-                viewbox.addItem(self.__zoomitem)
-
-            self.__zoomitem.setRect(self.zoomRect())
-
-    @staticmethod
-    def pushZoomRect(viewbox, rect):
-        viewbox.showAxRect(rect)
-        viewbox.axHistoryPointer += 1
-        viewbox.axHistory[viewbox.axHistoryPointer:] = [rect]
-
-    @staticmethod
-    def popZoomStack(viewbox):
-        if viewbox.axHistoryPointer == 0:
-            viewbox.autoRange()
-            viewbox.axHistory = []
-            viewbox.axHistoryPointer = -1
-        else:
-            viewbox.scaleHistory(-1)
-
-
-class PlotPanTool(PlotTool):
-    """
-    Pan/translate tool.
-    """
-    panStarted = Signal()
-    translated = Signal(QPointF)
-    panFinished = Signal()
-
-    def __init__(self, parent=None, autoPan=True, **kwargs):
-        super().__init__(parent, **kwargs)
-        self.__autopan = autoPan
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self.panStarted.emit()
-            event.accept()
-            return True
-        else:
-            return False
-
-    def mouseMoveEvent(self, event):
-        if event.buttons() & Qt.LeftButton:
-            viewbox = self.viewBox()
-            delta = (viewbox.mapToView(event.pos()) -
-                     viewbox.mapToView(event.lastPos()))
-            if self.__autopan:
-                viewbox.translateBy(-delta / 2)
-            self.translated.emit(-delta / 2)
-            event.accept()
-            return True
-        else:
-            return False
-
-    def mouseReleaseEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self.panFinished.emit()
-            event.accept()
-            return True
-        else:
-            return False
-
-
-class PlotPinchZoomTool(PlotTool):
-    """
-    A tool implementing a "Pinch to zoom".
-    """
-
-    def gestureEvent(self, event):
-        gesture = event.gesture(Qt.PinchGesture)
-        if gesture.state() == Qt.GestureStarted:
-            event.accept(gesture)
-            return True
-        elif gesture.changeFlags() & QPinchGesture.ScaleFactorChanged:
-            viewbox = self.viewBox()
-            center = viewbox.mapSceneToView(gesture.centerPoint())
-            scale_prev = gesture.lastScaleFactor()
-            scale = gesture.scaleFactor()
-            if scale_prev != 0:
-                scale = scale / scale_prev
-            if scale > 0:
-                viewbox.scaleBy((1 / scale, 1 / scale), center)
-            event.accept()
-            return True
-        elif gesture.state() == Qt.GestureFinished:
-            viewbox = self.viewBox()
-            PlotZoomTool.pushZoomRect(viewbox, viewbox.viewRect())
-            event.accept()
-            return True
-        else:
-            return False
+        if version < 3:
+            context.values["graph"] = {
+                "attr_color": context.values["attr_color"],
+                "attr_shape": context.values["attr_shape"],
+                "attr_size": context.values["attr_size"]
+            }
+        if version == 3:
+            values = context.values
+            values["attr_color"] = values["graph"]["attr_color"]
+            values["attr_size"] = values["graph"]["attr_size"]
+            values["attr_shape"] = values["graph"]["attr_shape"]
+            values["attr_label"] = values["graph"]["attr_label"]
 
 
 def column_data(table, var, dtype):
-    dtype = numpy.dtype(dtype)
+    dtype = np.dtype(dtype)
     col, copy = table.get_column_view(var)
-    if var.is_primitive() and not isinstance(col.dtype.type, numpy.inexact):
-        # from mixes metas domain
+    if not isinstance(col.dtype.type, np.inexact):
         col = col.astype(float)
         copy = True
-    mask = numpy.isnan(col)
     if dtype != col.dtype:
         col = col.astype(dtype)
         copy = True
 
     if not copy:
         col = col.copy()
-    return col, mask
+    return col
 
 
-class plotutils:
-    @staticmethod
-    def continuous_colors(data, palette=None,
-                          low=(220, 220, 220), high=(0,0,0),
-                          through_black=False):
-        if palette is None:
-            palette = colorpalette.ContinuousPaletteGenerator(
-                QColor(*low), QColor(*high), through_black)
-        amin, amax = numpy.nanmin(data), numpy.nanmax(data)
-        span = amax - amin
-        data = (data - amin) / (span or 1)
-        return palette.getRGB(data)
-
-    @staticmethod
-    def discrete_colors(data, nvalues, palette=None, color_index=None):
-        if color_index is None:
-            if palette is None or nvalues >= palette.number_of_colors:
-                palette = colorpalette.ColorPaletteGenerator(nvalues)
-            color_index = palette.getRGB(numpy.arange(nvalues))
-        # Unknown values as gray
-        # TODO: This should already be a part of palette
-        color_index = numpy.vstack((color_index, [[128, 128, 128]]))
-
-        data = numpy.where(numpy.isnan(data), nvalues, data)
-        data = data.astype(int)
-        return color_index[data]
-
-    @staticmethod
-    def normalized(a):
-        if not a.size:
-            return a.copy()
-        amin, amax = numpy.nanmin(a), numpy.nanmax(a)
-        if numpy.isnan(amin):
-            return a.copy()
-        span = amax - amin
-        mean = numpy.nanmean(a)
-        return (a - mean) / (span or 1)
-
-
-class linproj:
+class LinProj:
     @staticmethod
     def defaultaxes(naxes):
-        """
-        Return the default axes for linear projection.
-        """
+        # Return circular axes for linear projection
         assert naxes > 0
 
         if naxes == 1:
             axes_angle = [0]
         elif naxes == 2:
-            axes_angle = [0, numpy.pi / 2]
+            axes_angle = [0, np.pi / 2]
         else:
-            axes_angle = numpy.linspace(0, 2 * numpy.pi, naxes, endpoint=False)
+            axes_angle = np.linspace(0, 2 * np.pi, naxes, endpoint=False)
 
-        axes = numpy.vstack(
-            (numpy.cos(axes_angle),
-             numpy.sin(axes_angle))
+        axes = np.vstack(
+            (np.cos(axes_angle),
+             np.sin(axes_angle))
         )
         return axes
 
     @staticmethod
     def project(axes, X):
-        return numpy.dot(axes, X)
+        return np.dot(axes, X)
 
 
-def test_main(argv=None):
+def normalized(a):
+    if not a.size:
+        return a.copy()
+    amin, amax = np.nanmin(a), np.nanmax(a)
+    if np.isnan(amin):
+        return a.copy()
+    span = amax - amin
+    mean = np.nanmean(a)
+    return (a - mean) / (span or 1)
+
+
+def main(argv=None):
     import sys
-    import sip
 
     argv = sys.argv[1:] if argv is None else argv
     if argv:
@@ -1594,14 +733,12 @@ def test_main(argv=None):
     w.handleNewSignals()
     w.show()
     w.raise_()
-    r = app.exec()
+    app.exec()
     w.set_data(None)
     w.saveSettings()
-    sip.delete(w)
     del w
-    return r
 
 
 if __name__ == "__main__":
     import sys
-    sys.exit(test_main())
+    sys.exit(main())

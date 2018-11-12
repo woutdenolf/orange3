@@ -9,10 +9,11 @@ from operator import attrgetter
 from AnyQt.QtWidgets import (
     QWidget, QDialog, QVBoxLayout, QSizePolicy, QApplication, QStyle,
     QShortcut, QSplitter, QSplitterHandle, QPushButton, QStatusBar,
-    QProgressBar, QAction
+    QProgressBar, QAction, QWIDGETSIZE_MAX
 )
 from AnyQt.QtCore import (
-    Qt, QByteArray, QSettings, QUrl, pyqtSignal as Signal
+    Qt, QRect, QMargins, QByteArray, QDataStream, QBuffer, QSettings,
+    QUrl, QThread, pyqtSignal as Signal
 )
 from AnyQt.QtGui import QIcon, QKeySequence, QDesktopServices
 
@@ -22,7 +23,7 @@ from Orange.widgets import settings, gui
 # be used; use Input and Output instead
 from Orange.canvas.registry import description as widget_description, \
     WidgetDescription, OutputSignal, InputSignal
-from Orange.canvas.report import Report
+from Orange.widgets.report import Report
 from Orange.widgets.gui import OWComponent
 from Orange.widgets.io import ClipboardFormat
 from Orange.widgets.settings import SettingsHandler
@@ -67,6 +68,7 @@ class WidgetMetaClass(type(QDialog)):
         return cls
 
 
+# pylint: disable=too-many-instance-attributes
 class OWWidget(QDialog, OWComponent, Report, ProgressBarMixin,
                WidgetMessagesMixin, WidgetSignalsMixin,
                metaclass=WidgetMetaClass):
@@ -167,6 +169,7 @@ class OWWidget(QDialog, OWComponent, Report, ProgressBarMixin,
     settings_version = 1
 
     savedWidgetGeometry = settings.Setting(None)
+    controlAreaVisible = settings.Setting(True, schema_only=True)
 
     #: A list of advice messages (:class:`Message`) to display to the user.
     #: When a widget is first shown a message from this list is selected
@@ -182,7 +185,7 @@ class OWWidget(QDialog, OWComponent, Report, ProgressBarMixin,
     contextOpened = Signal()
     contextClosed = Signal()
 
-    # pylint: disable=protected-access
+    # pylint: disable=protected-access, access-member-before-definition
     def __new__(cls, *args, captionTitle=None, **kwargs):
         self = super().__new__(cls, None, cls.get_flags())
         QDialog.__init__(self, None, self.get_flags())
@@ -216,6 +219,8 @@ class OWWidget(QDialog, OWComponent, Report, ProgressBarMixin,
 
         # flag indicating if the widget's position was already restored
         self.__was_restored = False
+        # flag indicating the widget is still expecting the first show event.
+        self.__was_shown = False
 
         self.__statusMessage = ""
 
@@ -230,7 +235,8 @@ class OWWidget(QDialog, OWComponent, Report, ProgressBarMixin,
 
         self.left_side = None
         self.controlArea = self.mainArea = self.buttonsArea = None
-        self.splitter = None
+        self.__progressBar = None
+        self.__splitter = None
         if self.want_basic_layout:
             self.set_basic_layout()
 
@@ -244,11 +250,14 @@ class OWWidget(QDialog, OWComponent, Report, ProgressBarMixin,
             # Otherwise, the first control has focus
             self.controlArea.setFocus(Qt.ActiveWindowFocusReason)
 
-        if self.splitter is not None:
+        if self.__splitter is not None:
+            self.__splitter.handleClicked.connect(
+                self.__toggleControlArea
+            )
             sc = QShortcut(
                 QKeySequence(Qt.ControlModifier | Qt.ShiftModifier | Qt.Key_D),
-                self)
-            sc.activated.connect(self.splitter.flip)
+                self, autoRepeat=False)
+            sc.activated.connect(self.__toggleControlArea)
         return self
 
     # pylint: disable=super-init-not-called
@@ -277,12 +286,20 @@ class OWWidget(QDialog, OWComponent, Report, ProgressBarMixin,
                 else Qt.Dialog | Qt.MSWindowsFixedSizeDialogHint)
 
     class _Splitter(QSplitter):
-        controlAreaVisibilityChanged = Signal(int)
+        handleClicked = Signal()
 
         def _adjusted_size(self, size_method):
             size = size_method(super())()
+            parent = self.parentWidget()
+            if isinstance(parent, OWWidget) \
+                    and not parent.controlAreaVisible \
+                    and self.count() > 1:
+                indices = range(1, self.count())
+            else:
+                indices = range(0, self.count())
+
             height = max((size_method(self.widget(i))().height()
-                          for i in range(self.count()) if self.sizes()[i]),
+                          for i in indices),
                          default=0)
             size.setHeight(height)
             return size
@@ -298,19 +315,11 @@ class OWWidget(QDialog, OWComponent, Report, ProgressBarMixin,
             return self._Handle(
                 self.orientation(), self, cursor=Qt.PointingHandCursor)
 
-        def flip(self):
-            if self.count() == 1:  # Prevent hiding control area by shortcut
-                return
-            new_state = int(self.sizes()[0] == 0)
-            self.setSizes([new_state, 100000])
-            self.controlAreaVisibilityChanged.emit(new_state)
-            self.updateGeometry()
-
         class _Handle(QSplitterHandle):
             def mouseReleaseEvent(self, event):
                 """Resize on left button"""
                 if event.button() == Qt.LeftButton:
-                    self.splitter().flip()
+                    self.splitter().handleClicked.emit()
                 super().mouseReleaseEvent(event)
 
             def mouseMoveEvent(self, event):
@@ -318,12 +327,12 @@ class OWWidget(QDialog, OWComponent, Report, ProgressBarMixin,
                 return
 
     def _insert_splitter(self):
-        self.splitter = self._Splitter(Qt.Horizontal, self)
-        self.layout().addWidget(self.splitter)
+        self.__splitter = self._Splitter(Qt.Horizontal, self)
+        self.layout().addWidget(self.__splitter)
 
     def _insert_control_area(self):
-        self.left_side = gui.vBox(self.splitter, spacing=0)
-        self.splitter.setSizes([1])  # Smallest size allowed by policy
+        self.left_side = gui.vBox(self.__splitter, spacing=0)
+        self.__splitter.setSizes([1])  # Smallest size allowed by policy
         if self.buttons_area_orientation is not None:
             self.controlArea = gui.vBox(self.left_side, addSpace=0)
             self._insert_buttons_area()
@@ -344,12 +353,12 @@ class OWWidget(QDialog, OWComponent, Report, ProgressBarMixin,
 
     def _insert_main_area(self):
         self.mainArea = gui.vBox(
-            self.splitter, margin=4,
+            self.__splitter, margin=4,
             sizePolicy=QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         )
-        self.splitter.addWidget(self.mainArea)
-        self.splitter.setCollapsible(
-            self.splitter.indexOf(self.mainArea), False)
+        self.__splitter.addWidget(self.mainArea)
+        self.__splitter.setCollapsible(
+            self.__splitter.indexOf(self.mainArea), False)
         self.mainArea.layout().setContentsMargins(
             0 if self.want_control_area else 4, 4, 4, 4)
 
@@ -399,8 +408,10 @@ class OWWidget(QDialog, OWComponent, Report, ProgressBarMixin,
             c.layout().addWidget(sb)
 
             help = self.__help_action
+            icon = QIcon(gui.resource_filename("icons/help.svg"))
+            icon.addFile(gui.resource_filename("icons/help-hover.svg"), mode=QIcon.Active)
             help_button = SimpleButton(
-                icon=QIcon(gui.resource_filename("icons/help.svg")),
+                icon=icon,
                 toolTip="Show widget help", visible=help.isVisible(),
             )
             @help.changed.connect
@@ -411,15 +422,19 @@ class OWWidget(QDialog, OWComponent, Report, ProgressBarMixin,
             sb.addWidget(help_button)
 
             if self.graph_name is not None:
+                icon = QIcon(gui.resource_filename("icons/chart.svg"))
+                icon.addFile(gui.resource_filename("icons/chart-hover.svg"), mode=QIcon.Active)
                 b = SimpleButton(
-                    icon=QIcon(gui.resource_filename("icons/chart.svg")),
+                    icon=icon,
                     toolTip="Save Image",
                 )
                 b.clicked.connect(self.save_graph)
                 sb.addWidget(b)
             if hasattr(self, "send_report"):
+                icon = QIcon(gui.resource_filename("icons/report.svg"))
+                icon.addFile(gui.resource_filename("icons/report-hover.svg"), mode=QIcon.Active)
                 b = SimpleButton(
-                    icon=QIcon(gui.resource_filename("icons/report.svg")),
+                    icon=icon,
                     toolTip="Report"
                 )
                 b.clicked.connect(self.show_report)
@@ -427,7 +442,9 @@ class OWWidget(QDialog, OWComponent, Report, ProgressBarMixin,
             self.message_bar = MessagesWidget(self)
             self.message_bar.setSizePolicy(QSizePolicy.Preferred,
                                            QSizePolicy.Preferred)
-            pb = QProgressBar(maximumWidth=120, minimum=0, maximum=100)
+            self.__progressBar = pb = QProgressBar(
+                maximumWidth=120, minimum=0, maximum=100
+            )
             pb.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Ignored)
             pb.setAttribute(Qt.WA_LayoutUsesWidgetRect)
             pb.setAttribute(Qt.WA_MacMiniSize)
@@ -435,24 +452,90 @@ class OWWidget(QDialog, OWComponent, Report, ProgressBarMixin,
             sb.addPermanentWidget(pb)
             sb.addPermanentWidget(self.message_bar)
 
-            def statechanged():
-                pb.setVisible(bool(self.processingState) or self.isBlocking())
-                if self.isBlocking() and not self.processingState:
-                    pb.setRange(0, 0)  # indeterminate pb
-                elif self.processingState:
-                    pb.setRange(0, 100)  # determinate pb
-
-            self.processingStateChanged.connect(statechanged)
-            self.blockingStateChanged.connect(statechanged)
-
-            @self.progressBarValueChanged.connect
-            def _(val):
-                pb.setValue(int(val))
+            self.processingStateChanged.connect(self.__processingStateChanged)
+            self.blockingStateChanged.connect(self.__processingStateChanged)
+            self.progressBarValueChanged.connect(lambda v: pb.setValue(int(v)))
 
             # Reserve the bottom margins for the status bar
             margins = self.layout().contentsMargins()
             margins.setBottom(sb.sizeHint().height())
             self.setContentsMargins(margins)
+
+    def __processingStateChanged(self):
+        # Update the progress bar in the widget's status bar
+        pb = self.__progressBar
+        if pb is None:
+            return
+        pb.setVisible(bool(self.processingState) or self.isBlocking())
+        if self.isBlocking() and not self.processingState:
+            pb.setRange(0, 0)  # indeterminate pb
+        elif self.processingState:
+            pb.setRange(0, 100)  # determinate pb
+
+    def __toggleControlArea(self):
+        if self.__splitter is None or self.__splitter.count() < 2:
+            return
+        self.__setControlAreaVisible(not self.__splitter.sizes()[0])
+
+    def __setControlAreaVisible(self, visible):
+        # type: (bool) -> None
+        if self.__splitter is None or self.__splitter.count() < 2:
+            return
+        self.controlAreaVisible = visible
+        splitter = self.__splitter  # type: QSplitter
+        w = splitter.widget(0)
+        # Set minimum width to 1 (overrides minimumSizeHint) when control area
+        # is not visible to allow the main area to shrink further. Reset the
+        # minimum width with a 0 if control area is visible.
+        w.setMinimumWidth(int(not visible))
+
+        sizes = splitter.sizes()
+        current_size = sizes[0]
+        if bool(current_size) == visible:
+            return
+
+        current_width = w.width()
+        geom = self.geometry()
+        frame = self.frameGeometry()
+        framemargins = QMargins(
+            frame.left() - geom.left(),
+            frame.top() - geom.top(),
+            frame.right() - geom.right(),
+            frame.bottom() - geom.bottom()
+        )
+        splitter.setSizes([int(visible), QWIDGETSIZE_MAX])
+        if not self.isWindow() or \
+                self.windowState() not in [Qt.WindowNoState, Qt.WindowActive]:
+            # not a window or not in state where we can move move/resize
+            return
+
+        # force immediate resize recalculation
+        splitter.refresh()
+        self.layout().invalidate()
+        self.layout().activate()
+
+        if visible:
+            # move left and expand by the exposing widget's width
+            diffx = -w.width()
+            diffw = w.width()
+        else:
+            # move right and shrink by the collapsing width
+            diffx = current_width
+            diffw = -current_width
+        newgeom = QRect(
+            geom.x() + diffx, geom.y(), geom.width() + diffw, geom.height()
+        )
+        # bound/move by available geometry
+        bounds = QApplication.desktop().availableGeometry(self)
+        bounds = bounds.adjusted(
+            framemargins.left(), framemargins.top(),
+            -framemargins.right(), -framemargins.bottom()
+        )
+        newsize = newgeom.size().boundedTo(bounds.size())
+        newgeom = QRect(newgeom.topLeft(), newsize)
+        newgeom.moveLeft(max(newgeom.left(), bounds.left()))
+        newgeom.moveRight(min(newgeom.right(), bounds.right()))
+        self.setGeometry(newgeom)
 
     def save_graph(self):
         """Save the graph with the name given in class attribute `graph_name`.
@@ -472,13 +555,8 @@ class OWWidget(QDialog, OWComponent, Report, ProgressBarMixin,
                 return
             ClipboardFormat.write_image(None, graph_obj)
 
-    def updateProperties(self):
-        """Function called when the properties are requested to the scheme.
-        This can be usefull to synchronize the properties"""
-        pass
-
-    def __restoreWidgetGeometry(self):
-
+    def __restoreWidgetGeometry(self, geometry):
+        # type: (bytes) -> bool
         def _fullscreen_to_maximized(geometry):
             """Don't restore windows into full screen mode because it loses
             decorations and can't be de-fullscreened at least on some platforms.
@@ -491,41 +569,29 @@ class OWWidget(QDialog, OWComponent, Report, ProgressBarMixin,
             return w.saveGeometry()
 
         restored = False
-        if self.save_position:
-            geometry = self.savedWidgetGeometry
-            if geometry is not None:
-                geometry = _fullscreen_to_maximized(geometry)
-                restored = self.restoreGeometry(geometry)
+        if geometry:
+            geometry = _fullscreen_to_maximized(geometry)
+            restored = self.restoreGeometry(geometry)
 
-            if restored and not self.windowState() & \
-                    (Qt.WindowMaximized | Qt.WindowFullScreen):
-                space = QApplication.desktop().availableGeometry(self)
-                frame, geometry = self.frameGeometry(), self.geometry()
+        if restored and not self.windowState() & \
+                (Qt.WindowMaximized | Qt.WindowFullScreen):
+            space = QApplication.desktop().availableGeometry(self)
+            frame, geometry = self.frameGeometry(), self.geometry()
 
-                #Fix the widget size to fit inside the available space
-                width = space.width() - (frame.width() - geometry.width())
-                width = min(width, geometry.width())
-                height = space.height() - (frame.height() - geometry.height())
-                height = min(height, geometry.height())
-                self.resize(width, height)
+            # Fix the widget size to fit inside the available space
+            width = space.width() - (frame.width() - geometry.width())
+            width = min(width, geometry.width())
+            height = space.height() - (frame.height() - geometry.height())
+            height = min(height, geometry.height())
+            self.resize(width, height)
 
-                # Move the widget to the center of available space if it is
-                # currently outside it
-                if not space.contains(self.frameGeometry()):
-                    x = max(0, space.width() / 2 - width / 2)
-                    y = max(0, space.height() / 2 - height / 2)
+            # Move the widget to the center of available space if it is
+            # currently outside it
+            if not space.contains(self.frameGeometry()):
+                x = max(0, space.width() / 2 - width / 2)
+                y = max(0, space.height() / 2 - height / 2)
 
-                    self.move(x, y)
-
-        # Mark as explicitly moved/resized if not already. QDialog would
-        # otherwise adjust position/size on subsequent hide/show
-        # (move/resize events coming from the window manager do not set
-        # these flags).
-        if not self.testAttribute(Qt.WA_Moved):
-            self.setAttribute(Qt.WA_Moved)
-        if not self.testAttribute(Qt.WA_Resized):
-            self.setAttribute(Qt.WA_Resized)
-
+                self.move(x, y)
         return restored
 
     def __updateSavedGeometry(self):
@@ -570,14 +636,42 @@ class OWWidget(QDialog, OWComponent, Report, ProgressBarMixin,
             self.__updateSavedGeometry()
         QDialog.closeEvent(self, event)
 
+    def setVisible(self, visible):
+        # type: (bool) -> None
+        """Reimplemented from `QDialog.setVisible`."""
+        if visible:
+            # Force cached size hint invalidation ... The size hints are
+            # sometimes not properly invalidated via the splitter's layout and
+            # nested left_part -> controlArea layouts. This causes bad initial
+            # size when the widget is first shown.
+            if self.controlArea is not None:
+                self.controlArea.updateGeometry()
+            if self.buttonsArea is not None:
+                self.buttonsArea.updateGeometry()
+            if self.mainArea is not None:
+                self.mainArea.updateGeometry()
+        super().setVisible(visible)
+
     def showEvent(self, event):
         """Overloaded to restore the geometry when the widget is shown
         """
         QDialog.showEvent(self, event)
         if self.save_position and not self.__was_restored:
             # Restore saved geometry on (first) show
-            self.__restoreWidgetGeometry()
+            if self.__splitter is not None:
+                self.__setControlAreaVisible(self.controlAreaVisible)
+            if self.savedWidgetGeometry is not None:
+                self.__restoreWidgetGeometry(bytes(self.savedWidgetGeometry))
             self.__was_restored = True
+
+        if not self.__was_shown:
+            # Mark as explicitly moved/resized if not already. QDialog would
+            # otherwise adjust position/size on subsequent hide/show
+            # (move/resize events coming from the window manager do not set
+            # these flags).
+            self.setAttribute(Qt.WA_Moved, True)
+            self.setAttribute(Qt.WA_Resized, True)
+            self.__was_shown = True
         self.__quicktipOnce()
 
     def wheelEvent(self, event):
@@ -693,6 +787,7 @@ class OWWidget(QDialog, OWComponent, Report, ProgressBarMixin,
         This is a short status string to be displayed inline next to
         the instantiated widget icon in the canvas.
         """
+        assert QThread.currentThread() == self.thread()
         if self.__statusMessage != text:
             self.__statusMessage = text
             self.statusMessageChanged.emit(text)
@@ -739,6 +834,7 @@ class OWWidget(QDialog, OWComponent, Report, ProgressBarMixin,
         .. note::
             Failure to clear this flag will block dependent nodes forever.
         """
+        assert QThread.currentThread() is self.thread()
         if self.__blocking != state:
             self.__blocking = state
             self.blockingStateChanged.emit(state)
@@ -771,6 +867,65 @@ class OWWidget(QDialog, OWComponent, Report, ProgressBarMixin,
         The default implementation does nothing.
         """
         pass
+
+    def saveGeometryAndLayoutState(self):
+        # type: () -> QByteArray
+        """
+        Save the current geometry and layout state of this widget and
+        child windows (if applicable).
+
+        Returns
+        -------
+        state : QByteArray
+            Saved state.
+        """
+        version = 0x1
+        have_spliter = 0
+        splitter_state = 0
+        if self.__splitter is not None:
+            have_spliter = 1
+            splitter_state = 1 if self.controlAreaVisible else 0
+        data = QByteArray()
+        stream = QDataStream(data, QBuffer.WriteOnly)
+        stream.writeUInt32(version)
+        stream.writeUInt16((have_spliter << 1) | splitter_state)
+        stream <<= self.saveGeometry()
+        return data
+
+    def restoreGeometryAndLayoutState(self, state):
+        # type: (QByteArray) -> bool
+        """
+        Restore the geometry and layout of this widget to a state previously
+        saved with :func:`saveGeometryAndLayoutState`.
+
+        Parameters
+        ----------
+        state : QByteArray
+            Saved state.
+
+        Returns
+        -------
+        success : bool
+            `True` if the state was successfully restored, `False` otherwise.
+        """
+        version = 0x1
+        stream = QDataStream(state, QBuffer.ReadOnly)
+        version_ = stream.readUInt32()
+        if stream.status() != QDataStream.Ok or version_ != version:
+            return False
+        splitter_state = stream.readUInt16()
+        has_spliter = splitter_state & 0x2
+        splitter_state = splitter_state & 0x1
+        if has_spliter and self.__splitter is not None:
+            self.__setControlAreaVisible(bool(splitter_state))
+        geometry = QByteArray()
+        stream >>= geometry
+        if stream.status() == QDataStream.Ok:
+            state = self.__restoreWidgetGeometry(bytes(geometry))
+            self.__was_restored = self.__was_restored or state
+            return state
+        else:
+            return False  # pragma: no cover
 
     def __showMessage(self, message):
         if self.__msgwidget is not None:
@@ -824,7 +979,13 @@ class OWWidget(QDialog, OWComponent, Report, ProgressBarMixin,
             self.__showMessage(message)
 
     def __quicktipOnce(self):
-        filename = os.path.join(settings.widget_settings_dir(),
+        dirpath = settings.widget_settings_dir(versioned=False)
+        try:
+            os.makedirs(dirpath, exist_ok=True)
+        except OSError:  # EPERM, EEXISTS, ...
+            pass
+
+        filename = os.path.join(settings.widget_settings_dir(versioned=False),
                                 "user-session-state.ini")
         namespace = ("user-message-history/{0.__module__}.{0.__qualname__}"
                      .format(type(self)))

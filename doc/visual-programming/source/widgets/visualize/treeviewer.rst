@@ -1,31 +1,18 @@
 Tree Viewer
 ===========
 
-.. figure:: icons/tree-viewer.png
-
 A visualization of classification and regression trees. 
 
-Signals
--------
+Inputs
+    Tree
+        decision tree
 
-**Inputs**:
+Outputs
+    Selected Data
+        instances selected from the tree node
+    Data
+        data with an additional column showing whether a point is selected
 
--  **Tree**
-
-   A decision tree.
-
-**Outputs**:
-
--  **Selected Data**
-
-   Data from a selected tree node.
-
--  **Data**
-
-   Data set with an additional attribute for selection labels.
-
-Description
------------
 
 This is a versatile widget with 2-D visualization of `classification and regression trees <https://en.wikipedia.org/wiki/Decision_tree_learning>`_. The user can select a node, instructing the widget to output the data associated with the node, thus enabling explorative data analysis.
 
@@ -64,11 +51,11 @@ Below, is a simple classification schema, where we have read the data, construct
 
 Clicking on any node will output the related data instances. This is explored in the schema below that shows the subset in the data table and in the :doc:`Scatterplot <../visualize/scatterplot>`. Make sure that the tree data is passed as a data subset; this can be done by connecting the **Scatterplot** to the :doc:`File <../data/file>` widget first, and connecting it to the **Tree Viewer** widget next. Selected data will be displayed as bold dots.
 
-**Tree Viewer** can also export labelled data. Connect :doc:`Data Table <../data/datatable>` to **Tree Viewer** and set the link between widgets to *Data* instead of *Selected Data*. This will send the entire data to **Data Table** with an additional meta column labelling selected data instances (*Yes* for selected and *No* for the remaining).
+**Tree Viewer** can also export labeled data. Connect :doc:`Data Table <../data/datatable>` to **Tree Viewer** and set the link between widgets to *Data* instead of *Selected Data*. This will send the entire data to **Data Table** with an additional meta column labeling selected data instances (*Yes* for selected and *No* for the remaining).
 
 .. figure:: images/TreeViewer-selection.png
 
-Finally, **Tree Viewer** can be used also for visualizing regression trees. Connect :doc:`Random Forest <../model/randomforest>` to :doc:`File <../data/file>` widget using *housing.tab* data set. Then connect :doc:`Pythagorean Forest <../visualize/pythagoreanforest>` to **Random Forest**. In **Pythagorean Forest** select a regression tree you wish to further analyze and pass it to the **Tree Viewer**. The widget will display the constructed tree. For visualizing larger trees, especially for regression, :doc:`Pythagorean Tree <../visualize/pythagoreantree>` could be a better option.
+Finally, **Tree Viewer** can be used also for visualizing regression trees. Connect :doc:`Random Forest <../model/randomforest>` to :doc:`File <../data/file>` widget using *housing.tab* dataset. Then connect :doc:`Pythagorean Forest <../visualize/pythagoreanforest>` to **Random Forest**. In **Pythagorean Forest** select a regression tree you wish to further analyze and pass it to the **Tree Viewer**. The widget will display the constructed tree. For visualizing larger trees, especially for regression, :doc:`Pythagorean Tree <../visualize/pythagoreantree>` could be a better option.
 
 .. figure:: images/TreeViewer-regression.png
 

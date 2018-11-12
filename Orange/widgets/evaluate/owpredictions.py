@@ -45,7 +45,8 @@ class OWPredictions(OWWidget):
     name = "Predictions"
     icon = "icons/Predictions.svg"
     priority = 200
-    description = "Display the predictions of models for an input data set."
+    description = "Display the predictions of models for an input dataset."
+    keywords = []
 
     class Inputs:
         data = Input("Data", Orange.data.Table)
@@ -58,7 +59,7 @@ class OWPredictions(OWWidget):
                                     dynamic=False)
 
     class Warning(OWWidget.Warning):
-        empty_data = Msg("Empty data set")
+        empty_data = Msg("Empty dataset")
 
     class Error(OWWidget.Error):
         predictor_failed = \
@@ -123,7 +124,7 @@ class OWPredictions(OWWidget):
                      callback=self._update_prediction_delegate)
 
         box = gui.vBox(self.controlArea, "Data View")
-        gui.checkBox(box, self, "show_attrs", "Show full data set",
+        gui.checkBox(box, self, "show_attrs", "Show full dataset",
                      callback=self._update_column_visibility)
 
         box = gui.vBox(self.controlArea, "Output", spacing=-1)
@@ -184,7 +185,7 @@ class OWPredictions(OWWidget):
     @Inputs.data
     @check_sql_input
     def set_data(self, data):
-        """Set the input data set"""
+        """Set the input dataset"""
         if data is not None and not len(data):
             data = None
             self.Warning.empty_data()
@@ -259,7 +260,9 @@ class OWPredictions(OWWidget):
 
     def _call_predictors(self):
         for inputid, pred in self.predictors.items():
-            if pred.results is None or numpy.isnan(pred.results[0]).all():
+            if pred.results is None \
+                    or isinstance(pred.results, str) \
+                    or numpy.isnan(pred.results[0]).all():
                 try:
                     results = self.predict(pred.predictor, self.data)
                 except ValueError as err:
@@ -326,8 +329,9 @@ class OWPredictions(OWWidget):
                     # if values were added to class_var between building the
                     # model and predicting, add zeros for new class values,
                     # which are always at the end
-                    prob = numpy.c_[prob,
-                                    numpy.zeros((prob.shape[0], len(class_var.values) - prob.shape[1]))]
+                    prob = numpy.c_[
+                        prob,
+                        numpy.zeros((prob.shape[0], len(class_var.values) - prob.shape[1]))]
                     values = [Value(class_var, v) for v in values]
                 results.append((values, prob))
             results = list(zip(*(zip(*res) for res in results)))

@@ -61,7 +61,7 @@ class Task:
 
 class OWLearningCurveC(widget.OWWidget):
     name = "Learning Curve (C)"
-    description = ("Takes a data set and a set of learners and shows a "
+    description = ("Takes a dataset and a set of learners and shows a "
                    "learning curve in a table")
     icon = "icons/LearningCurve.svg"
     priority = 1010
@@ -162,7 +162,7 @@ class OWLearningCurveC(widget.OWWidget):
         self.data = data
 
         if data is not None:
-            self.infoa.setText('%d instances in input data set' % len(data))
+            self.infoa.setText('%d instances in input dataset' % len(data))
         else:
             self.infoa.setText('No data on input.')
 
@@ -289,10 +289,12 @@ class OWLearningCurveC(widget.OWWidget):
         task.watcher.done.connect(self._task_finished)
 # [end-snippet-8]
 
+# [start-snippet-progress]
     @pyqtSlot(float)
     def setProgressValue(self, value):
         assert self.thread() is QThread.currentThread()
         self.progressBarSet(value)
+# [end-snippet-progress]
 
 # [start-snippet-9]
     @pyqtSlot(concurrent.futures.Future)

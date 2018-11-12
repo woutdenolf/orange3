@@ -3,6 +3,7 @@ General helper functions and classes for PyQt concurrent programming
 """
 # TODO: Rename the module to something that does not conflict with stdlib
 # concurrent
+import os
 import threading
 import atexit
 import logging
@@ -21,7 +22,7 @@ except ImportError:
     pass
 
 from AnyQt.QtCore import (
-    Qt, QObject, QMetaObject, QThreadPool, QThread, QRunnable,
+    Qt, QObject, QMetaObject, QThreadPool, QThread, QRunnable, QSemaphore,
     QEventLoop, QCoreApplication, QEvent, Q_ARG
 )
 
@@ -192,15 +193,53 @@ class ThreadExecutor(QObject, concurrent.futures.Executor):
 
     threadPool :  Optional[QThreadPool]
         Thread pool to be used by the instance of the Executor. If `None`
-        then ``QThreadPool.globalInstance()`` will be used.
+        then a private global thread pool will be used.
 
+        .. versionchanged:: 3.15
+            Before 3.15 a `QThreadPool.globalPool()` was used as the default.
+
+        .. warning::
+            If you pass a custom `QThreadPool` make sure it creates threads
+            with sufficient stack size for the tasks submitted to the executor
+            (see `QThreadPool.setStackSize`).
     """
+    # A default thread pool. Replaced QThreadPool due to insufficient default
+    # stack size for created threads (QTBUG-2568). Not using even on
+    # Qt >= 5.10 just for consistency sake.
+    class __global:
+        __lock = threading.Lock()
+        __instance = None
+
+        @classmethod
+        def instance(cls):
+            # type: () -> concurrent.futures.ThreadPoolExecutor
+            with cls.__lock:
+                if cls.__instance is None:
+                    cls.__instance = concurrent.futures.ThreadPoolExecutor(
+                        max_workers=(os.cpu_count() or 1)
+                    )
+                return cls.__instance
 
     def __init__(self, parent=None, threadPool=None, **kwargs):
         super().__init__(parent, **kwargs)
+
         if threadPool is None:
-            threadPool = QThreadPool.globalInstance()
+            threadPool = self.__global.instance()
+
         self._threadPool = threadPool
+        if isinstance(threadPool, QThreadPool):
+            def start(runnable):
+                # type: (QRunnable) -> None
+                threadPool.start(runnable)
+        elif isinstance(threadPool, concurrent.futures.Executor):
+            # adapt to Executor interface
+            def start(runnable):
+                # type: (QRunnable) -> None
+                threadPool.submit(runnable.run)
+        else:
+            raise TypeError("Invalid `threadPool` type '{}'"
+                            .format(type(threadPool).__name__))
+        self.__start = start
         self._depot_thread = None
         self._futures = []
         self._shutdown = False
@@ -233,7 +272,7 @@ class ThreadExecutor(QObject, concurrent.futures.Executor):
 
             self._futures.append(f)
             f.add_done_callback(self._future_done)
-            self._threadPool.start(runnable)
+            self.__start(runnable)
             return f
 
     def submit_task(self, task):
@@ -249,7 +288,7 @@ class ThreadExecutor(QObject, concurrent.futures.Executor):
 
             self._futures.append(f)
             f.add_done_callback(self._future_done)
-            self._threadPool.start(runnable)
+            self.__start(runnable)
             return f
 
     def __make_task_runnable(self, task):
@@ -570,10 +609,12 @@ class FutureSetWatcher(QObject):
     doneAll = Signal()
 
     def __init__(self, futures=None, *args, **kwargs):
+        # type: (List[Future], ...) -> None
         super().__init__(*args, **kwargs)
         self.__futures = None
+        self.__semaphore = None
         self.__countdone = 0
-        if futures:
+        if futures is not None:
             self.setFutures(futures)
 
     def setFutures(self, futures):
@@ -593,21 +634,32 @@ class FutureSetWatcher(QObject):
         selfweakref = weakref.ref(self)
         schedule_emit = methodinvoke(self, "__emitpending", (int, Future))
 
+        # Semaphore counting the number of future that have enqueued
+        # done notifications. Used for the `wait` implementation.
+        self.__semaphore = semaphore = QSemaphore(0)
+
         for i, future in enumerate(futures):
             self.__futures.append(future)
 
             def on_done(index, f):
-                selfref = selfweakref()  # not safe really
-                if selfref is None:
-                    return
                 try:
-                    schedule_emit(index, f)
-                except RuntimeError:
-                    # Ignore RuntimeErrors (when C++ side of QObject is deleted)
-                    # (? Use QObject.destroyed and remove the done callback ?)
-                    pass
+                    selfref = selfweakref()  # not safe really
+                    if selfref is None:  # pragma: no cover
+                        return
+                    try:
+                        schedule_emit(index, f)
+                    except RuntimeError:  # pragma: no cover
+                        # Ignore RuntimeErrors (when C++ side of QObject is deleted)
+                        # (? Use QObject.destroyed and remove the done callback ?)
+                        pass
+                finally:
+                    semaphore.release()
 
             future.add_done_callback(partial(on_done, i))
+
+        if not self.__futures:
+            # `futures` was an empty sequence.
+            methodinvoke(self, "doneAll", ())()
 
     @Slot(int, Future)
     def __emitpending(self, index, future):
@@ -640,9 +692,28 @@ class FutureSetWatcher(QObject):
     def flush(self):
         """
         Flush all pending signal emits currently enqueued.
+
+        Must only ever be called from the thread this object lives in
+        (:func:`QObject.thread()`).
         """
-        assert QThread.currentThread() is self.thread()
+        if QThread.currentThread() is not self.thread():
+            raise RuntimeError("`flush()` called from a wrong thread.")
+        # NOTE: QEvent.MetaCall is the event implementing the
+        # `Qt.QueuedConnection` method invocation.
         QCoreApplication.sendPostedEvents(self, QEvent.MetaCall)
+
+    def wait(self):
+        """
+        Wait for for all the futures to complete and *enqueue* notifications
+        to this object, but do not emit any signals.
+
+        Use `flush()` to emit all signals after a `wait()`
+        """
+        if self.__futures is None:
+            raise RuntimeError("Futures were not set.")
+
+        self.__semaphore.acquire(len(self.__futures))
+        self.__semaphore.release(len(self.__futures))
 
 
 class methodinvoke(object):

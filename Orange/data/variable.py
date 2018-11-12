@@ -27,7 +27,19 @@ DISCRETE_MAX_VALUES = 3  # == 2 + nan
 def make_variable(cls, compute_value, *args):
     if compute_value is not None:
         return cls(*args, compute_value=compute_value)
-    return cls.make(*args)
+    if issubclass(cls, DiscreteVariable):
+        name, values = args[:2]
+        var = cls.make(*args)
+        # The `var.values` are in general a superset of `values` with different
+        # order. Only use it if it is a structural subtype of the requested
+        # descriptor so any indices/codes retain their proper interpretation on
+        # deserialization.
+        if var.values[:len(values)] == values:
+            return var
+        else:
+            return cls(*args)
+    else:
+        return cls.make(*args)
 
 
 def is_discrete_values(values):
@@ -207,10 +219,15 @@ class Value(float):
         raise TypeError("invalid operation on Value()")
 
     def __hash__(self):
+        if self.variable.is_discrete:
+            # It is not possible to hash the id and the domain value to the same number as required by __eq__.
+            # hash(1) == hash(Value(DiscreteVariable("var", ["red", "green", "blue"]), 1)) == hash("green")
+            # User should hash directly ids or domain values instead.
+            raise TypeError("unhashable type - cannot hash values of discrete variables!")
         if self._value is None:
             return super().__hash__()
         else:
-            return hash((super().__hash__(), self._value))
+            return hash(self._value)
 
     @property
     def value(self):
@@ -238,6 +255,28 @@ class VariableMeta(Registry):
         return obj
 
 
+class _predicatedescriptor(property):
+    """
+    A property that behaves as a class method if accessed via a class
+    >>> class A:
+    ...     foo = False
+    ...     @_predicatedescriptor
+    ...     def is_foo(self):
+    ...         return self.foo
+    ...
+    >>> a = A()
+    >>> a.is_foo
+    False
+    >>> A.is_foo(a)
+    False
+    """
+    def __get__(self, instance, objtype=None):
+        if instance is None:
+            return self.fget
+        else:
+            return super().__get__(instance, objtype)
+
+
 class Variable(Reprable, metaclass=VariableMeta):
     """
     The base class for variable descriptors contains the variable's
@@ -255,7 +294,9 @@ class Variable(Reprable, metaclass=VariableMeta):
     .. attribute:: compute_value
 
         A function for computing the variable's value when converting from
-        another domain which does not contain this variable. The base class
+        another domain which does not contain this variable. The function will
+        be called with a data set (`Orange.data.Table`) and has to return
+        an array of computed values for all its instances. The base class
         defines a static method `compute_value`, which returns `Unknown`.
         Non-primitive variables must redefine it to return `None`.
 
@@ -349,26 +390,27 @@ class Variable(Reprable, metaclass=VariableMeta):
             cls._clear_cache()
 
     @classmethod
-    def is_primitive(cls):
+    def is_primitive(cls, var=None):
         """
         `True` if the variable's values are stored as floats.
         Non-primitive variables can appear in the data only as meta attributes.
         """
-        return issubclass(cls, (DiscreteVariable, ContinuousVariable))
+        to_check = cls if var is None else type(var)
+        return issubclass(to_check, (DiscreteVariable, ContinuousVariable))
 
-    @property
+    @_predicatedescriptor
     def is_discrete(self):
         return isinstance(self, DiscreteVariable)
 
-    @property
+    @_predicatedescriptor
     def is_continuous(self):
         return isinstance(self, ContinuousVariable)
 
-    @property
+    @_predicatedescriptor
     def is_string(self):
         return isinstance(self, StringVariable)
 
-    @property
+    @_predicatedescriptor
     def is_time(self):
         return isinstance(self, TimeVariable)
 
@@ -443,6 +485,9 @@ class Variable(Reprable, metaclass=VariableMeta):
         var = type(self)(self.name, compute_value=compute_value, sparse=self.sparse)
         var.attributes = dict(self.attributes)
         return var
+
+
+del _predicatedescriptor
 
 
 class ContinuousVariable(Variable):
@@ -674,9 +719,12 @@ class DiscreteVariable(Variable):
     def __reduce__(self):
         if not self.name:
             raise PickleError("Variables without names cannot be pickled")
+        __dict__ = dict(self.__dict__)
+        __dict__.pop("master")
+        __dict__.pop("values")
         return make_variable, (self.__class__, self._compute_value, self.name,
                                self.values, self.ordered, self.base_value), \
-            self.__dict__
+            __dict__
 
     @classmethod
     def make(cls, name, values=(), ordered=False, base_value=-1):
@@ -709,7 +757,7 @@ class DiscreteVariable(Variable):
         var = cls._find_compatible(
             name, values, ordered, base_value)
         if var:
-            return var
+            return var.make_proxy()
         if not ordered:
             base_value_rep = base_value != -1 and values[base_value]
             values = cls.ordered_values(values)
@@ -903,10 +951,10 @@ class TimeVariable(ContinuousVariable):
     utc_offset = None
     timezone = timezone.utc
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, have_date=0, have_time=0, **kwargs):
         super().__init__(*args, **kwargs)
-        self.have_date = 0
-        self.have_time = 0
+        self.have_date = have_date
+        self.have_time = have_time
 
     def copy(self, compute_value=None):
         copy = super().copy(compute_value=compute_value)

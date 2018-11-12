@@ -6,6 +6,7 @@ from AnyQt.QtCore import Qt
 from Orange.data import Table, Domain, ContinuousVariable
 from Orange.projection import (MDS, Isomap, LocallyLinearEmbedding,
                                SpectralEmbedding, TSNE)
+from Orange.projection.manifold import TSNEModel
 from Orange.widgets.widget import OWWidget, Msg, Input, Output
 from Orange.widgets.settings import Setting, SettingProvider
 from Orange.widgets import gui
@@ -87,17 +88,33 @@ class ManifoldParametersEditor(QWidget, gui.OWComponent):
 
 
 class TSNEParametersEditor(ManifoldParametersEditor):
-    _metrics = ("manhattan", "chebyshev", "jaccard", "mahalanobis", "cosine")
+    _metrics = ("euclidean", "manhattan", "chebyshev", "jaccard")
     metric_index = Setting(0)
     metric_values = [(x, x.capitalize()) for x in _metrics]
-    # rename l2 to Euclidean
-    metric_values = [("l2", "Euclidean")] + metric_values
+
+    perplexity = Setting(30)
+    early_exaggeration = Setting(12)
+    learning_rate = Setting(200)
+    n_iter = Setting(1000)
+
+    initialization_index = Setting(0)
+    initialization_values = [("pca", "PCA"), ("random", "Random")]
 
     def __init__(self, parent):
         super().__init__(parent)
+
         self.metric_combo = self._create_combo_parameter(
             "metric", "Metric:")
-        self.parameters["init"] = "pca"
+        self.perplexity_spin = self._create_spin_parameter(
+            "perplexity", 1, 100, "Perplexity:")
+        self.early_exaggeration_spin = self._create_spin_parameter(
+            "early_exaggeration", 1, 100, "Early exaggeration:")
+        self.lr_spin = self._create_spin_parameter(
+            "learning_rate", 1, 1000, "Learning rate:")
+        self.n_iter_spin = self._create_spin_parameter(
+            "n_iter", 250, 1e5, "Max iterations:")
+        self.init_radio = self._create_radio_parameter(
+            "initialization", "Initialization:")
 
 
 class MDSParametersEditor(ManifoldParametersEditor):
@@ -158,6 +175,8 @@ class OWManifoldLearning(OWWidget):
     description = "Nonlinear dimensionality reduction."
     icon = "icons/Manifold.svg"
     priority = 2200
+    keywords = []
+    settings_version = 2
 
     class Inputs:
         data = Input("Data", Table)
@@ -185,10 +204,23 @@ class OWManifoldLearning(OWWidget):
         n_neighbors_too_small = Msg("For chosen method and components, "
                                     "neighbors must be greater than {}")
         manifold_error = Msg("{}")
-        sparse_methods = Msg('Only t-SNE method supported on sparse data')
-        sparse_tsne_distance = Msg('Chebyshev, Jaccard, and Mahalanobis '
-                                   'distances not supported with sparse data.')
+        sparse_not_supported = Msg("Sparse data is not supported.")
         out_of_memory = Msg("Out of memory")
+
+    @classmethod
+    def migrate_settings(cls, settings, version):
+        if version < 2:
+            tsne_settings = settings.get('tsne_editor', {})
+            # Fixup initialization index
+            if 'init_index' in tsne_settings:
+                idx = tsne_settings.pop('init_index')
+                idx = min(idx, len(TSNEParametersEditor.initialization_values))
+                tsne_settings['initialization_index'] = idx
+            # We removed several metrics here
+            if 'metric_index' in tsne_settings:
+                idx = tsne_settings['metric_index']
+                idx = min(idx, len(TSNEParametersEditor.metric_values))
+                tsne_settings['metric_index'] = idx
 
     def __init__(self):
         self.data = None
@@ -247,23 +279,23 @@ class OWManifoldLearning(OWWidget):
         data = self.data
         method = self.MANIFOLD_METHODS[self.manifold_method_index]
         have_data = data is not None and len(data)
-        sparse_incompat = have_data and data.is_sparse() and method != TSNE
         self.Error.clear()
-        self.Error.sparse_methods(shown=sparse_incompat)
-        if have_data and not sparse_incompat:
+
+        if have_data and data.is_sparse():
+            self.Error.sparse_not_supported()
+        elif have_data:
             domain = Domain([ContinuousVariable("C{}".format(i))
                              for i in range(self.n_components)],
                             data.domain.class_vars,
                             data.domain.metas)
             try:
                 projector = method(**self.get_method_parameters(data, method))
-                X = projector(data).embedding_
-                out = Table(domain, X, data.Y, data.metas)
-            except TypeError as e:
-                if 'sparse' in e.args[0] and 'distance' in e.args[0]:
-                    self.Error.sparse_tsne_distance()
+                model = projector(data)
+                if isinstance(model, TSNEModel):
+                    out = model.embedding
                 else:
-                    raise
+                    X = model.embedding_
+                    out = Table(domain, X, data.Y, data.metas)
             except ValueError as e:
                 if e.args[0] == "for method='hessian', n_neighbors " \
                                 "must be greater than [n_components" \
@@ -276,14 +308,12 @@ class OWManifoldLearning(OWWidget):
                 self.Error.out_of_memory()
             except np.linalg.linalg.LinAlgError as e:
                 self.Error.manifold_error(str(e))
+
         self.Outputs.transformed_data.send(out)
 
     def get_method_parameters(self, data, method):
         parameters = dict(n_components=self.n_components)
         parameters.update(self.params_widget.parameters)
-        if data is not None and data.is_sparse() and method == TSNE:
-            parameters.update(method='exact',
-                              init='random')
         return parameters
 
     def send_report(self):

@@ -1,37 +1,22 @@
 Tree
 ====
 
-.. figure:: icons/tree.png
-
 A tree algorithm with forward pruning.
 
-Signals
--------
+Inputs
+    Data
+        input dataset
+    Preprocessor
+        preprocessing method(s)
 
-**Inputs**:
+Outputs
+    Learner
+        decision tree learning algorithm
+    Model
+        trained model
 
--  **Data**
 
-   A data set
-
--  **Preprocessor**
-
-   Preprocessing method(s)
-
-**Outputs**:
-
--  **Learner**
-
-   A decision tree learning algorithm with settings as specified in the dialog.
-
--  **Model**
-
-   A subset of data instances from the training set that were used as support vectors in the trained model.
-
-Description
------------
-
-**Tree** is a simple algorithm that splits the data into nodes by class purity. It is a precursor to :doc:`Random Forest <randomforest>`. Tree in Orange is designed in-house and can handle both discrete and continuous data sets.
+**Tree** is a simple algorithm that splits the data into nodes by class purity. It is a precursor to :doc:`Random Forest <randomforest>`. Tree in Orange is designed in-house and can handle both discrete and continuous datasets.
 
 It can also be used for both classification and regression tasks.
 
@@ -62,6 +47,6 @@ The second schema trains a model and evaluates its performance against :doc:`Log
 
 .. figure:: images/Tree-classification-model.png
 
-We used the *iris* data set in both examples. However, **Tree** works for regression tasks as well. Use *housing* data set and pass it to **Tree**. The selected tree node from :doc:`Tree Viewer <../visualize/treeviewer>` is presented in the :doc:`Scatter Plot <../visualize/scatterplot>` and we can see that the selected examples exhibit the same features. 
+We used the *iris* dataset in both examples. However, **Tree** works for regression tasks as well. Use *housing* dataset and pass it to **Tree**. The selected tree node from :doc:`Tree Viewer <../visualize/treeviewer>` is presented in the :doc:`Scatter Plot <../visualize/scatterplot>` and we can see that the selected examples exhibit the same features. 
 
 .. figure:: images/Tree-regression-subset.png

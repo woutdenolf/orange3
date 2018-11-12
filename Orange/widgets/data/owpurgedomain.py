@@ -9,11 +9,11 @@ from Orange.widgets.widget import Input, Output
 
 class OWPurgeDomain(widget.OWWidget):
     name = "Purge Domain"
-    description = "Remove redundant values and features from the data set. " \
+    description = "Remove redundant values and features from the dataset. " \
                   "Sort values."
     icon = "icons/PurgeDomain.svg"
     category = "Data"
-    keywords = ["data", "purge", "domain"]
+    keywords = ["remove", "delete", "unused"]
 
     class Inputs:
         data = Input("Data", Table)
@@ -135,7 +135,8 @@ class OWPurgeDomain(widget.OWWidget):
                           Remove.RemoveUnusedValues * self.removeMetaAttributeValues])
         remover = Remove(attr_flags, class_flags, meta_flags)
         data = remover(self.data)
-        attr_res, class_res, meta_res = remover.attr_results, remover.class_results, remover.meta_results
+        attr_res, class_res, meta_res = \
+            remover.attr_results, remover.class_results, remover.meta_results
 
         self.removedAttrs = attr_res['removed']
         self.reducedAttrs = attr_res['reduced']

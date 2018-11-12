@@ -1,27 +1,16 @@
 Discretize
 ==========
 
-.. figure:: icons/discretize.png
+Discretizes continuous attributes from an input dataset.
 
-Discretizes continuous attributes from an input data set. 
+Inputs
+    Data
+        input dataset
 
-Signals
--------
+Outputs
+    Data
+        dataset with discretized values
 
-**Inputs**:
-
--  **Data**
-
-   Attribute-valued data set.
-
-**Outputs**:
-
--  **Data**
-
-   A data set with discretized values.
-
-Description
------------
 
 The **Discretize** widget
 `discretizes <https://en.wikipedia.org/wiki/Discretization>`_
@@ -72,7 +61,7 @@ continuous attributes with a selected method.
 Example
 -------
 
-In the schema below, we show the *Iris* data set with continuous attributes
+In the schema below, we show the *Iris* dataset with continuous attributes
 (as in the original data file) and with discretized attributes.
 
 .. figure:: images/Discretize-Example.png

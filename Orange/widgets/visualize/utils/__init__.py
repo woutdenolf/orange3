@@ -8,7 +8,7 @@ from operator import attrgetter
 
 from AnyQt.QtCore import (
     Qt, QSize, pyqtSignal as Signal, QSortFilterProxyModel, QThread, QObject,
-    pyqtSlot as Slot, QCoreApplication, QTimer
+    pyqtSlot as Slot, QTimer
 )
 from AnyQt.QtGui import QStandardItemModel, QStandardItem, QColor, QBrush, QPen
 from AnyQt.QtWidgets import (
@@ -86,7 +86,7 @@ class VizRankDialog(QDialog, ProgressBarMixin, WidgetMessagesMixin):
 
     def __init__(self, master):
         """Initialize the attributes and set up the interface"""
-        QDialog.__init__(self, windowTitle=self.captionTitle)
+        QDialog.__init__(self, master, windowTitle=self.captionTitle)
         WidgetMessagesMixin.__init__(self)
         self.setLayout(QVBoxLayout())
 
@@ -116,12 +116,14 @@ class VizRankDialog(QDialog, ProgressBarMixin, WidgetMessagesMixin):
         self.setFocus(Qt.ActiveWindowFocusReason)
 
         self.rank_model = QStandardItemModel(self)
-        self.model_proxy = QSortFilterProxyModel(self)
+        self.model_proxy = QSortFilterProxyModel(
+            self, filterCaseSensitivity=False)
         self.model_proxy.setSourceModel(self.rank_model)
         self.rank_table = view = QTableView(
             selectionBehavior=QTableView.SelectRows,
             selectionMode=QTableView.SingleSelection,
-            showGrid=False)
+            showGrid=False,
+            editTriggers=gui.TableView.NoEditTriggers)
         if self._has_bars:
             view.setItemDelegate(TableBarItem())
         else:
@@ -182,6 +184,10 @@ class VizRankDialog(QDialog, ProgressBarMixin, WidgetMessagesMixin):
 
         def deleteEvent():
             vizrank.keep_running = False
+            if vizrank._thread is not None and vizrank._thread.isRunning():
+                vizrank._thread.quit()
+                vizrank._thread.wait()
+
             master_delete_event()
 
         master.closeEvent = closeEvent
@@ -348,6 +354,9 @@ class VizRankDialog(QDialog, ProgressBarMixin, WidgetMessagesMixin):
         else:
             self.button.setText("Continue")
             self._thread.quit()
+            # Need to sync state (the worker must read the keep_running
+            # state and stop) for reliable restart.
+            self._thread.wait()
 
     def before_running(self):
         """Code that is run before running vizrank in its own thread"""
@@ -633,5 +642,3 @@ class ViewWithPress(QGraphicsView):
         super().mousePressEvent(event)
         if not event.isAccepted():
             self.handler()
-
-

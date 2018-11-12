@@ -2,12 +2,19 @@
 # pylint: disable=missing-docstring
 
 import unittest
-import numpy as np
 
+import numpy as np
+from sklearn.metrics import accuracy_score
+from sklearn.neighbors import KNeighborsClassifier
+
+from Orange.data import Table
+from Orange.distance import Euclidean
 from Orange.projection import (MDS, Isomap, LocallyLinearEmbedding,
                                SpectralEmbedding, TSNE)
-from Orange.distance import Euclidean
-from Orange.data import Table
+from Orange.projection.manifold import torgerson
+
+
+np.random.seed(42)
 
 
 class TestManifold(unittest.TestCase):
@@ -67,7 +74,7 @@ class TestManifold(unittest.TestCase):
             n_init=1)
         X = projector(self.iris[:5]).embedding_
         result = np.array([-0.31871, -0.064644, 0.015653, -1.5e-08, -4.3e-11, 0])
-        np.testing.assert_array_almost_equal(X[0], result)
+        np.testing.assert_array_almost_equal(np.abs(X[0]), np.abs(result))
 
     def test_isomap(self):
         for i in range(1, 4):
@@ -116,21 +123,116 @@ class TestManifold(unittest.TestCase):
         se = se(data)
         self.assertEqual((data.X.shape[0], n_com), se.embedding_.shape)
 
-    def test_tsne(self):
-        data = self.ionosphere[:50]
-        for i in range(1, 4):
-            self.__tsne_test_helper(data, n_com=i)
+    def test_torgerson(self):
+        data = self.ionosphere[::5]
+        dis = Euclidean(data)
 
-    def __tsne_test_helper(self, data, n_com):
-        tsne_def = TSNE(n_components=n_com, metric='euclidean')
-        tsne_def = tsne_def(data)
+        e1 = torgerson(dis, eigen_solver="auto")
+        e2 = torgerson(dis, eigen_solver="lapack")
+        e3 = torgerson(dis, eigen_solver="arpack")
 
-        tsne_euc = TSNE(n_components=n_com, metric=Euclidean)
-        tsne_euc = tsne_euc(data)
+        np.testing.assert_almost_equal(np.abs(e1), np.abs(e2))
+        np.testing.assert_almost_equal(np.abs(e2), np.abs(e3))
 
-        tsne_pre = TSNE(n_components=n_com, metric='precomputed')
-        tsne_pre = tsne_pre(Euclidean(data))
+        with self.assertRaises(ValueError):
+            torgerson(dis, eigen_solver="madness")
 
-        self.assertEqual((data.X.shape[0], n_com), tsne_def.embedding_.shape)
-        self.assertEqual((data.X.shape[0], n_com), tsne_euc.embedding_.shape)
-        self.assertEqual((data.X.shape[0], n_com), tsne_pre.embedding_.shape)
+
+class TestTSNE(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.iris = Table('iris')
+
+    def test_fit(self):
+        n_components = 2
+        tsne = TSNE(n_components=n_components)
+        model = tsne(self.iris)
+
+        # The embedding should have the correct number of dimensions
+        self.assertEqual(model.embedding.X.shape, (self.iris.X.shape[0], n_components))
+
+        # The embedding should not contain NaNs
+        self.assertFalse(np.any(np.isnan(model.embedding.X)))
+
+        # The embeddings in the table should match the embedding object
+        np.testing.assert_equal(model.embedding.X, model.embedding_)
+
+    def test_transform(self):
+        # Set perplexity to avoid warnings
+        tsne = TSNE(perplexity=10)
+        model = tsne(self.iris[::2])
+        new_embedding = model(self.iris[1::2])
+
+        # The new embedding should not contain NaNs
+        self.assertFalse(np.any(np.isnan(new_embedding.X)))
+
+    def test_continue_optimization(self):
+        tsne = TSNE(n_iter=100)
+        model = tsne(self.iris)
+        new_model = model.optimize(100, inplace=False)
+
+        # If we don't do things inplace, then the instances should be different
+        self.assertIsNot(model, new_model)
+        self.assertIsNot(model.embedding, new_model.embedding)
+        self.assertIsNot(model.embedding_, new_model.embedding_)
+
+        self.assertFalse(np.allclose(model.embedding.X, new_model.embedding.X),
+                         'Embedding should change after further optimization.')
+
+        # The embeddings in the table should match the embedding object
+        np.testing.assert_equal(new_model.embedding.X, new_model.embedding_)
+
+    def test_continue_optimization_inplace(self):
+        tsne = TSNE(n_iter=100)
+        model = tsne(self.iris)
+        new_model = model.optimize(100, inplace=True)
+
+        # If we don't do things inplace, then the instances should be the same
+        self.assertIs(model, new_model)
+        self.assertIs(model.embedding, new_model.embedding)
+        self.assertIs(model.embedding_, new_model.embedding_)
+
+        # The embeddings in the table should match the embedding object
+        np.testing.assert_equal(new_model.embedding.X, new_model.embedding_)
+
+    def test_bh_correctness(self):
+        knn = KNeighborsClassifier(n_neighbors=5)
+
+        # Set iterations to 0 so we check that the initialization is fairly random
+        tsne = TSNE(early_exaggeration_iter=0, n_iter=0, perplexity=30,
+                    negative_gradient_method='bh', initialization='random')
+        model = tsne(self.iris)
+
+        # Evaluate KNN on the random initialization
+        knn.fit(model.embedding_, self.iris.Y)
+        predicted = knn.predict(model.embedding_)
+        self.assertTrue(accuracy_score(predicted, self.iris.Y) < 0.6)
+
+        # 100 iterations should be enough for iris
+        model.optimize(n_iter=100, inplace=True)
+
+        # Evaluate KNN on the tSNE embedding
+        knn.fit(model.embedding_, self.iris.Y)
+        predicted = knn.predict(model.embedding_)
+        self.assertTrue(accuracy_score(predicted, self.iris.Y) > 0.95)
+
+    def test_fft_correctness(self):
+        knn = KNeighborsClassifier(n_neighbors=5)
+
+        # Set iterations to 0 so we check that the initialization is fairly random
+        tsne = TSNE(early_exaggeration_iter=0, n_iter=0, perplexity=30,
+                    negative_gradient_method='fft', initialization='random')
+        model = tsne(self.iris)
+
+        # Evaluate KNN on the random initialization
+        knn.fit(model.embedding_, self.iris.Y)
+        predicted = knn.predict(model.embedding_)
+        self.assertTrue(accuracy_score(predicted, self.iris.Y) < 0.6)
+
+        # 100 iterations should be enough for iris
+        model.optimize(n_iter=100, inplace=True)
+
+        # Evaluate KNN on the tSNE embedding
+        knn.fit(model.embedding_, self.iris.Y)
+        predicted = knn.predict(model.embedding_)
+        self.assertTrue(accuracy_score(predicted, self.iris.Y) > 0.95)

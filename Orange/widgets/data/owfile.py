@@ -77,10 +77,10 @@ class OWFile(widget.OWWidget, RecentPathsWComboMixin):
     icon = "icons/File.svg"
     priority = 10
     category = "Data"
-    keywords = ["data", "file", "load", "read"]
+    keywords = ["file", "load", "read", "open"]
 
     class Outputs:
-        data = Output("Data", Table, doc="Attribute-valued data set read from the input file.")
+        data = Output("Data", Table, doc="Attribute-valued dataset read from the input file.")
 
     want_main_area = False
 
@@ -201,7 +201,7 @@ class OWFile(widget.OWWidget, RecentPathsWComboMixin):
 
         box = gui.hBox(self.controlArea)
         gui.button(
-            box, self, "Browse documentation data sets",
+            box, self, "Browse documentation datasets",
             callback=lambda: self.browse_file(True), autoDefault=False)
         gui.rubber(box)
 
@@ -261,7 +261,7 @@ class OWFile(widget.OWWidget, RecentPathsWComboMixin):
             if not os.path.exists(start_file):
                 QMessageBox.information(
                     None, "File",
-                    "Cannot find the directory with documentation data sets")
+                    "Cannot find the directory with documentation datasets")
                 return
         else:
             start_file = self.last_path() or os.path.expanduser("~/")
@@ -482,6 +482,15 @@ class OWFile(widget.OWWidget, RecentPathsWComboMixin):
                           urls[0].toLocalFile())  # add first file
             self.source = self.LOCAL_FILE
             self.load_data()
+
+    def workflowEnvChanged(self, key, value, oldvalue):
+        """
+        Function called when environment changes (e.g. while saving the scheme)
+        It make sure that all environment connected values are modified
+        (e.g. relative file paths are changed)
+        """
+        self.update_file_list(key, value, oldvalue)
+
 
 if __name__ == "__main__":
     import sys

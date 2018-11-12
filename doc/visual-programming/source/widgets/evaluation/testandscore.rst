@@ -1,36 +1,21 @@
 Test & Score
 ============
 
-.. figure:: icons/test-and-score.png
-
 Tests learning algorithms on data.
 
-Signals
--------
+Inputs
+    Data
+        input dataset
+    Test Data
+        separate data for testing
+    Learner
+        learning algorithm(s)
 
-**Inputs**
 
--  **Data**
+Outputs
+    Evaluation Results
+        results of testing classification algorithms
 
-   Data for training and, if there is no separate test data set, also
-   testing.
-
--  **Test Data**
-
-   Separate data for testing.
-
--  **Learner**
-
-   One or more learning algorithms.
-
-**Outputs**
-
--  **Evaluation results**
-
-   Results of testing the algorithms.
-
-Description
------------
 
 The widget tests learning algorithms. Different sampling schemes are
 available, including using separate test data. The widget does two
@@ -59,18 +44,22 @@ than one widget to test multiple learners with the same procedures.
    -  **Random sampling** randomly splits the data into the training and
       testing set in the given proportion (e.g. 70:30); the whole procedure
       is repeated for a specified number of times.
-   -  **Test on train data** uses the whole data set for training and then
+   -  **Test on train data** uses the whole dataset for training and then
       for testing. This method practically always gives wrong results.
    -  **Test on test data**: the above methods use the data from *Data*
-      signal only. To input another data set with testing examples (for
+      signal only. To input another dataset with testing examples (for
       instance from another file or some data selected in another widget),
       we select *Separate Test Data* signal in the communication channel
       and select Test on test data.
 
-2. Only *Test on test data* requires a target class, e.g. having the
-   disease or being of subvariety *Iris setosa*. When *Target class* is
-   (None), the methods return the average value. Target class can be
-   selected at the bottom of the widget. 
+2. For classification, *Target class* can be selected at the bottom of the widget.
+   When *Target class* is (Average over classes),
+   methods return scores that are weighted averages over all classes.
+   For example, in case of the classifier with 3 classes,
+   scores are computed for class 1 as a target class, class 2 as a target class,
+   and class 3 as a target class. Those scores are averaged with weights
+   based on the class size to retrieve the final score.
+
 3. Produce a report. 
 4. The widget will compute a number of performance statistics:
 
@@ -101,11 +90,11 @@ Regression
 Example
 -------
 
-In a typical use of the widget, we give it a data set and a few learning
+In a typical use of the widget, we give it a dataset and a few learning
 algorithms and we observe their performance in the table inside the
 **Test & Score** widget and in the :doc:`ROC <../evaluation/rocanalysis>`. The data is often
 preprocessed before testing; in this case we did some manual feature
-selection (:doc:`Select Columns <../data/selectcolumns>` widget) on *Titanic* data set, where we
+selection (:doc:`Select Columns <../data/selectcolumns>` widget) on *Titanic* dataset, where we
 want to know only the sex and status of the survived and omit the age.
 
 .. figure:: images/TestLearners-example-classification.png

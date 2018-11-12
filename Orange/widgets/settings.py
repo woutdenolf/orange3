@@ -46,10 +46,11 @@ from Orange.widgets.utils import vartype
 
 log = logging.getLogger(__name__)
 
-__all__ = ["Setting", "SettingsHandler",
+__all__ = ["Setting", "SettingsHandler", "SettingProvider",
            "ContextSetting", "ContextHandler",
            "DomainContextHandler", "PerfectDomainContextHandler",
-           "ClassValuesContextHandler", "widget_settings_dir"]
+           "ClassValuesContextHandler", "widget_settings_dir",
+           "IncompatibleContext"]
 
 _IMMUTABLES = (str, int, bytes, bool, float, tuple)
 
@@ -624,8 +625,16 @@ class ContextHandler(SettingsHandler):
         self._migrate_contexts(self.global_contexts)
 
     def _migrate_contexts(self, contexts):
-        for context in contexts:
-            self.widget_class.migrate_context(context, context.values.pop(VERSION_KEY, 0))
+        i = 0
+        while i < len(contexts):
+            context = contexts[i]
+            try:
+                self.widget_class.migrate_context(
+                    context, context.values.pop(VERSION_KEY, 0))
+            except IncompatibleContext:
+                del contexts[i]
+            else:
+                i += 1
 
     def write_defaults_file(self, settings_file):
         """Call the inherited method, then add global context to the pickle."""
@@ -650,20 +659,21 @@ class ContextHandler(SettingsHandler):
         return data
 
     def update_defaults(self, widget):
-        """Call the inherited method, then merge the local context into the
-        global contexts. This make sense only when the widget does not use
-        global context (i.e. `widget.context_settings is not
-        self.global_contexts`); this happens when the widget was initialized by
-        an instance-specific data that was passed to :obj:`initialize`."""
+        """
+        Reimplemented from SettingsHandler
+
+        Merge the widgets local contexts into the global contexts and persist
+        the settings (including the contexts) to disk.
+        """
         self.settings_from_widget(widget)
+        globs = self.global_contexts
+        assert widget.context_settings is not globs
+        ids = {id(c) for c in globs}
+        globs += (c for c in widget.context_settings if id(c) not in ids)
+        globs.sort(key=lambda c: -c.time)
+        del globs[self.MAX_SAVED_CONTEXTS:]
 
         super().update_defaults(widget)
-        globs = self.global_contexts
-        if widget.context_settings is not globs:
-            ids = {id(c) for c in globs}
-            globs += (c for c in widget.context_settings if id(c) not in ids)
-            globs.sort(key=lambda c: -c.time)
-            del globs[self.MAX_SAVED_CONTEXTS:]
 
     def new_context(self, *args):
         """Create a new context."""
@@ -916,7 +926,7 @@ class DomainContextHandler(ContextHandler):
         return context
 
     def open_context(self, widget, domain):
-        if not domain:
+        if domain is None:
             return None, False
 
         if not isinstance(domain, Domain):

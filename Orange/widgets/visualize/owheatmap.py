@@ -25,7 +25,8 @@ from AnyQt.QtCore import (
 )
 import pyqtgraph as pg
 
-from Orange.data import Domain, Table, DiscreteVariable, StringVariable
+from Orange.data import Domain, Table, DiscreteVariable, StringVariable, \
+    TimeVariable
 from Orange.data.sql.table import SqlTable
 import Orange.distance
 
@@ -386,6 +387,7 @@ class OWHeatMap(widget.OWWidget):
     description = "Plot a heat map for a pair of attributes."
     icon = "icons/Heatmap.svg"
     priority = 260
+    keywords = []
 
     class Inputs:
         data = Input("Data", Table)
@@ -442,6 +444,9 @@ class OWHeatMap(widget.OWWidget):
         not_enough_instances_k_means = Msg(
             "Not enough instances for k-means merging")
         not_enough_memory = Msg("Not enough memory to show this data")
+
+    class Warning(widget.OWWidget.Warning):
+        empty_clusters = Msg("Empty clusters were removed")
 
     def __init__(self):
         super().__init__()
@@ -541,9 +546,9 @@ class OWHeatMap(widget.OWWidget):
 
         annotbox = gui.vBox(box, "Row Annotations", addSpace=False)
         annotbox.setFlat(True)
-        self.annotations_cb = gui.comboBox(annotbox, self, "annotation_index",
-                                           items=self.annotation_vars,
-                                           callback=self.update_annotations)
+        self.annotations_cb = gui.comboBox(
+            annotbox, self, "annotation_index", contentsLength=12,
+            items=self.annotation_vars, callback=self.update_annotations)
 
         posbox = gui.vBox(box, "Column Labels Position", addSpace=False)
         posbox.setFlat(True)
@@ -699,7 +704,9 @@ class OWHeatMap(widget.OWWidget):
         if data is not None:
             variables = self.data.domain.class_vars + self.data.domain.metas
             variables = [var for var in variables
-                         if isinstance(var, (DiscreteVariable, StringVariable))]
+                         if isinstance(var, (DiscreteVariable,
+                                             StringVariable,
+                                             TimeVariable))]
             self.annotation_vars.extend(variables)
 
             for var in variables:
@@ -822,6 +829,8 @@ class OWHeatMap(widget.OWWidget):
         if need_dist:
             data = Orange.distance._preprocess(data)
             matrix = Orange.distance.PearsonR(data, axis=0)
+            # nan values break clustering below
+            matrix = np.nan_to_num(matrix)
 
         if cluster is None:
             cluster = hierarchical.dist_matrix_clustering(matrix)
@@ -858,11 +867,17 @@ class OWHeatMap(widget.OWWidget):
                 nclust = min(self.merge_kmeans_k, len(effective_data) - 1)
                 self.kmeans_model = kmeans_compress(effective_data, k=nclust)
                 effective_data.domain = self.kmeans_model.pre_domain
-                self.merge_indices = [np.flatnonzero(self.kmeans_model.labels_ == ind)
-                                      for ind in range(nclust)]
+                merge_indices = [np.flatnonzero(self.kmeans_model.labels_ == ind)
+                                 for ind in range(nclust)]
+                not_empty_indices = [i for i, x in enumerate(merge_indices)
+                                     if len(x) > 0]
+                self.merge_indices = \
+                    [merge_indices[i] for i in not_empty_indices]
+                if len(merge_indices) != len(self.merge_indices):
+                    self.Warning.empty_clusters()
                 effective_data = Orange.data.Table(
                     Orange.data.Domain(effective_data.domain.attributes),
-                    self.kmeans_model.centroids
+                    self.kmeans_model.centroids[not_empty_indices]
                 )
             else:
                 effective_data = self.effective_data
@@ -1129,7 +1144,15 @@ class OWHeatMap(widget.OWWidget):
         if self.heatmap_scene.widget is not None:
             mode = Qt.KeepAspectRatio if self.keep_aspect \
                    else Qt.IgnoreAspectRatio
-            size = QSizeF(self.sceneView.viewport().size())
+            # get the preferred size from the view (view size - space for
+            # scrollbars)
+            view = self.sceneView
+            size = view.size()
+            fw = view.frameWidth()
+            vsb_extent = view.verticalScrollBar().sizeHint().width()
+            hsb_extent = view.horizontalScrollBar().sizeHint().height()
+            size = QSizeF(max(size.width() - 2 * fw - vsb_extent, 0),
+                          max(size.height() - 2 * fw - hsb_extent, 0))
             widget = self.heatmap_scene.widget
             layout = widget.layout()
             if mode == Qt.IgnoreAspectRatio:

@@ -256,6 +256,7 @@ class OWMosaicDisplay(OWWidget):
     description = "Display data in a mosaic plot."
     icon = "icons/MosaicDisplay.svg"
     priority = 220
+    keywords = []
 
     class Inputs:
         data = Input("Data", Table, default=True)
@@ -383,7 +384,7 @@ class OWMosaicDisplay(OWWidget):
 
         icons = gui.attributeIconDict
         for attr in chain(data.domain.variables, data.domain.metas):
-            if attr.is_primitive:
+            if attr.is_primitive():
                 for combo in self.attr_combos:
                     combo.addItem(icons[attr], attr.name)
 

@@ -100,7 +100,6 @@ if HAVE_WEBENGINE:
                              sizeHint=QSize(500, 400),
                              sizePolicy=QSizePolicy(QSizePolicy.Expanding,
                                                     QSizePolicy.Expanding),
-                             visible=False,
                              **kwargs)
             self.bridge = bridge
             self.debug = debug
@@ -139,10 +138,6 @@ if HAVE_WEBENGINE:
             channel.registerObject('__bridge', _QWidgetJavaScriptWrapper(self))
 
             self.page().setWebChannel(channel)
-
-            # Delay showing the widget. Observation indicate this results in
-            # fewer window resizes.
-            QTimer.singleShot(1, self.show)
 
         def _onloadJS(self, code, name='', injection_point=QWebEngineScript.DocumentReady):
             script = QWebEngineScript()
@@ -480,23 +475,23 @@ elif HAVE_WEBENGINE:
         def __init__(self):
             self.id = 0
             self.lock = threading.Lock()
-            self.ids = set()
+            self.ids = dict()
 
         def create(self):
             with self.lock:
                 self.id += 1
                 return self.id
 
-        def store(self, id):
+        def store(self, id, value):
             with self.lock:
-                self.ids.add(id)
+                self.ids[id] = value
 
         def __contains__(self, id):
             return id in self.ids
 
-        def remove(self, id):
+        def pop(self, id):
             with self.lock:
-                self.ids.remove(id)
+                return self.ids.pop(id, None)
 
 
     class _JSObjectChannel(QObject):
@@ -559,11 +554,11 @@ elif HAVE_WEBENGINE:
         def _evalJS(self, code):
             wait(until=self._jsobject_channel.is_all_exposed)
             if sip.isdeleted(self):
-                return
+                return None
             result = self._results.create()
-            self.runJavaScript(code, lambda x: self._results.store(result))
+            self.runJavaScript(code, lambda x: self._results.store(result, x))
             wait(until=lambda: result in self._results)
-            self._results.remove(result)
+            return self._results.pop(result)
 
         def onloadJS(self, code):
             self._onloadJS(code, injection_point=QWebEngineScript.Deferred)

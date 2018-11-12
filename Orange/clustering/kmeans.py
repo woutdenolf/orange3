@@ -9,6 +9,7 @@ from Orange.distance import Euclidean
 
 __all__ = ["KMeans"]
 
+SILHOUETTE_MAX_SAMPLES = 5000
 
 class KMeans(SklProjector):
     __wraps__ = skl_cluster.KMeans
@@ -26,14 +27,14 @@ class KMeans(SklProjector):
         proj.silhouette = np.nan
         try:
             if self._compute_silhouette and 2 <= proj.n_clusters < X.shape[0]:
-                if len(X) <= 5000:
+                if X.shape[0] <= SILHOUETTE_MAX_SAMPLES:
                     proj.silhouette_samples = \
                         silhouette_samples(X, proj.labels_)
                     proj.silhouette = np.mean(proj.silhouette_samples)
                 else:
                     proj.silhouette_samples = None
                     proj.silhouette = \
-                        silhouette_score(X, proj.labels_, sample_size=5000)
+                        silhouette_score(X, proj.labels_, sample_size=SILHOUETTE_MAX_SAMPLES)
         except MemoryError:  # Pairwise dist in silhouette fails for large data
             pass
         proj.inertia = proj.inertia_ / X.shape[0]
@@ -68,4 +69,4 @@ class KMeansModel(Projection):
                 domain,
                 np.atleast_2d(self.proj.predict(data._x.reshape(1, -1))).astype(int))
         else:
-            return self.proj.predict(data).reshape((len(data), 1))
+            return self.proj.predict(data).reshape((data.shape[0], 1))

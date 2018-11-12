@@ -8,18 +8,21 @@ import re
 import itertools
 import warnings
 import logging
+import weakref
 from types import LambdaType
 from collections import defaultdict, Sequence
 
 import pkg_resources
 
 from AnyQt import QtWidgets, QtCore, QtGui
-from AnyQt.QtCore import Qt, QSize, QItemSelection, pyqtSignal as Signal
+# pylint: disable=unused-import
+from AnyQt.QtCore import (
+    Qt, QObject, QEvent, QSize, QItemSelection, QTimer, pyqtSignal as Signal
+)
 from AnyQt.QtGui import QCursor, QColor
 from AnyQt.QtWidgets import (
     QApplication, QStyle, QSizePolicy, QWidget, QLabel, QGroupBox, QSlider,
-    QComboBox, QLineEdit, QVBoxLayout, QHBoxLayout,
-    QTableWidget, QTableWidgetItem, QItemDelegate, QStyledItemDelegate,
+    QComboBox, QTableWidgetItem, QItemDelegate, QStyledItemDelegate,
     QTableView, QHeaderView, QListView
 )
 
@@ -323,7 +326,7 @@ def separator(widget, width=4, height=4):
     :rtype: QWidget
     """
     sep = QtWidgets.QWidget(widget)
-    if widget.layout() is not None:
+    if widget is not None and widget.layout() is not None:
         widget.layout().addWidget(sep)
     sep.setFixedSize(width, height)
     return sep
@@ -785,7 +788,7 @@ class LineEditWFocusOut(QtWidgets.QLineEdit):
 
     def __init__(self, parent, callback, focusInCallback=None):
         super().__init__(parent)
-        if parent.layout() is not None:
+        if parent is not None and parent.layout() is not None:
             parent.layout().addWidget(self)
         self.callback = callback
         self.focusInCallback = focusInCallback
@@ -798,7 +801,10 @@ class LineEditWFocusOut(QtWidgets.QLineEdit):
         self.__changed = True
 
     def returnPressedHandler(self):
-        self.clearFocus()
+        self.selectAll()
+        self.__callback_if_changed()
+
+    def __callback_if_changed(self):
         if self.__changed:
             self.__changed = False
             if hasattr(self, "cback") and self.cback:
@@ -812,7 +818,7 @@ class LineEditWFocusOut(QtWidgets.QLineEdit):
 
     def focusOutEvent(self, *e):
         super().focusOutEvent(*e)
-        self.returnPressedHandler()
+        self.__callback_if_changed()
 
     def focusInEvent(self, *e):
         self.__changed = False
@@ -1086,6 +1092,7 @@ def listView(widget, master, value=None, model=None, box=None, callback=None,
                        CallFrontListView(view),
                        CallBackListView(model, view, master, value))
     misc.setdefault('addSpace', True)
+    misc.setdefault('uniformItemSizes', True)
     miscellanea(view, bg, widget, **misc)
     return view
 
@@ -1493,11 +1500,23 @@ def valueSlider(widget, master, value, box=None, label=None,
 class OrangeComboBox(QtWidgets.QComboBox):
     """
     A QComboBox subclass extended to support bounded contents width hint.
+
+    Prefer to use this class in place of plain QComboBox when the used
+    model will possibly contain many items.
     """
     def __init__(self, parent=None, maximumContentsLength=-1, **kwargs):
         # Forward-declared for sizeHint()
         self.__maximumContentsLength = maximumContentsLength
         super().__init__(parent, **kwargs)
+
+        self.__in_mousePressEvent = False
+        # Yet Another Mouse Release Ignore Timer
+        self.__yamrit = QTimer(self, singleShot=True)
+        view = self.view()
+        # optimization for displaying large models
+        if isinstance(view, QListView):
+            view.setUniformItemSizes(True)
+            view.viewport().installEventFilter(self)
 
     def setMaximumContentsLength(self, length):
         """
@@ -1509,11 +1528,11 @@ class OrangeComboBox(QtWidgets.QComboBox):
 
         .. note::
              This property does not affect the widget's `maximumSize`.
-             The widget can still grow depending in it's sizePolicy.
+             The widget can still grow depending on its `sizePolicy`.
 
         Parameters
         ----------
-        lenght : int
+        length : int
             Maximum contents length hint.
         """
         if self.__maximumContentsLength != length:
@@ -1543,6 +1562,29 @@ class OrangeComboBox(QtWidgets.QComboBox):
                      + self.iconSize().width() + 4)
             sh = sh.boundedTo(QtCore.QSize(width, sh.height()))
         return sh
+
+    # workaround for QTBUG-67583
+    def mousePressEvent(self, event):
+        # reimplemented
+        self.__in_mousePressEvent = True
+        super().mousePressEvent(event)
+        self.__in_mousePressEvent = False
+
+    def showPopup(self):
+        # reimplemented
+        super().showPopup()
+        if self.__in_mousePressEvent:
+            self.__yamrit.start(QApplication.doubleClickInterval())
+
+    def eventFilter(self, obj, event):
+        # type: (QObject, QEvent) -> bool
+        if event.type() == QEvent.MouseButtonRelease \
+                and event.button() == Qt.LeftButton \
+                and obj is self.view().viewport() \
+                and self.__yamrit.isActive():
+            return True
+        else:
+            return super().eventFilter(obj, event)
 
 
 # TODO comboBox looks overly complicated:
@@ -2060,7 +2102,14 @@ class ControlledList(list):
     """
     def __init__(self, content, listBox=None):
         super().__init__(content if content is not None else [])
-        self.listBox = listBox
+        # Controlled list is created behind the back by gui.listBox and
+        # commonly used as a setting which gets synced into a GLOBAL
+        # SettingsHandler and which keeps the OWWidget instance alive via a
+        # reference in listBox (see gui.listBox)
+        if listBox is not None:
+            self.listBox = weakref.ref(listBox)
+        else:
+            self.listBox = lambda: None
 
     def __reduce__(self):
         # cannot pickle self.listBox, but can't discard it
@@ -2070,7 +2119,7 @@ class ControlledList(list):
 
     # TODO ControllgedList.item2name is probably never used
     def item2name(self, item):
-        item = self.listBox.labels[item]
+        item = self.listBox().labels[item]
         if isinstance(item, tuple):
             return item[1]
         else:
@@ -2079,12 +2128,12 @@ class ControlledList(list):
     def __setitem__(self, index, item):
         def unselect(i):
             try:
-                item = self.listBox.item(i)
+                item = self.listBox().item(i)
             except RuntimeError:  # Underlying C/C++ object has been deleted
                 item = None
             if item is None:
                 # Labels changed before clearing the selection: clear everything
-                self.listBox.selectionModel().clear()
+                self.listBox().selectionModel().clear()
             else:
                 item.setSelected(0)
 
@@ -2095,15 +2144,15 @@ class ControlledList(list):
             for i in self[index]:
                 unselect(i)
             for i in item:
-                self.listBox.item(i).setSelected(1)
+                self.listBox().item(i).setSelected(1)
         super().__setitem__(index, item)
 
     def __delitem__(self, index):
         if isinstance(index, int):
-            self.listBox.item(self[index]).setSelected(0)
+            self.listBox().item(self[index]).setSelected(0)
         else:
             for i in self[index]:
-                self.listBox.item(i).setSelected(0)
+                self.listBox().item(i).setSelected(0)
         super().__delitem__(index)
 
     def append(self, item):
@@ -2113,7 +2162,7 @@ class ControlledList(list):
     def extend(self, items):
         super().extend(items)
         for i in items:
-            self.listBox.item(i).setSelected(1)
+            self.listBox().item(i).setSelected(1)
 
     def insert(self, index, item):
         item.setSelected(1)
@@ -2121,7 +2170,7 @@ class ControlledList(list):
 
     def pop(self, index=-1):
         i = super().pop(index)
-        self.listBox.item(i).setSelected(0)
+        self.listBox().item(i).setSelected(0)
 
     def remove(self, item):
         item.setSelected(0)
@@ -2482,6 +2531,7 @@ class CallFrontListView(ControlledCallFront):
 
         selection = QItemSelection()
         for value in values:
+            index = None
             if not isinstance(value, int):
                 if isinstance(value, Variable):
                     search_role = TableVariable
@@ -2490,9 +2540,12 @@ class CallFrontListView(ControlledCallFront):
                     value = str(value)
                 for i in range(model.rowCount()):
                     if model.data(model.index(i), search_role) == value:
-                        value = i
+                        index = i
                         break
-            selection.select(model.index(value), model.index(value))
+            else:
+                index = value
+            if index is not None:
+                selection.select(model.index(index), model.index(index))
         sel_model.select(selection, sel_model.ClearAndSelect)
 
 
@@ -3222,8 +3275,8 @@ class FloatSlider(QSlider):
         self.setSingleStep(1)
         if self.min_value != self.max_value:
             self.setEnabled(True)
-            self.setMinimum(int(self.min_value / self.step))
-            self.setMaximum(int(self.max_value / self.step))
+            self.setMinimum(int(round(self.min_value / self.step)))
+            self.setMaximum(int(round(self.max_value / self.step)))
         else:
             self.setEnabled(False)
 
@@ -3239,7 +3292,7 @@ class FloatSlider(QSlider):
         Args:
             value: new value
         """
-        super().setValue(value // self.step)
+        super().setValue(int(round(value / self.step)))
 
     def setScale(self, minValue, maxValue, step=0):
         """

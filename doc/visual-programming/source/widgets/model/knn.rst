@@ -1,35 +1,20 @@
 kNN
 ===
 
-.. figure:: icons/knn.png
-
 Predict according to the nearest training instances.
 
-Signals
--------
+Inputs
+    Data
+        input dataset
+    Preprocessor
+        preprocessing method(s)
 
-**Inputs**:
+Outputs
+    Learner
+        kNN learning algorithm
+    Model
+        trained model
 
--  **Data**
-
-   A data set
-
--  **Preprocessor**
-
-   Preprocessing method(s)
-
-**Outputs**:
-
--  **Learner**
-
-   A kNN learning algorithm with settings as specified in the dialog.
-
--  **Model**
-
-   A trained model. Output signal sent only if input *Data* is present.
-
-Description
------------
 
 The **kNN** widget uses the `kNN algorithm <https://en.wikipedia.org/wiki/K-nearest_neighbors_algorithm>`_ that searches for k closest training examples in feature space and uses their average as prediction.
 
@@ -61,10 +46,10 @@ The **kNN** widget uses the `kNN algorithm <https://en.wikipedia.org/wiki/K-near
 Examples
 --------
 
-The first example is a classification task on *iris* data set. We compare the results of `k-Nearest neighbors <https://en.wikipedia.org/wiki/K-nearest_neighbors_algorithm>`_ with the default model :doc:`Constant <../model/constant>`, which always predicts the majority class.
+The first example is a classification task on *iris* dataset. We compare the results of `k-Nearest neighbors <https://en.wikipedia.org/wiki/K-nearest_neighbors_algorithm>`_ with the default model :doc:`Constant <../model/constant>`, which always predicts the majority class.
 
 .. figure:: images/Constant-classification.png
 
-The second example is a regression task. This workflow shows how to use the *Learner* output. For the purpose of this example, we used the *housing* data set. We input the **kNN** prediction model into :doc:`Predictions <../evaluation/predictions>` and observe the predicted values.
+The second example is a regression task. This workflow shows how to use the *Learner* output. For the purpose of this example, we used the *housing* dataset. We input the **kNN** prediction model into :doc:`Predictions <../evaluation/predictions>` and observe the predicted values.
 
 .. figure:: images/kNN-regression.png

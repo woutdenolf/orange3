@@ -1,25 +1,12 @@
 Save Distance Matrix
 ====================
 
-.. figure:: icons/save-distance-matrix.png
-
 Saves a distance matrix. 
 
-Signals
--------
+Inputs
+    Distances
+        distance matrix 
 
-**Inputs**:
-
--  **Distances**
-
-   A distance matrix. 
-
-**Outputs**:
-
--  None
-
-Description
------------
 
 .. figure:: images/SaveDistanceMatrix-stamped.png
 
@@ -30,7 +17,7 @@ Description
 Example
 -------
 
-In the snapshot below, we used the :doc:`Distance Transformation <../unsupervised/distancetransformation>` widget to transform the distances in the *Iris* data set. We then chose to save the transformed version to our computer, so we could use it later on. We decided to output all data instances. You can choose to output just a minor subset of the data matrix. Pairs are marked automatically. 
+In the snapshot below, we used the :doc:`Distance Transformation <../unsupervised/distancetransformation>` widget to transform the distances in the *Iris* dataset. We then chose to save the transformed version to our computer, so we could use it later on. We decided to output all data instances. You can choose to output just a minor subset of the data matrix. Pairs are marked automatically. 
 If you wish to know what happened to our changed file, go :doc:`here <../unsupervised/distancefile>`
 
 .. figure:: images/SaveDistanceMatrix-Example.png

@@ -1,14 +1,64 @@
+from functools import partial
+import copy
+import logging
 import re
 import sys
+import concurrent.futures
+from itertools import chain
 
-from AnyQt.QtWidgets import QApplication
-from AnyQt.QtCore import Qt
+import numpy as np
+
+from AnyQt.QtWidgets import QApplication, QFormLayout, QLabel
+from AnyQt.QtCore import Qt, QThread, QObject
+from AnyQt.QtCore import pyqtSlot as Slot, pyqtSignal as Signal
 
 from Orange.data import Table
 from Orange.modelling import NNLearner
 from Orange.widgets import gui
 from Orange.widgets.settings import Setting
 from Orange.widgets.utils.owlearnerwidget import OWBaseLearner
+
+from Orange.widgets.utils.concurrent import ThreadExecutor, FutureWatcher
+
+
+class Task(QObject):
+    """
+    A class that will hold the state for an learner evaluation.
+    """
+    done = Signal(object)
+    progressChanged = Signal(float)
+
+    future = None      # type: concurrent.futures.Future
+    watcher = None     # type: FutureWatcher
+    cancelled = False  # type: bool
+
+    def setFuture(self, future):
+        if self.future is not None:
+            raise RuntimeError("future is already set")
+        self.future = future
+        self.watcher = FutureWatcher(future, parent=self)
+        self.watcher.done.connect(self.done)
+
+    def cancel(self):
+        """
+        Cancel the task.
+
+        Set the `cancelled` field to True and block until the future is done.
+        """
+        # set cancelled state
+        self.cancelled = True
+        self.future.cancel()
+        concurrent.futures.wait([self.future])
+
+    def emitProgressUpdate(self, value):
+        self.progressChanged.emit(value)
+
+    def isInterruptionRequested(self):
+        return self.cancelled
+
+
+class CancelTaskException(BaseException):
+    pass
 
 
 class OWNNLearner(OWBaseLearner):
@@ -17,6 +67,7 @@ class OWNNLearner(OWBaseLearner):
                   "backpropagation."
     icon = "icons/NN.svg"
     priority = 90
+    keywords = ["mlp"]
 
     LEARNER = NNLearner
 
@@ -29,34 +80,78 @@ class OWNNLearner(OWBaseLearner):
     hidden_layers_input = Setting("100,")
     activation_index = Setting(3)
     solver_index = Setting(2)
-    alpha = Setting(0.0001)
     max_iterations = Setting(200)
+    alpha_index = Setting(0)
+    settings_version = 1
+
+    alphas = list(chain([x / 10000 for x in range(1, 10)],
+                        [x / 1000 for x in range(1, 10)],
+                        [x / 100 for x in range(1, 10)],
+                        [x / 10 for x in range(1, 10)],
+                        range(1, 10),
+                        range(10, 100, 5),
+                        range(100, 200, 10),
+                        range(100, 1001, 50)))
 
     def add_main_layout(self):
-        box = gui.vBox(self.controlArea, "Network")
-        self.hidden_layers_edit = gui.lineEdit(
-            box, self, "hidden_layers_input", label="Neurons per hidden layer:",
-            orientation=Qt.Horizontal, callback=self.settings_changed,
-            tooltip="A list of integers defining neurons. Length of list "
-                    "defines the number of layers. E.g. 4, 2, 2, 3.",
-            placeholderText="e.g. 100,")
-        self.activation_combo = gui.comboBox(
-            box, self, "activation_index", orientation=Qt.Horizontal,
-            label="Activation:", items=[i for i in self.act_lbl],
-            callback=self.settings_changed)
-        self.solver_combo = gui.comboBox(
-            box, self, "solver_index", orientation=Qt.Horizontal,
-            label="Solver:", items=[i for i in self.solv_lbl],
-            callback=self.settings_changed)
-        self.alpha_spin = gui.doubleSpin(
-            box, self, "alpha", 1e-5, 1.0, 1e-2,
-            label="Alpha:", decimals=5, alignment=Qt.AlignRight,
-            callback=self.settings_changed, controlWidth=80)
-        self.max_iter_spin = gui.spin(
-            box, self, "max_iterations", 10, 300, step=10,
-            label="Max iterations:", orientation=Qt.Horizontal,
-            alignment=Qt.AlignRight, callback=self.settings_changed,
-            controlWidth=80)
+        form = QFormLayout()
+        form.setFieldGrowthPolicy(form.AllNonFixedFieldsGrow)
+        form.setVerticalSpacing(25)
+        gui.widgetBox(self.controlArea, True, orientation=form)
+        form.addRow(
+            "Neurons in hidden layers:",
+            gui.lineEdit(
+                None, self, "hidden_layers_input",
+                orientation=Qt.Horizontal, callback=self.settings_changed,
+                tooltip="A list of integers defining neurons. Length of list "
+                        "defines the number of layers. E.g. 4, 2, 2, 3.",
+                placeholderText="e.g. 100,"))
+        form.addRow(
+            "Activation:",
+            gui.comboBox(
+                None, self, "activation_index", orientation=Qt.Horizontal,
+                label="Activation:", items=[i for i in self.act_lbl],
+                callback=self.settings_changed))
+
+        form.addRow(" ", gui.separator(None, 16))
+        form.addRow(
+            "Solver:",
+            gui.comboBox(
+                None, self, "solver_index", orientation=Qt.Horizontal,
+                label="Solver:", items=[i for i in self.solv_lbl],
+                callback=self.settings_changed))
+        self.reg_label = QLabel()
+        slider = gui.hSlider(
+            None, self, "alpha_index",
+            minValue=0, maxValue=len(self.alphas) - 1,
+            callback=lambda: (self.set_alpha(), self.settings_changed()),
+            createLabel=False)
+        form.addRow(self.reg_label, slider)
+        self.set_alpha()
+
+        form.addRow(
+            "Maximal number of iterations:",
+            gui.spin(
+                None, self, "max_iterations", 10, 10000, step=10,
+                label="Max iterations:", orientation=Qt.Horizontal,
+                alignment=Qt.AlignRight, callback=self.settings_changed))
+
+    def set_alpha(self):
+        self.strength_C = self.alphas[self.alpha_index]
+        self.reg_label.setText("Regularization, α={}:".format(self.strength_C))
+
+    @property
+    def alpha(self):
+        return self.alphas[self.alpha_index]
+
+    def setup_layout(self):
+        super().setup_layout()
+
+        self._task = None  # type: Optional[Task]
+        self._executor = ThreadExecutor()
+
+        # just a test cancel button
+        gui.button(self.apply_button, self, "Cancel", callback=self.cancel)
 
     def create_learner(self):
         return self.LEARNER(
@@ -78,8 +173,123 @@ class OWNNLearner(OWBaseLearner):
         layers = tuple(map(int, re.findall(r'\d+', self.hidden_layers_input)))
         if not layers:
             layers = (100,)
-            self.hidden_layers_edit.setText("100,")
+            self.hidden_layers_input = "100,"
         return layers
+
+    def update_model(self):
+        self.show_fitting_failed(None)
+        self.model = None
+        if self.check_data():
+            self.__update()
+        else:
+            self.Outputs.model.send(self.model)
+
+    @Slot(float)
+    def setProgressValue(self, value):
+        assert self.thread() is QThread.currentThread()
+        self.progressBarSet(value)
+
+    def __update(self):
+        if self._task is not None:
+            # First make sure any pending tasks are cancelled.
+            self.cancel()
+        assert self._task is None
+
+        max_iter = self.learner.kwargs["max_iter"]
+
+        # Setup the task state
+        task = Task()
+        lastemitted = 0.
+
+        def callback(iteration):
+            nonlocal task  # type: Task
+            nonlocal lastemitted
+            if task.isInterruptionRequested():
+                raise CancelTaskException()
+            progress = round(iteration / max_iter * 100)
+            if progress != lastemitted:
+                task.emitProgressUpdate(progress)
+                lastemitted = progress
+
+        # copy to set the callback so that the learner output is not modified
+        # (currently we can not pass callbacks to learners __call__)
+        learner = copy.copy(self.learner)
+        learner.callback = callback
+
+        def build_model(data, learner):
+            try:
+                return learner(data)
+            except CancelTaskException:
+                return None
+
+        build_model_func = partial(build_model, self.data, learner)
+
+        task.setFuture(self._executor.submit(build_model_func))
+        task.done.connect(self._task_finished)
+        task.progressChanged.connect(self.setProgressValue)
+
+        self._task = task
+        self.progressBarInit()
+        self.setBlocking(True)
+
+    @Slot(concurrent.futures.Future)
+    def _task_finished(self, f):
+        """
+        Parameters
+        ----------
+        f : Future
+            The future instance holding the built model
+        """
+        assert self.thread() is QThread.currentThread()
+        assert self._task is not None
+        assert self._task.future is f
+        assert f.done()
+        self._task.deleteLater()
+        self._task = None
+        self.setBlocking(False)
+        self.progressBarFinished()
+
+        try:
+            self.model = f.result()
+        except Exception as ex:  # pylint: disable=broad-except
+            # Log the exception with a traceback
+            log = logging.getLogger()
+            log.exception(__name__, exc_info=True)
+            self.model = None
+            self.show_fitting_failed(ex)
+        else:
+            self.model.name = self.learner_name
+            self.model.instances = self.data
+            self.model.skl_model.orange_callback = None  # remove unpicklable callback
+            self.Outputs.model.send(self.model)
+
+    def cancel(self):
+        """
+        Cancel the current task (if any).
+        """
+        if self._task is not None:
+            self._task.cancel()
+            assert self._task.future.done()
+            # disconnect from the task
+            self._task.done.disconnect(self._task_finished)
+            self._task.progressChanged.disconnect(self.setProgressValue)
+            self._task.deleteLater()
+            self._task = None
+
+        self.progressBarFinished()
+        self.setBlocking(False)
+
+    def onDeleteWidget(self):
+        self.cancel()
+        super().onDeleteWidget()
+
+    @classmethod
+    def migrate_settings(cls, settings, version):
+        if not version:
+            alpha = settings.pop("alpha", None)
+            if alpha is not None:
+                settings["alpha_index"] = \
+                    np.argmin(np.abs(np.array(cls.alphas) - alpha))
 
 
 if __name__ == "__main__":

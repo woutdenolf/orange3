@@ -202,13 +202,14 @@ class OWDistanceMatrix(widget.OWWidget):
     description = "View distance matrix."
     icon = "icons/DistanceMatrix.svg"
     priority = 200
+    keywords = []
 
     class Inputs:
         distances = Input("Distances", DistMatrix)
 
     class Outputs:
         distances = Output("Distances", DistMatrix, dynamic=False)
-        table = Output("Table", Table)
+        table = Output("Selected Data", Table, replaces=["Table"])
 
     settingsHandler = DistanceMatrixContextHandler()
     auto_commit = Setting(True)

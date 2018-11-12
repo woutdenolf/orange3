@@ -27,16 +27,176 @@ This module contains functions and classes for creating GUI elements commonly us
 
 import os
 
+import unicodedata
+
 from Orange.data import ContinuousVariable, DiscreteVariable
 from Orange.widgets import gui
+from Orange.widgets.utils import itemmodels
+from Orange.widgets.utils.listfilter import variables_filter
 from Orange.widgets.utils.itemmodels import DomainModel
 
-from AnyQt.QtWidgets import QWidget, QToolButton, QVBoxLayout, QHBoxLayout, QMenu, QAction
-from AnyQt.QtGui import QIcon
-from AnyQt.QtCore import Qt, pyqtSignal
+from AnyQt.QtWidgets import QWidget, QToolButton, QVBoxLayout, QHBoxLayout, QGridLayout, QMenu, QAction,\
+    QDialog, QSizePolicy, QPushButton, QListView, QLabel
+from AnyQt.QtGui import QIcon, QKeySequence
+from AnyQt.QtCore import Qt, pyqtSignal, QPoint, QSize
 
 from .owconstants import NOTHING, ZOOMING, SELECT, SELECT_POLYGON, PANNING, SELECTION_ADD,\
     SELECTION_REMOVE, SELECTION_TOGGLE, SELECTION_REPLACE
+
+
+SIZE_POLICY_ADAPTING = (QSizePolicy.Expanding, QSizePolicy.Ignored)
+SIZE_POLICY_FIXED = (QSizePolicy.Minimum, QSizePolicy.Maximum)
+
+
+class AddVariablesDialog(QDialog):
+    def __init__(self, master, model):
+        QDialog.__init__(self)
+
+        self.master = master
+
+        self.setWindowFlags(Qt.Tool)
+        self.setLayout(QVBoxLayout())
+        self.setWindowTitle("Hidden Axes")
+
+        btns_area = gui.widgetBox(
+            self, addSpace=0, spacing=9, orientation=Qt.Horizontal,
+            sizePolicy=QSizePolicy(*SIZE_POLICY_FIXED)
+        )
+        self.btn_add = QPushButton(
+            "Add", autoDefault=False, sizePolicy=QSizePolicy(*SIZE_POLICY_FIXED)
+        )
+        self.btn_add.clicked.connect(self._add)
+        self.btn_cancel = QPushButton(
+            "Cancel", autoDefault=False, sizePolicy=QSizePolicy(*SIZE_POLICY_FIXED)
+        )
+        self.btn_cancel.clicked.connect(self._cancel)
+
+        btns_area.layout().addWidget(self.btn_add)
+        btns_area.layout().addWidget(self.btn_cancel)
+
+        filter_edit, view = variables_filter(model=model)
+        self.view_other = view
+        view.setMinimumSize(QSize(30, 60))
+        view.setSizePolicy(*SIZE_POLICY_ADAPTING)
+        view.viewport().setAcceptDrops(True)
+
+        self.layout().addWidget(filter_edit)
+        self.layout().addWidget(view)
+        self.layout().addWidget(btns_area)
+
+        master = self.master
+        box = master.box
+        master.master.setEnabled(False)
+        self.move(box.mapToGlobal(QPoint(0, box.pos().y() + box.height())))
+        self.setFixedWidth(master.master.controlArea.width())
+        self.setMinimumHeight(300)
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def _cancel(self):
+        self.closeEvent(None)
+
+    def _add(self):
+        self.add_variables()
+        self.closeEvent(None)
+
+    def closeEvent(self, QCloseEvent):
+        self.master.master.setEnabled(True)
+        super().closeEvent(QCloseEvent)
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key_Escape:
+            self.closeEvent(None)
+        elif e.key() in [Qt.Key_Return, Qt.Key_Enter]:
+            self._add()
+        else:
+            super().keyPressEvent(e)
+
+    def selected_rows(self, view):
+        """ Return the selected rows in the view.
+        """
+        rows = view.selectionModel().selectedRows()
+        model = view.model()
+        return [model.mapToSource(r) for r in rows]
+
+    def add_variables(self):
+        view = self.view_other
+        model = self.master.model_other
+
+        indices = self.selected_rows(view)
+        variables = [model.data(ind, Qt.EditRole) for ind in indices]
+
+        for i in sorted((ind.row() for ind in indices), reverse=True):
+            del model[i]
+
+        self.master.model_selected.extend(variables)
+
+
+class VariablesSelection:
+    def __init__(self, master, model_selected, model_other, widget=None):
+        self.master = master
+        self.model_selected = model_selected
+        self.model_other = model_other
+
+        params_view = {"sizePolicy": QSizePolicy(*SIZE_POLICY_ADAPTING),
+                       "selectionMode": QListView.ExtendedSelection,
+                       "dragEnabled": True,
+                       "defaultDropAction": Qt.MoveAction,
+                       "dragDropOverwriteMode": False,
+                       "dragDropMode": QListView.DragDrop}
+
+        self.view_selected = view = gui.listView(
+            widget or master.controlArea, master,
+            box=True, **params_view
+        )
+        view.box.setMinimumHeight(120)
+        view.viewport().setAcceptDrops(True)
+
+        delete = QAction(
+            "Delete", view,
+            shortcut=QKeySequence(Qt.Key_Delete),
+            triggered=self.__deactivate_selection
+        )
+        view.addAction(delete)
+        view.setModel(self.model_selected)
+
+        addClassLabel = QAction("+", master,
+                                toolTip="Add new class label",
+                                triggered=self._action_add)
+        removeClassLabel = QAction(unicodedata.lookup("MINUS SIGN"), master,
+                                   toolTip="Remove selected class label",
+                                   triggered=self.__deactivate_selection)
+
+        add_remove = itemmodels.ModelActionsWidget(
+            [addClassLabel, removeClassLabel], master)
+        add_remove.layout().addStretch(10)
+        add_remove.layout().setSpacing(1)
+        add_remove.setSizePolicy(*SIZE_POLICY_FIXED)
+        view.box.layout().addWidget(add_remove)
+
+        self.add_remove = add_remove
+        self.box = add_remove.buttons[1]
+
+    def set_enabled(self, is_enabled):
+        self.view_selected.setEnabled(is_enabled)
+        for btn in self.add_remove.buttons:
+            btn.setEnabled(is_enabled)
+
+    def __deactivate_selection(self):
+        view = self.view_selected
+        model = self.model_selected
+        indices = view.selectionModel().selectedRows()
+
+        variables = [model.data(ind, Qt.EditRole) for ind in indices]
+
+        for i in sorted((ind.row() for ind in indices), reverse=True):
+            del model[i]
+
+        self.model_other.extend(variables)
+
+    def _action_add(self):
+        self.add_variables_dialog = AddVariablesDialog(self, self.model_other)
 
 
 class OrientedWidget(QWidget):
@@ -268,12 +428,12 @@ class OWPlotGUI:
 
     def __init__(self, plot):
         self._plot = plot
-        self.color_model = DomainModel(placeholder="(Same color)",
-                                       valid_types=DomainModel.PRIMITIVE)
-        self.shape_model = DomainModel(placeholder="(Same shape)",
-                                       valid_types=DiscreteVariable)
-        self.size_model = DomainModel(placeholder="(Same size)",
-                                      valid_types=ContinuousVariable)
+        self.color_model = DomainModel(
+            placeholder="(Same color)", valid_types=DomainModel.PRIMITIVE)
+        self.shape_model = DomainModel(
+            placeholder="(Same shape)", valid_types=DiscreteVariable)
+        self.size_model = DomainModel(
+            placeholder="(Same size)", valid_types=ContinuousVariable)
         self.label_model = DomainModel(placeholder="(No labels)")
         self.points_models = [self.color_model, self.shape_model,
                               self.size_model, self.label_model]
@@ -364,7 +524,7 @@ class OWPlotGUI:
         AntialiasPlot : ('Antialias plot', 'antialias_plot', 'update_antialiasing'),
         AntialiasPoints : ('Antialias points', 'antialias_points', 'update_antialiasing'),
         AntialiasLines : ('Antialias lines', 'antialias_lines', 'update_antialiasing'),
-        AutoAdjustPerformance : ('Disable effects for large data sets', 'auto_adjust_performance',
+        AutoAdjustPerformance : ('Disable effects for large datasets', 'auto_adjust_performance',
                                  'update_performance')
     }
 
@@ -375,9 +535,9 @@ class OWPlotGUI:
         .. seealso:: :meth:`.tool_button`
     '''
 
-    def _get_callback(self, name):
+    def _get_callback(self, name, master=None):
         if type(name) == str:
-            return getattr(self._plot, name, self._plot.replot)
+            return getattr(master or self._plot, name)
         else:
             return name
 
@@ -387,7 +547,16 @@ class OWPlotGUI:
             When the checkbox is toggled, the attribute ``value`` of the plot object is set to
             the checkbox' check state, and the callback ``cb_name`` is called.
         '''
-        return gui.checkBox(widget, self._plot, value, label, callback=self._get_callback(cb_name))
+        args = dict(master=self._plot, value=value, label=label,
+                    callback=self._get_callback(cb_name, self._plot))
+        if isinstance(widget.layout(), QGridLayout):
+            widget = widget.layout()
+        if isinstance(widget, QGridLayout):
+            checkbox = gui.checkBox(None, **args)
+            widget.addWidget(checkbox, widget.rowCount(), 1)
+            return checkbox
+        else:
+            return gui.checkBox(widget, **args)
 
     def antialiasing_check_box(self, widget):
         '''
@@ -396,49 +565,54 @@ class OWPlotGUI:
         self._check_box(widget, 'use_antialiasing', 'Use antialiasing', 'update_antialiasing')
 
     def jitter_size_slider(self, widget):
-        values = getattr(self._plot.master, "jitter_sizes", self.JITTER_SIZES)
-        gui.valueSlider(
-            widget=widget, master=self._plot, value='jitter_size', label="Jittering: ",
-            values=values, callback=self._plot.master.reset_graph_data,
-            labelFormat=lambda x: "None" if x == 0 else ("%.1f %%" if x < 1 else "%d %%") % x)
+        return self.add_control(
+            widget, gui.valueSlider, "Jittering",
+            master=self._plot, value='jitter_size',
+            values=getattr(self._plot, "jitter_sizes", self.JITTER_SIZES),
+            callback=self._plot.update_jittering)
 
     def jitter_numeric_check_box(self, widget):
-        gui.checkBox(
-            widget=gui.indentedBox(widget=widget), master=self._plot, value="jitter_continuous",
-            label="Jitter numeric values", callback=self._plot.master.reset_graph_data)
+        self._check_box(
+            widget=widget,
+            value="jitter_continuous", label="Jitter numeric values",
+            cb_name="update_jittering")
 
     def show_legend_check_box(self, widget):
         '''
             Creates a check box that shows and hides the plot legend
         '''
-        self._check_box(widget, 'show_legend', 'Show legend', 'update_legend')
+        self._check_box(widget, 'show_legend', 'Show legend',
+                        'update_legend_visibility')
 
     def tooltip_shows_all_check_box(self, widget):
-        self._check_box(widget=widget, value="tooltip_shows_all",
-                        label='Show all data on mouse hover', cb_name="cb_tooltip_shows_all")
+        gui.checkBox(
+            widget=widget, master=self._plot.master, value="tooltip_shows_all",
+            label='Show all data on mouse hover')
 
     def class_density_check_box(self, widget):
         self._plot.master.cb_class_density = \
-            self._check_box(widget=widget, value="class_density", label="Show class density",
-                            cb_name=self._plot.master.update_density)
+            self._check_box(widget=widget, value="class_density",
+                            label="Show color regions",
+                            cb_name=self._plot.update_density)
 
     def regression_line_check_box(self, widget):
         self._plot.master.cb_reg_line = \
             self._check_box(widget=widget, value="show_reg_line",
                             label="Show regression line",
-                            cb_name=self._plot.master.update_regression_line)
+                            cb_name=self._plot.update_regression_line)
 
     def label_only_selected_check_box(self, widget):
         self._check_box(widget=widget, value="label_only_selected",
                         label="Label only selected points",
-                        cb_name=self._plot.master.graph.update_labels)
+                        cb_name=self._plot.update_labels)
 
     def filled_symbols_check_box(self, widget):
         self._check_box(widget, 'show_filled_symbols', 'Show filled symbols',
                         'update_filled_symbols')
 
     def grid_lines_check_box(self, widget):
-        self._check_box(widget, 'show_grid', 'Show gridlines', 'update_grid')
+        self._check_box(widget, 'show_grid', 'Show gridlines',
+                        'update_grid_visibility')
 
     def animations_check_box(self, widget):
         '''
@@ -446,76 +620,109 @@ class OWPlotGUI:
         '''
         self._check_box(widget, 'use_animations', 'Use animations', 'update_animations')
 
+    def add_control(self, widget, control, label, **args):
+        if isinstance(widget.layout(), QGridLayout):
+            widget = widget.layout()
+        if isinstance(widget, QGridLayout):
+            row = widget.rowCount()
+            element = control(None, **args)
+            widget.addWidget(QLabel(label), row, 0)
+            widget.addWidget(element, row, 1)
+            return element
+        else:
+            return control(widget,  label=label, **args)
+
     def _slider(self, widget, value, label, min_value, max_value, step, cb_name,
                 show_number=False):
-        gui.hSlider(widget, self._plot, value, label=label, minValue=min_value,
-                    maxValue=max_value, step=step, createLabel=show_number,
-                    callback=self._get_callback(cb_name))
+        return self.add_control(
+            widget, gui.hSlider, label,
+            master=self._plot, value=value, minValue=min_value,
+            maxValue=max_value, step=step, createLabel=show_number,
+            callback=self._get_callback(cb_name, self._plot.master))
 
-    def point_size_slider(self, widget):
+    def point_size_slider(self, widget, label="Symbol size:   "):
         '''
             Creates a slider that controls point size
         '''
-        self._slider(widget, 'point_width', "Symbol size:   ", 1, 20, 1, 'update_point_size')
+        return self._slider(widget, 'point_width', label, 1, 20, 1, 'sizes_changed')
 
-    def alpha_value_slider(self, widget):
+    def alpha_value_slider(self, widget, label="Opacity: "):
         '''
             Creates a slider that controls point transparency
         '''
-        self._slider(widget, 'alpha_value', "Opacity: ", 0, 255, 10, 'update_alpha_value')
+        return self._slider(widget, 'alpha_value', label, 0, 255, 10, 'colors_changed')
 
     def _combo(self, widget, value, label, cb_name, items=(), model=None):
-        gui.comboBox(widget, self._plot, value, label=label, items=items,
-                     model=model, callback=self._get_callback(cb_name),
-                     labelWidth=50, orientation=Qt.Horizontal, valueType=str,
-                     sendSelectedValue=True, contentsLength=12)
+        return self.add_control(
+            widget, gui.comboBox, label,
+            master=self._plot.master, value=value, items=items, model=model,
+            callback=self._get_callback(cb_name, self._plot.master),
+            orientation=Qt.Horizontal, valueType=str,
+            sendSelectedValue=True, contentsLength=12,
+            labelWidth=50)
 
-    def color_value_combo(self, widget):
+    def color_value_combo(self, widget, label="Color: "):
         """Creates a combo box that controls point color"""
-        self._combo(widget, "attr_color", "Color: ", "update_colors",
+        self._combo(widget, "attr_color", label, "colors_changed",
                     model=self.color_model)
 
-    def shape_value_combo(self, widget):
+    def shape_value_combo(self, widget, label="Shape: "):
         """Creates a combo box that controls point shape"""
-        self._combo(widget, "attr_shape", "Shape: ", "update_shapes",
+        self._combo(widget, "attr_shape", label, "shapes_changed",
                     model=self.shape_model)
 
-    def size_value_combo(self, widget):
+    def size_value_combo(self, widget, label="Size: "):
         """Creates a combo box that controls point size"""
-        self._combo(widget, "attr_size", "Size: ", "update_sizes",
+        self._combo(widget, "attr_size", label, "sizes_changed",
                     model=self.size_model)
 
-    def label_value_combo(self, widget):
+    def label_value_combo(self, widget, label="Label: "):
         """Creates a combo box that controls point label"""
-        self._combo(widget, "attr_label", "Label: ", "update_labels",
+        self._combo(widget, "attr_label", label, "labels_changed",
                     model=self.label_model)
 
-    def point_properties_box(self, widget, box=None):
+    def box_spacing(self, widget):
+        if isinstance(widget.layout(), QGridLayout):
+            widget = widget.layout()
+        if isinstance(widget, QGridLayout):
+            space = QWidget()
+            space.setFixedSize(12, 12)
+            widget.addWidget(space, widget.rowCount(), 0)
+        else:
+            gui.separator(widget)
+
+    def point_properties_box(self, widget, box=True):
         '''
             Creates a box with controls for common point properties.
             Currently, these properties are point size and transparency.
         '''
-        return self.create_box([
+        box = self.create_gridbox(widget, box)
+        self.add_widgets([
             self.Color,
             self.Shape,
             self.Size,
             self.Label,
+            self.LabelOnlySelected], box)
+        return box
+
+    def effects_box(self, widget, box=True):
+        """
+        Create a box with controls for common plot settings
+        """
+        box = self.create_gridbox(widget, box)
+        self.add_widgets([
             self.PointSize,
-            self.AlphaValue
-            ], widget, box, "Points")
+            self.AlphaValue,
+            self.JitterSizeSlider], box)
+        return box
 
     def plot_properties_box(self, widget, box=None):
         """
         Create a box with controls for common plot settings
         """
         return self.create_box([
-            self.ToolTipShowsAll,
-            self.ShowGridLines,
-            self.ShowLegend,
             self.ClassDensity,
-            self.RegressionLine,
-            self.LabelOnlySelected
-            ], widget, box, "Plot Properties")
+            self.ShowLegend], widget, box, True)
 
     _functions = {
         ShowFilledSymbols: filled_symbols_check_box,
@@ -533,6 +740,7 @@ class OWPlotGUI:
         Shape: shape_value_combo,
         Size: size_value_combo,
         Label: label_value_combo,
+        Spacing: box_spacing
         }
 
     def add_widget(self, id, widget):
@@ -554,6 +762,15 @@ class OWPlotGUI:
         if box is None:
             box = gui.vBox(widget, name)
         self.add_widgets(ids, box)
+        return box
+
+    def create_gridbox(self, widget, box=True):
+        grid = QGridLayout()
+        grid.setColumnMinimumWidth(0, 50)
+        grid.setColumnStretch(1, 1)
+        box = gui.widgetBox(widget, box=box, orientation=grid)
+        # This must come after calling widgetBox, since widgetBox overrides it
+        grid.setVerticalSpacing(8)
         return box
 
     def _expand_id(self, id):
@@ -647,17 +864,6 @@ class OWPlotGUI:
         t = self.toolbar(widget, text, orientation, buttons, nomargin)
         t.buttons[self.SimpleSelect].click()
         return t
-
-    def effects_box(self, widget, box=None):
-        b = self.create_box([
-            self.AnimatePlot,
-            self.AnimatePoints,
-            self.AntialiasPlot,
-            # self.AntialiasPoints,
-            # self.AntialiasLines,
-            self.AutoAdjustPerformance,
-            self.DisableAnimationsThreshold], widget, box, "Visual effects")
-        return b
 
     def theme_combo_box(self, widget):
         c = gui.comboBox(widget, self._plot, "theme_name", "Theme",

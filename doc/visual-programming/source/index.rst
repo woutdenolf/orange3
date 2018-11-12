@@ -37,18 +37,20 @@ Data
    widgets/data/createclass
    widgets/data/randomize
    widgets/data/concatenate
+   widgets/data/select-by-data-index
    widgets/data/paintdata
    widgets/data/pythonscript
    widgets/data/featureconstructor
    widgets/data/editdomain
-   widgets/data/imageviewer
    widgets/data/impute
    widgets/data/mergedata
    widgets/data/outliers
    widgets/data/preprocess
    widgets/data/purgedomain
    widgets/data/rank
+   widgets/data/correlations
    widgets/data/color
+   widgets/data/featurestatistics
 
 
 Visualize
@@ -63,7 +65,6 @@ Visualize
    widgets/visualize/scatterplot
    widgets/visualize/venndiagram
    widgets/visualize/linearprojection
-   widgets/visualize/scattermap
    widgets/visualize/sievediagram
    widgets/visualize/pythagoreantree
    widgets/visualize/pythagoreanforest
@@ -71,9 +72,9 @@ Visualize
    widgets/visualize/mosaicdisplay
    widgets/visualize/silhouetteplot
    widgets/visualize/treeviewer
-   widgets/visualize/geomap
    widgets/visualize/nomogram
    widgets/visualize/freeviz
+   widgets/visualize/radviz
 
 
 Model
@@ -114,6 +115,7 @@ Unsupervised
    widgets/unsupervised/savedistancematrix
    widgets/unsupervised/hierarchicalclustering
    widgets/unsupervised/kmeansclustering
+   widgets/unsupervised/louvainclustering
    widgets/unsupervised/mds
    widgets/unsupervised/manifoldlearning
    

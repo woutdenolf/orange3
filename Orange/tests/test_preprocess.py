@@ -8,11 +8,12 @@ from unittest.mock import Mock
 import numpy as np
 
 from Orange.data import Table
-from Orange.preprocess import EntropyMDL, DoNotImpute, Default, Average, SelectRandomFeatures, EqualFreq, \
-    RemoveNaNColumns, DropInstances
+from Orange.preprocess import EntropyMDL, DoNotImpute, Default, Average, \
+    SelectRandomFeatures, EqualFreq, RemoveNaNColumns, DropInstances
 from Orange.preprocess import EqualWidth, SelectBestFeatures
-from Orange.preprocess.preprocess import Preprocess, Scale, Randomize, Continuize, Discretize, Impute, SklImpute, \
-    Normalize, ProjectCUR, ProjectPCA, RemoveConstant
+from Orange.preprocess.preprocess import Preprocess, Scale, Randomize, \
+    Continuize, Discretize, Impute, SklImpute, Normalize, ProjectCUR, \
+    ProjectPCA, RemoveConstant
 from Orange.util import OrangeDeprecationWarning
 
 
@@ -60,10 +61,11 @@ class TestPreprocess(unittest.TestCase):
 
 class TestRemoveConstant(unittest.TestCase):
     def test_remove_columns(self):
-        X = np.random.rand(6, 4)
+        X = np.random.rand(6, 5)
         X[:, (1,3)] = 5
         X[3, 1] = np.nan
         X[1, 1] = np.nan
+        X[:, 4] = np.nan
         data = Table(X)
         d = RemoveConstant()(data)
         self.assertEqual(len(d.domain.attributes), 2)

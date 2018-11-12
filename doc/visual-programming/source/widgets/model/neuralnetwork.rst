@@ -1,35 +1,20 @@
 Neural Network
 ==============
 
-.. figure:: icons/neural-network.png
-
 A multi-layer perceptron (MLP) algorithm with backpropagation.
 
-Signals
--------
+Inputs
+    Data
+        input dataset
+    Preprocessor
+        preprocessing method(s)
 
-**Inputs**:
+Outputs
+    Learner
+        multi-layer perceptron learning algorithm
+    Model
+        trained model
 
--  **Data**
-
-   A data set
-
--  **Preprocessor**
-
-   Preprocessing method(s)
-
-**Outputs**:
-
--  **Learner**
-
-   A MLP learning algorithm with settings as specified in the dialog.
-
--  **Model**
-
-   A trained model. Output signal sent only if input *Data* is present.
-
-Description
------------
 
 The **Neural Network** widget uses sklearn's `Multi\-layer Perceptron algorithm <http://scikit-learn.org/stable/modules/neural_networks_supervised.html>`_ that can learn non-linear models as well as linear.
 
@@ -63,7 +48,7 @@ The **Neural Network** widget uses sklearn's `Multi\-layer Perceptron algorithm 
 Examples
 --------
 
-The first example is a classification task on *iris* data set. We compare the results of **Neural Network** with the :doc:`Logistic Regression <../model/logisticregression>`.
+The first example is a classification task on *iris* dataset. We compare the results of **Neural Network** with the :doc:`Logistic Regression <../model/logisticregression>`.
 
 .. figure:: images/NN-Example-Test.png
 

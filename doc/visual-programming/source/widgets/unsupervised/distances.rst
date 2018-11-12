@@ -1,30 +1,19 @@
 Distances
 =========
 
-.. figure:: icons/distances.png
+Computes distances between rows/columns in a dataset.
 
-Computes distances between rows/columns in a data set.
+Inputs
+    Data
+        input dataset
 
-Signals
--------
+Outputs
+    Distances
+        distance matrix
 
-**Inputs**:
-
--  **Data**
-
-   A data set
-
-**Outputs**:
-
--  **Distances**
-
-   A distance matrix
-
-Description
------------
 
 The **Distances** widget computes distances between rows or
-columns in a data set.
+columns in a dataset.
 
 .. figure:: images/Distances-stamped.png
 
