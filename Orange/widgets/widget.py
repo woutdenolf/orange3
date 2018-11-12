@@ -555,6 +555,13 @@ class OWWidget(QDialog, OWComponent, Report, ProgressBarMixin,
                 return
             ClipboardFormat.write_image(None, graph_obj)
 
+    def updateProperties(self):
+        """
+        function callback before saving widget settings
+        
+        """
+        pass
+
     def __restoreWidgetGeometry(self, geometry):
         # type: (bytes) -> bool
         def _fullscreen_to_maximized(geometry):
