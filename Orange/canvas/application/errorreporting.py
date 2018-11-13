@@ -173,6 +173,7 @@ class ErrorReporting(QDialog):
         def _post_report(data):
             try:
                 msg = 'Exception: %s. \n stack trace: %s' % (data['Exception'], data['Stack Trace'])
+                data['message_type'] = 'execution_error'
                 self._getGrayLogOrangeLogger().error(msg, extra=data)
             except Exception as e:
                 print(e)
