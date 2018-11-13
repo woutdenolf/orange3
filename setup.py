@@ -22,8 +22,8 @@ try:
 except ImportError:
     have_sphinx = False
 
-from distutils.command.build_ext import build_ext
-from distutils.command import install_data, sdist, config, build
+from numpy.distutils.command.build_ext import build_ext
+from numpy.distutils.command import install_data, sdist, config, build
 
 
 NAME = 'Orange3'
