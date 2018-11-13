@@ -148,9 +148,12 @@ class ErrorReporting(QDialog):
             data[F.WIDGET_SCHEME] = data['_' + F.WIDGET_SCHEME]
         del data['_' + F.WIDGET_SCHEME]
             try:
-                self._getGrayLogOrangeLogger().error(data, extra={'source-code-error':'orange-canvas'})
-            except:
-                pass
+                msg = 'Exception: %s. \n stack trace: %s' % (data['Exception'], data['Stack Trace'])
+                data['message_type'] = 'execution_error'
+                self._getGrayLogOrangeLogger().error(msg, extra=data)
+            except Exception as e:
+                print(e)
+        _post_report(data=data)
 
     @classmethod
     @patch('sys.excepthook', sys.__excepthook__)  # Prevent recursion
