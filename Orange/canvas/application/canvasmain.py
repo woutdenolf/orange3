@@ -416,8 +416,10 @@ class CanvasMainWindow(QMainWindow):
             permDialog.show()
 
         settings = config.settings()
-        if not settings["error-reporting/permission-requested"]:
-            requestDataCollectionPermission()
+        settings["error-reporting/send-statistics"] = False
+        settings["error-reporting/permission-requested"] = False
+        # if not settings["error-reporting/permission-requested"]:
+        #     requestDataCollectionPermission()
 
     def setup_actions(self):
         """Initialize main window actions.
