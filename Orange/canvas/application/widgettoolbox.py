@@ -113,24 +113,27 @@ class WidgetToolGrid(ToolGrid):
         return self.__actionRole
 
     def actionEvent(self, event):
-        if event.type() == QEvent.ActionAdded:
-            # Creates and inserts the button instance.
-            ToolGrid.actionEvent(self, event)
+        try:
+            if event.type() == QEvent.ActionAdded:
+                # Creates and inserts the button instance.
+                ToolGrid.actionEvent(self, event)
 
-            button = self.buttonForAction(event.action())
-            button.installEventFilter(self.__dragListener)
-            button.installEventFilter(self.__statusTipPromoter)
-            return
-        elif event.type() == QEvent.ActionRemoved:
-            button = self.buttonForAction(event.action())
-            button.removeEventFilter(self.__dragListener)
-            button.removeEventFilter(self.__statusTipPromoter)
+                button = self.buttonForAction(event.action())
+                button.installEventFilter(self.__dragListener)
+                button.installEventFilter(self.__statusTipPromoter)
+                return
+            elif event.type() == QEvent.ActionRemoved:
+                button = self.buttonForAction(event.action())
+                button.removeEventFilter(self.__dragListener)
+                button.removeEventFilter(self.__statusTipPromoter)
 
-            # Removes the button
-            ToolGrid.actionEvent(self, event)
-            return
-        else:
-            ToolGrid.actionEvent(self, event)
+                # Removes the button
+                ToolGrid.actionEvent(self, event)
+                return
+            else:
+                ToolGrid.actionEvent(self, event)
+        except Exception as e:
+            log.error(e)
 
     def __initFromModel(self, model, rootIndex):
         """
