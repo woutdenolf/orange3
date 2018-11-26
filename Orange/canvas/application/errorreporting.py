@@ -125,6 +125,8 @@ class ErrorReporting(QDialog):
         layout.addWidget(buttons)
 
     def _getGrayLogOrangeLogger(self):
+        if os.environ.get('ORANGE_WEB_LOG', 'True') != 'True':
+            return None
         if not hasattr(self, '_graylogLogger'):
             import graypy
             import logging
@@ -147,12 +149,15 @@ class ErrorReporting(QDialog):
         if QSettings().value('error-reporting/add-scheme', True, type=bool):
             data[F.WIDGET_SCHEME] = data['_' + F.WIDGET_SCHEME]
         del data['_' + F.WIDGET_SCHEME]
-            try:
-                msg = 'Exception: %s. \n stack trace: %s' % (data['Exception'], data['Stack Trace'])
-                data['message_type'] = 'execution_error'
-                self._getGrayLogOrangeLogger().error(msg, extra=data)
-            except Exception as e:
-                print(e)
+        def _post_report(data):
+            _graylogger = self._getGrayLogOrangeLogger()
+            if _graylogger is not None:
+                try:
+                    msg = 'Exception: %s. \n stack trace: %s' % (data['Exception'], data['Stack Trace'])
+                    data['message_type'] = 'execution_error'
+                    _graylogger.error(msg, extra=data)
+                except Exception as e:
+                    print(e)
         _post_report(data=data)
 
     @classmethod
