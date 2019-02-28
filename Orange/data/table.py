@@ -46,7 +46,7 @@ _conversion_cache_lock = RLock()
 
 
 def pending_deprecation_resize(name):
-    warnings.warn(f"Method Table.{name} will be removed in Orange 3.24",
+    warnings.warn("Method Table.{%s} will be removed in Orange 3.24" % name,
                   PendingDeprecationWarning)
 
 
