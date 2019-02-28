@@ -15,6 +15,7 @@ import Orange.evaluation
 from Orange.widgets import widget, settings, gui
 from Orange.widgets.utils.annotated_data import (create_annotated_table,
                                                  ANNOTATED_DATA_SIGNAL_NAME)
+from Orange.widgets.utils.widgetpreview import WidgetPreview
 from Orange.widgets.widget import Msg, Input, Output
 
 
@@ -459,7 +460,9 @@ class OWConfusionMatrix(widget.OWWidget):
                 formatstr = "{:2.1f} %"
             div[div == 0] = 1
             colors /= div
-            colors[diag] = normalized[diag] / normalized[diag].max()
+            maxval = normalized[diag].max()
+            if maxval > 0:
+                colors[diag] = normalized[diag] / maxval
 
             for i in range(n):
                 for j in range(n):
@@ -519,16 +522,6 @@ class OWConfusionMatrix(widget.OWWidget):
                 settings["selected_learner"] = [settings["selected_learner"]]
 
 
-if __name__ == "__main__":
-    from AnyQt.QtWidgets import QApplication
-
-    APP = QApplication([])
-    w = OWConfusionMatrix()
-    w.show()
-    IRIS = Orange.data.Table("iris")
-    RES_CV = Orange.evaluation.CrossValidation(
-        IRIS, [Orange.classification.TreeLearner(),
-               Orange.classification.MajorityLearner()],
-        store_data=True)
-    w.set_results(RES_CV)
-    APP.exec_()
+if __name__ == "__main__":  # pragma: no cover
+    from Orange.widgets.evaluate.utils import results_for_preview
+    WidgetPreview(OWConfusionMatrix).run(results_for_preview("iris"))

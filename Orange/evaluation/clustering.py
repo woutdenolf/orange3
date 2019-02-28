@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 from sklearn.metrics import silhouette_score, adjusted_mutual_info_score, silhouette_samples
 
@@ -35,17 +37,22 @@ class ClusteringScore(Score):
 
     def from_predicted(self, results, score_function):
         # Clustering scores from labels
-        if self.considers_actual:
-            return np.fromiter(
-                (score_function(results.actual.flatten(), predicted.flatten())
-                 for predicted in results.predicted),
-                dtype=np.float64, count=len(results.predicted))
-        # Clustering scores from data only
-        else:
-            return np.fromiter(
-                (score_function(results.data.X, predicted.flatten())
-                 for predicted in results.predicted),
-                dtype=np.float64, count=len(results.predicted))
+        # This warning filter can be removed in scikit 0.22
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", "The behavior of AMI will change in version 0\.22.*")
+            if self.considers_actual:
+                return np.fromiter(
+                    (score_function(results.actual.flatten(),
+                                    predicted.flatten())
+                     for predicted in results.predicted),
+                    dtype=np.float64, count=len(results.predicted))
+            # Clustering scores from data only
+            else:
+                return np.fromiter(
+                    (score_function(results.data.X, predicted.flatten())
+                     for predicted in results.predicted),
+                    dtype=np.float64, count=len(results.predicted))
 
 
 class Silhouette(ClusteringScore):
@@ -123,6 +130,8 @@ def graph_silhouette(X, y, xlim=None, colors=None, figsize=None, filename=None):
     :param xlim tuple (float, float):
             Limit x-axis values.
     """
+    # If the module is not there, let the user install it
+    # pylint: disable=import-error
     import matplotlib.pyplot as plt
 
     if isinstance(X, Table):
@@ -133,7 +142,7 @@ def graph_silhouette(X, y, xlim=None, colors=None, figsize=None, filename=None):
 
     # Detect number of clusters and set colors
     N = len(set(y))
-    if isinstance(colors, type(None)) :
+    if isinstance(colors, type(None)):
         colors = ["g" if i % 2 else "b" for i in range(N)]
     elif len(colors) != N:
         import sys

@@ -1,7 +1,11 @@
-from Orange.data import Table
+import numpy as np
+
+from Orange.data import Table, Domain
 from Orange.preprocess.preprocess import Preprocess, Discretize
 from Orange.widgets import gui
+from Orange.widgets.settings import Setting
 from Orange.widgets.utils.sql import check_sql_input
+from Orange.widgets.utils.widgetpreview import WidgetPreview
 from Orange.widgets.widget import OWWidget, Input, Output, Msg
 
 
@@ -11,6 +15,8 @@ class OWTransform(OWWidget):
     icon = "icons/Transform.svg"
     priority = 2110
     keywords = []
+
+    retain_all_data = Setting(False)
 
     class Inputs:
         data = Input("Data", Table, default=True)
@@ -37,6 +43,11 @@ class OWTransform(OWWidget):
         self.output_label = gui.widgetLabel(info_box, "")
         self.set_input_label_text()
         self.set_preprocessor_label_text()
+
+        self.retain_all_data_cb = gui.checkBox(
+            self.controlArea, self, "retain_all_data", label="Retain all data",
+            callback=self.apply
+            )
 
     def set_input_label_text(self):
         text = "No data on input."
@@ -82,10 +93,29 @@ class OWTransform(OWWidget):
                 self.transformed_data = self.preprocessor(self.data)
             except Exception as ex:   # pylint: disable=broad-except
                 self.Error.pp_error(ex)
-        self.Outputs.transformed_data.send(self.transformed_data)
+
+        if self.retain_all_data:
+            self.Outputs.transformed_data.send(self.merge_data())
+        else:
+            self.Outputs.transformed_data.send(self.transformed_data)
 
         self.set_preprocessor_label_text()
         self.set_output_label_text()
+
+    def merge_data(self):
+        attributes = getattr(self.data.domain, 'attributes')
+        cls_vars = getattr(self.data.domain, 'class_vars')
+        metas_v = getattr(self.data.domain, 'metas')\
+            + getattr(self.transformed_data.domain, 'attributes')
+        domain = Domain(attributes, cls_vars, metas_v)
+        X = self.data.X
+        Y = self.data.Y
+        metas = np.hstack((self.data.metas, self.transformed_data.X))
+        table = Table.from_numpy(domain, X, Y, metas)
+        table.name = getattr(self.data, 'name', '')
+        table.attributes = getattr(self.data, 'attributes', {})
+        table.ids = self.data.ids
+        return table
 
     def send_report(self):
         if self.preprocessor is not None:
@@ -97,16 +127,7 @@ class OWTransform(OWWidget):
             self.report_data("Transformed data", self.transformed_data)
 
 
-if __name__ == "__main__":
-    from AnyQt.QtWidgets import QApplication
-
-    app = QApplication([])
-    ow = OWTransform()
-    d = Table("iris")
-    pp = Discretize()
-    ow.set_data(d)
-    ow.set_preprocessor(pp)
-    ow.handleNewSignals()
-    ow.show()
-    app.exec_()
-    ow.saveSettings()
+if __name__ == "__main__":  # pragma: no cover
+    WidgetPreview(OWTransform).run(
+        set_data=Table("iris"),
+        set_preprocessor=Discretize())

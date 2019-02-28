@@ -1,5 +1,5 @@
-from concurrent.futures import Future  # pylint: disable=unused-import
-from typing import Optional, List, Dict  # pylint: disable=unused-import
+from concurrent.futures import Future
+from typing import Optional, List, Dict
 
 import numpy as np
 from AnyQt.QtCore import Qt, QTimer, QAbstractTableModel, QModelIndex, QThread, \
@@ -8,14 +8,16 @@ from AnyQt.QtGui import QIntValidator
 from AnyQt.QtWidgets import QGridLayout, QTableView
 
 from Orange.clustering import KMeans
-from Orange.clustering.kmeans import KMeansModel, SILHOUETTE_MAX_SAMPLES  # pylint: disable=unused-import
+from Orange.clustering.kmeans import KMeansModel, SILHOUETTE_MAX_SAMPLES
 from Orange.data import Table, Domain, DiscreteVariable, ContinuousVariable
+from Orange.data.util import get_unique_names
 from Orange.widgets import widget, gui
 from Orange.widgets.settings import Setting
-from Orange.widgets.utils.annotated_data import get_next_name, \
+from Orange.widgets.utils.annotated_data import \
     ANNOTATED_DATA_SIGNAL_NAME, add_columns
 from Orange.widgets.utils.concurrent import ThreadExecutor, FutureSetWatcher
 from Orange.widgets.utils.sql import check_sql_input
+from Orange.widgets.utils.widgetpreview import WidgetPreview
 from Orange.widgets.widget import Input, Output
 
 
@@ -462,11 +464,12 @@ class OWKMeans(widget.OWWidget):
 
         domain = self.data.domain
         cluster_var = DiscreteVariable(
-            get_next_name(domain, "Cluster"),
+            get_unique_names(domain, "Cluster"),
             values=["C%d" % (x + 1) for x in range(km.k)]
         )
         clust_ids = km(self.data)
-        silhouette_var = ContinuousVariable(get_next_name(domain, "Silhouette"))
+        silhouette_var = ContinuousVariable(
+            get_unique_names(domain, "Silhouette"))
         if km.silhouette_samples is not None:
             self.Warning.no_silhouettes.clear()
             scores = np.arctan(km.silhouette_samples) / np.pi + 0.5
@@ -521,18 +524,5 @@ class OWKMeans(widget.OWWidget):
         super().onDeleteWidget()
 
 
-def main():  # pragma: no cover
-    import sys
-    from AnyQt.QtWidgets import QApplication
-
-    a = QApplication(sys.argv)
-    ow = OWKMeans()
-    d = Table(sys.argv[1] if len(sys.argv) > 1 else "iris.tab")
-    ow.set_data(d)
-    ow.show()
-    a.exec()
-    ow.saveSettings()
-
-
 if __name__ == "__main__":  # pragma: no cover
-    main()
+    WidgetPreview(OWKMeans).run(Table("iris.tab"))

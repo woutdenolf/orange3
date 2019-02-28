@@ -12,9 +12,10 @@ from AnyQt.QtWidgets import QAction
 from AnyQt.QtTest import QSignalSpy
 
 from Orange.widgets.gui import OWComponent
-from Orange.widgets.settings import Setting
+from Orange.widgets.settings import Setting, SettingProvider
 from Orange.widgets.tests.base import WidgetTest
 from Orange.widgets.widget import OWWidget, Msg
+from Orange.widgets.utils.messagewidget import MessagesWidget
 
 
 class DummyComponent(OWComponent):
@@ -25,6 +26,7 @@ class MyWidget(OWWidget):
     name = "Dummy"
 
     field = Setting(42)
+    component = SettingProvider(DummyComponent)
 
     def __init__(self):
         super().__init__()
@@ -150,6 +152,46 @@ class WidgetTestCase(WidgetTest):
         self.assertTrue(len(spyf) == 1 or spyf.wait(1000))
         self.assertIsNone(ref())
 
+    def _status_bar_visible_test(self, widget):
+        # type: (OWWidget) -> None
+        # Test that statusBar().setVisible collapses/expands the bottom margins
+        sb = widget.statusBar()
+        m1 = widget.contentsMargins().bottom()
+        sb.setVisible(False)
+        m2 = widget.contentsMargins().bottom()
+        self.assertLess(m2, m1)
+        self.assertEqual(m2, 0)
+        sb.setVisible(True)
+        m3 = widget.contentsMargins().bottom()
+        self.assertEqual(sb.height(), m3)
+        self.assertNotEqual(m3, 0)
+
+    def test_status_bar(self):
+        # Test that statusBar().setVisible collapses/expands the bottom margins
+        w = MyWidget()
+        self._status_bar_visible_test(w)
+        # run through drawing code (for coverage)
+        w.statusBar().grab()
+
+    def test_status_bar_no_basic_layout(self):
+        # Test that statusBar() works when widget defines
+        # want_basic_layout=False
+        with patch.object(MyWidget, "want_basic_layout", False):
+            w = MyWidget()
+        self._status_bar_visible_test(w)
+
+    def test_status_bar_action(self):
+        w = MyWidget()
+        action = w.findChild(QAction, "action-show-status-bar")  # type: QAction
+        self.assertIsNotNone(action)
+        action.setEnabled(True)
+        action.setChecked(True)
+        self.assertTrue(w.statusBar().isVisibleTo(w))
+        action.setChecked(False)
+        self.assertFalse(w.statusBar().isVisibleTo(w))
+        w.statusBar().hide()
+        self.assertFalse(action.isChecked())
+
 
 class WidgetMsgTestCase(WidgetTest):
 
@@ -188,11 +230,9 @@ class WidgetMsgTestCase(WidgetTest):
         self.assertEqual(len(messages), 0)
         self.assertSetEqual(set(self.active_messages(w)), set())
 
-        with patch.object(
-                WidgetMsgTestCase.TestWidget,
-                "want_basic_layout", False):
-            # OWWidget without a basic layout (completely empty; no default
-            # message bar)
+        # OWWidget without a basic layout (completely empty; no default msg bar
+        with patch.object(WidgetMsgTestCase.TestWidget,
+                          "want_basic_layout", False):
             w = WidgetMsgTestCase.TestWidget()
 
         messages = set(self.active_messages(w))
@@ -235,17 +275,20 @@ class WidgetMsgTestCase(WidgetTest):
         w.messageActivated.connect(messages.add)
         w.messageDeactivated.connect(messages.remove)
 
-        w.error(1, "A")
+        with self.assertWarns(UserWarning):
+            w.error(1, "A")
 
         self.assertEqual(len(w.Error.active), 1)
         self.assertEqual(len(messages), 1)
 
-        w.error(1)
+        with self.assertWarns(UserWarning):
+            w.error(1)
 
         self.assertEqual(len(messages), 0)
         self.assertEqual(len(w.Error.active), 0)
 
-        w.error(2, "B")
+        with self.assertWarns(UserWarning):
+            w.error(2, "B")
         self.assertEqual(len(messages), 1)
 
         w.Error.clear()
@@ -269,3 +312,64 @@ class DestroyedSignalSpy(QSignalSpy):
         self.__mapper = DestroyedSignalSpy.Mapper()
         obj.destroyed.connect(self.__mapper.destroyed_)
         super().__init__(self.__mapper.destroyed_)
+
+
+class WidgetTestInfoSummary(WidgetTest):
+    def test_info_set_warn(self):
+        test = self
+
+        class TestW(OWWidget):
+            name = "a"
+            def __init__(self):
+                super().__init__()
+                with test.assertWarns(DeprecationWarning):
+                    self.info = 4
+        TestW()
+
+    def test_io_summaries(self):
+        w = MyWidget()
+        info = w.info  # type: StateInfo
+        inmsg = w.findChild(MessagesWidget, "input-summary")  # type: MessagesWidget
+        outmsg = w.findChild(MessagesWidget, "output-summary")  # type: MessagesWidget
+        self.assertEqual(len(inmsg.messages()), 0)
+        self.assertEqual(len(outmsg.messages()), 0)
+
+        w.info.set_input_summary(w.info.NoInput)
+        w.info.set_output_summary(w.info.NoOutput)
+
+        self.assertEqual(len(inmsg.messages()), 1)
+        self.assertFalse(inmsg.summarize().isEmpty())
+        self.assertEqual(len(outmsg.messages()), 1)
+        self.assertFalse(outmsg.summarize().isEmpty())
+
+        info.set_input_summary("Foo")
+
+        self.assertEqual(len(inmsg.messages()), 1)
+        self.assertEqual(inmsg.summarize().text, "Foo")
+        self.assertFalse(inmsg.summarize().icon.isNull())
+
+        info.set_input_summary("Foo", "A foo that bars",)
+
+        info.set_input_summary(None)
+        info.set_output_summary(None)
+
+        self.assertTrue(inmsg.summarize().isEmpty())
+        self.assertTrue(outmsg.summarize().isEmpty())
+
+        info.set_output_summary("Foobar", "42")
+
+        self.assertEqual(len(outmsg.messages()), 1)
+        self.assertEqual(outmsg.summarize().text, "Foobar")
+        self.assertFalse(outmsg.summarize().icon.isNull())
+
+        with self.assertRaises(TypeError):
+            info.set_input_summary(None, "a")
+
+        with self.assertRaises(TypeError):
+            info.set_input_summary(info.NoInput, "a")
+
+        with self.assertRaises(TypeError):
+            info.set_output_summary(None, "a")
+
+        with self.assertRaises(TypeError):
+            info.set_output_summary(info.NoOutput, "a")

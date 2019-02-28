@@ -6,7 +6,7 @@ import itertools
 import concurrent.futures
 
 from collections import OrderedDict, namedtuple
-from typing import List, Tuple, Iterable  # pylint: disable=unused-import
+from typing import List, Tuple, Iterable
 
 from math import isnan
 
@@ -33,6 +33,7 @@ from Orange.statistics import basic_stats
 
 from Orange.widgets import widget, gui
 from Orange.widgets.settings import Setting, DomainContextHandler
+from Orange.widgets.utils.widgetpreview import WidgetPreview
 from Orange.widgets.widget import Input, Output
 from Orange.widgets.utils import datacaching
 from Orange.widgets.utils.annotated_data import (create_annotated_table,
@@ -912,6 +913,7 @@ class OWDataTable(widget.OWWidget):
         self.report_data_brief(model.source)
         self.report_table(view)
 
+
 # Table Summary
 
 # Basic statistics for X/Y/metas arrays
@@ -1052,25 +1054,6 @@ def is_sortable(table):
         return False
 
 
-def test_main():
-    a = QApplication(sys.argv)
-    ow = OWDataTable()
-
-    iris = Table("iris")
-    brown = Table("brown-selected")
-    housing = Table("housing")
-    ow.show()
-    ow.raise_()
-
-    ow.set_dataset(iris, iris.name)
-    ow.set_dataset(brown, brown.name)
-    ow.set_dataset(housing, housing.name)
-
-    rval = a.exec()
-#     ow.saveSettings()
-    return rval
-
-
 def test_model():
     app = QApplication([])
     view = QTableView(
@@ -1085,5 +1068,9 @@ def test_model():
     view.raise_()
     return app.exec()
 
-if __name__ == "__main__":
-    sys.exit(test_main())
+
+if __name__ == "__main__":  # pragma: no cover
+    WidgetPreview(OWDataTable).run(
+        [(Table("iris"), "iris"),
+         (Table("brown-selected"), "brown-selected"),
+         (Table("housing"), "housing")])

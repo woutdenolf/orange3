@@ -5,7 +5,7 @@ import pickle
 from collections import OrderedDict
 from enum import IntEnum
 
-from typing import Optional  # pylint: disable=unused-import
+from typing import Optional
 
 import pkg_resources
 
@@ -476,6 +476,9 @@ class OWReport(OWWidget):
             if isinstance(window, CanvasMainWindow):
                 return window
         return None
+
+    def copy_to_clipboard(self):
+        self.report_view.triggerPageAction(self.report_view.page().Copy)
 
 
 if __name__ == "__main__":

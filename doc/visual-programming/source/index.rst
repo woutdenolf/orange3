@@ -46,11 +46,13 @@ Data
    widgets/data/mergedata
    widgets/data/outliers
    widgets/data/preprocess
+   widgets/data/transform
    widgets/data/purgedomain
    widgets/data/rank
    widgets/data/correlations
    widgets/data/color
    widgets/data/featurestatistics
+   widgets/data/neighbors
 
 
 Visualize
@@ -63,6 +65,7 @@ Visualize
    widgets/visualize/distributions
    widgets/visualize/heatmap
    widgets/visualize/scatterplot
+   widgets/visualize/lineplot
    widgets/visualize/venndiagram
    widgets/visualize/linearprojection
    widgets/visualize/sievediagram
@@ -95,6 +98,7 @@ Model
    widgets/model/adaboost
    widgets/model/neuralnetwork
    widgets/model/stochasticgradient
+   widgets/model/stacking
    widgets/model/loadmodel
    widgets/model/savemodel
 
@@ -117,6 +121,7 @@ Unsupervised
    widgets/unsupervised/kmeansclustering
    widgets/unsupervised/louvainclustering
    widgets/unsupervised/mds
+   widgets/unsupervised/tsne
    widgets/unsupervised/manifoldlearning
    
 

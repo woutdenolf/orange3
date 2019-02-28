@@ -1,7 +1,6 @@
-import sys
 import math
 
-from AnyQt.QtWidgets import QFormLayout, QApplication
+from AnyQt.QtWidgets import QFormLayout
 from AnyQt.QtCore import Qt
 
 import numpy as np
@@ -11,6 +10,7 @@ from Orange.widgets import gui
 from Orange.widgets.settings import Setting
 from Orange.data import Table
 from Orange.data.sql.table import SqlTable
+from Orange.widgets.utils.widgetpreview import WidgetPreview
 from Orange.widgets.widget import Msg, OWWidget, Input, Output
 from Orange.util import Reprable
 
@@ -369,7 +369,7 @@ class SampleRandomN(Reprable):
     def __call__(self, table):
         if self.replace:
             rgen = np.random.RandomState(self.random_state)
-            sample = rgen.random_integers(0, len(table) - 1, self.n)
+            sample = rgen.randint(0, len(table), self.n)
             o = np.ones(len(table))
             o[sample] = 0
             others = np.nonzero(o)[0]
@@ -416,14 +416,5 @@ def sample_bootstrap(size, random_state=None):
     return remaining, sample
 
 
-def test_main():
-    app = QApplication([])
-    data = Table("iris")
-    w = OWDataSampler()
-    w.set_data(data)
-    w.show()
-    return app.exec_()
-
-
-if __name__ == "__main__":
-    sys.exit(test_main())
+if __name__ == "__main__":  # pragma: no cover
+    WidgetPreview(OWDataSampler).run(Table("iris"))

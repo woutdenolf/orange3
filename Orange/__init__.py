@@ -1,11 +1,14 @@
+# This module is a mixture of imports and code, so we allow import anywhere
+# pylint: disable=wrong-import-position,wrong-import-order
+
+from Orange import data
+
 from .misc.lazy_module import _LazyModule
 from .misc.datasets import _DatasetInfo
 from .version import \
     short_version as __version__, git_revision as __git_version__
 
 ADDONS_ENTRY_POINT = 'orange.addons'
-
-from Orange import data
 
 for mod_name in ['classification', 'clustering', 'distance', 'ensembles',
                  'evaluation', 'misc', 'modelling', 'preprocess', 'projection',
@@ -43,3 +46,10 @@ except:  # pylint: disable=bare-except
     pass
 finally:
     del ctypes
+
+
+# scipy.sparse uses matrix
+# we can't do anything about it, so we silence it until scipy is fixed
+import warnings
+warnings.filterwarnings(
+    "ignore", ".*the matrix subclass.*", PendingDeprecationWarning)

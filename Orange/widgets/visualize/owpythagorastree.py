@@ -14,6 +14,7 @@ from Orange.widgets.utils.annotated_data import (
     ANNOTATED_DATA_SIGNAL_NAME
 )
 from Orange.widgets.utils.signals import Input, Output
+from Orange.widgets.utils.widgetpreview import WidgetPreview
 from Orange.widgets.visualize.pythagorastreeviewer import (
     PythagorasTreeViewer,
     SquareGraphicsItem,
@@ -90,7 +91,7 @@ class OWPythagorasTree(OWWidget):
         # CONTROL AREA
         # Tree info area
         box_info = gui.widgetBox(self.controlArea, 'Tree Info')
-        self.info = gui.widgetLabel(box_info)
+        self.infolabel = gui.widgetLabel(box_info)
 
         # Display settings area
         box_display = gui.widgetBox(self.controlArea, 'Display Settings')
@@ -120,6 +121,8 @@ class OWPythagorasTree(OWWidget):
             box_plot, self, 'show_legend', label='Show legend',
             callback=self.update_show_legend)
 
+        gui.button(self.controlArea, self, label="Redraw", callback=self.redraw)
+
         # Stretch to fit the rest of the unsused area
         gui.rubber(self.controlArea)
 
@@ -133,7 +136,7 @@ class OWPythagorasTree(OWWidget):
         self.view.setRenderHint(QPainter.Antialiasing, True)
         self.mainArea.layout().addWidget(self.view)
 
-        self.ptree = PythagorasTreeViewer()
+        self.ptree = PythagorasTreeViewer(self)
         self.scene.addItem(self.ptree)
         self.view.set_central_widget(self.ptree)
 
@@ -224,6 +227,10 @@ class OWPythagorasTree(OWWidget):
         self._update_log_scale_slider()
         self.invalidate_tree()
 
+    def redraw(self):
+        self.tree_adapter.shuffle_children()
+        self.invalidate_tree()
+
     def invalidate_tree(self):
         """When the tree needs to be completely recalculated."""
         if self.model is not None:
@@ -244,7 +251,7 @@ class OWPythagorasTree(OWWidget):
         self._update_legend_visibility()
 
     def _update_info_box(self):
-        self.info.setText('Nodes: {}\nDepth: {}'.format(
+        self.infolabel.setText('Nodes: {}\nDepth: {}'.format(
             self.tree_adapter.num_nodes,
             self.tree_adapter.max_depth
         ))
@@ -264,7 +271,7 @@ class OWPythagorasTree(OWWidget):
             self.SIZE_CALCULATION[self.size_calc_idx][0] == 'Logarithmic')
 
     def _clear_info_box(self):
-        self.info.setText('No tree on input')
+        self.infolabel.setText('No tree on input')
 
     def _clear_depth_slider(self):
         self.depth_slider.parent().setEnabled(False)
@@ -396,33 +403,15 @@ class TreeGraphicsView(
 ):
     """QGraphicsView that contains all functionality we will use to display
     tree."""
-    pass
 
 
 class TreeGraphicsScene(UpdateItemsOnSelectGraphicsScene):
     """QGraphicsScene that the tree uses."""
-    pass
 
 
-def main():
+if __name__ == "__main__":  # pragma: no cover
     from Orange.modelling import TreeLearner
-    from AnyQt.QtWidgets import QApplication
-    import sys
-
-    app = QApplication(sys.argv)
-
-    ow = OWPythagorasTree()
-    data = Table(sys.argv[1] if len(sys.argv) > 1 else 'iris')
-
+    data = Table('iris')
     model = TreeLearner(max_depth=1000)(data)
     model.instances = data
-    ow.set_tree(model)
-
-    ow.show()
-    ow.raise_()
-    ow.handleNewSignals()
-    app.exec_()
-
-
-if __name__ == '__main__':
-    main()
+    WidgetPreview(OWPythagorasTree).run(model)

@@ -5,17 +5,19 @@ from AnyQt.QtWidgets import QFormLayout
 from AnyQt.QtCore import Qt
 
 from Orange.data.table import Table
-from Orange.data.io import Compression, FileFormat, TabReader, CSVReader, PickleReader
+from Orange.data.io import Compression, FileFormat, TabReader, CSVReader, PickleReader, \
+    ExcelReader
 from Orange.widgets import gui, widget
 from Orange.widgets.settings import Setting
 from Orange.widgets.utils import filedialogs
+from Orange.widgets.utils.widgetpreview import WidgetPreview
 from Orange.widgets.widget import Input
 
 FILE_TYPES = [
     ("{} ({})".format(w.DESCRIPTION, w.EXTENSIONS[0]),
      w.EXTENSIONS[0],
      w.SUPPORT_SPARSE_DATA)
-    for w in (TabReader, CSVReader, PickleReader)
+    for w in (TabReader, CSVReader, PickleReader, ExcelReader)
 ]
 
 COMPRESSIONS = [
@@ -46,6 +48,7 @@ class OWSave(widget.OWWidget):
     filetype = Setting(FILE_TYPES[0][0])
     compression = Setting(COMPRESSIONS[0][0])
     compress = Setting(False)
+    add_type_annotations = Setting(True)
 
     def __init__(self):
         super().__init__()
@@ -54,7 +57,6 @@ class OWSave(widget.OWWidget):
         self.basename = ""
         self.type_ext = ""
         self.compress_ext = ""
-        self.writer = None
 
         form = QFormLayout(
             labelAlignment=Qt.AlignLeft,
@@ -87,6 +89,11 @@ class OWSave(widget.OWWidget):
         form.addRow(self.controls.compress, self.controls.compression)
 
         box.layout().addLayout(form)
+
+        self.annotations_cb = gui.checkBox(
+            None, self, "add_type_annotations", label="Add type annotations",
+        )
+        form.addRow(self.annotations_cb, None)
 
         self.save = gui.auto_commit(
             self.controlArea, self, "auto_save", "Save", box=False,
@@ -158,7 +165,6 @@ class OWSave(widget.OWWidget):
             return
 
         self.filename = filename
-        self.writer = writer
         self.last_dir = os.path.split(self.filename)[0]
         self.basename = os.path.basename(self.remove_extensions(filename))
         self.unconditional_save_file()
@@ -171,9 +177,12 @@ class OWSave(widget.OWWidget):
             self.save_file_as()
         else:
             try:
-                self.writer.write(os.path.join(self.last_dir,
-                                               self.basename + self.type_ext + self.compress_ext),
-                                  self.data)
+                self.get_writer_selected().write(
+                    os.path.join(
+                        self.last_dir,
+                        self.basename + self.type_ext + self.compress_ext),
+                    self.data, self.add_type_annotations)
+
             except Exception as err_value:
                 self.error(str(err_value))
             else:
@@ -181,6 +190,9 @@ class OWSave(widget.OWWidget):
 
     def update_extension(self):
         self.type_ext = [ext for name, ext, _ in FILE_TYPES if name == self.filetype][0]
+        self.annotations_cb.setEnabled(False)
+        if self.get_writer_selected().OPTIONAL_TYPE_ANNOTATIONS:
+            self.annotations_cb.setEnabled(True)
         self.compress_ext = dict(COMPRESSIONS)[self.compression] if self.compress else ''
 
     def _update_text(self):
@@ -188,15 +200,5 @@ class OWSave(widget.OWWidget):
         self.adjust_label()
 
 
-if __name__ == "__main__":
-    import sys
-    from AnyQt.QtWidgets import QApplication
-
-    a = QApplication(sys.argv)
-    table = Table("iris")
-
-    ow = OWSave()
-    ow.show()
-    ow.dataset(table)
-    a.exec()
-    ow.saveSettings()
+if __name__ == "__main__":  # pragma: no cover
+    WidgetPreview(OWSave).run(Table("iris"))

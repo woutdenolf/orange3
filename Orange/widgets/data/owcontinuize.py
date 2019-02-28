@@ -1,4 +1,3 @@
-from AnyQt import QtWidgets
 from AnyQt.QtCore import Qt
 
 import Orange.data
@@ -8,6 +7,7 @@ from Orange.data.table import Table
 from Orange.widgets import gui, widget
 from Orange.widgets.settings import Setting
 from Orange.widgets.utils.sql import check_sql_input
+from Orange.widgets.utils.widgetpreview import WidgetPreview
 from Orange.widgets.widget import Input, Output
 
 
@@ -384,12 +384,5 @@ class DomainContinuizer:
         return newdomain
 
 
-if __name__ == "__main__":
-    import sys
-    a = QtWidgets.QApplication(sys.argv)
-    ow = OWContinuize()
-    data = Table("lenses")
-    ow.setData(data)
-    ow.show()
-    a.exec_()
-    ow.saveSettings()
+if __name__ == "__main__":  # pragma: no cover
+    WidgetPreview(OWContinuize).run(Table("lenses"))

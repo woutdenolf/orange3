@@ -1,14 +1,16 @@
-# Test methods with long descriptive names can omit docstrings
-# pylint: disable=missing-docstring
+# pylint: disable=missing-docstring,too-many-lines,too-many-public-methods
+# pylint: disable=protected-access
 from unittest.mock import patch, Mock
 import numpy as np
 
 from AnyQt.QtCore import QRectF, Qt
 from AnyQt.QtGui import QColor
+from AnyQt.QtTest import QSignalSpy
 
 from pyqtgraph import mkPen
 
-from Orange.widgets.tests.base import GuiTest
+from Orange.widgets.settings import SettingProvider
+from Orange.widgets.tests.base import WidgetTest
 from Orange.widgets.utils.colorpalette import ColorPaletteGenerator, \
     ContinuousPaletteGenerator, NAN_GREY
 from Orange.widgets.visualize.owscatterplotgraph import OWScatterPlotBase, \
@@ -34,6 +36,9 @@ class MockWidget(OWWidget):
     combined_legend = Mock(return_value=False)
     selection_changed = Mock(return_value=None)
 
+    GRAPH_CLASS = OWScatterPlotBase
+    graph = SettingProvider(OWScatterPlotBase)
+
     def get_palette(self):
         if self.is_continuous_color():
             return ContinuousPaletteGenerator(Qt.white, Qt.black, False)
@@ -41,7 +46,7 @@ class MockWidget(OWWidget):
             return ColorPaletteGenerator(12)
 
 
-class TestOWScatterPlotBase(GuiTest):
+class TestOWScatterPlotBase(WidgetTest):
     def setUp(self):
         self.master = MockWidget()
         self.graph = OWScatterPlotBase(self.master)
@@ -100,18 +105,21 @@ class TestOWScatterPlotBase(GuiTest):
 
     def test_update_coordinates_and_labels(self):
         graph = self.graph
-        xy = self.xy = (np.array([1, 2]), np.array([3, 4]))
-        self.master.get_label_data = lambda: ["a", "b"]
+        xy = self.xy = (np.array([1., 2]), np.array([3, 4]))
+        self.master.get_label_data = lambda: np.array(["a", "b"])
         graph.reset_graph()
         self.assertEqual(graph.labels[0].pos().x(), 1)
-        xy[0][0] = 0
+        xy[0][0] = 1.5
         graph.update_coordinates()
-        self.assertEqual(graph.labels[0].pos().x(), 0)
+        self.assertEqual(graph.labels[0].pos().x(), 1.5)
+        xy[0][0] = 0  # This label goes out of the range
+        graph.update_coordinates()
+        self.assertEqual(graph.labels[0].pos().x(), 2)
 
     def test_update_coordinates_and_density(self):
         graph = self.graph
         xy = self.xy = (np.array([1, 2]), np.array([3, 4]))
-        self.master.get_label_data = lambda: ["a", "b"]
+        self.master.get_label_data = lambda: np.array(["a", "b"])
         graph.reset_graph()
         self.assertEqual(graph.labels[0].pos().x(), 1)
         xy[0][0] = 0
@@ -123,7 +131,7 @@ class TestOWScatterPlotBase(GuiTest):
         graph = self.graph
         graph.view_box.setRange = self.setRange
         xy = self.xy = (np.array([2, 1]), np.array([3, 10]))
-        self.master.get_label_data = lambda: ["a", "b"]
+        self.master.get_label_data = lambda: np.array(["a", "b"])
         graph.reset_graph()
         self.assertEqual(self.last_setRange, [[1, 2], [3, 10]])
 
@@ -160,6 +168,8 @@ class TestOWScatterPlotBase(GuiTest):
         master.get_label_data = lambda: \
             np.array([str(x) for x in d], dtype=object)
         graph.reset_graph()
+        self.process_events(until=lambda: not (
+            self.graph.timer is not None and self.graph.timer.isActive()))
 
         # Check proper sampling
         scatterplot_item = graph.scatterplot_item
@@ -187,6 +197,8 @@ class TestOWScatterPlotBase(GuiTest):
 
         # Check that sample is extended when sample size is changed
         graph.set_sample_size(4)
+        self.process_events(until=lambda: not (
+            self.graph.timer is not None and self.graph.timer.isActive()))
         scatterplot_item = graph.scatterplot_item
         x, y = scatterplot_item.getData()
         data = scatterplot_item.data
@@ -226,6 +238,8 @@ class TestOWScatterPlotBase(GuiTest):
 
         # Enable sampling when data is already present and not sampled
         graph.set_sample_size(3)
+        self.process_events(until=lambda: not (
+            self.graph.timer is not None and self.graph.timer.isActive()))
         scatterplot_item = graph.scatterplot_item
         x, y = scatterplot_item.getData()
         data = scatterplot_item.data
@@ -261,6 +275,8 @@ class TestOWScatterPlotBase(GuiTest):
                    np.arange(100, 105, dtype=float))
         d = self.xy[0] - 100
         graph.reset_graph()
+        self.process_events(until=lambda: not (
+            self.graph.timer is not None and self.graph.timer.isActive()))
         scatterplot_item = graph.scatterplot_item
         x, y = scatterplot_item.getData()
         self.assertEqual(len(x), 3)
@@ -365,6 +381,8 @@ class TestOWScatterPlotBase(GuiTest):
 
         d[4] = np.nan
         graph.update_sizes()
+        self.process_events(until=lambda: not (
+            self.graph.timer is not None and self.graph.timer.isActive()))
         sizes2 = scatterplot_item.data["size"]
 
         self.assertEqual(sizes[1] - sizes[0], sizes2[1] - sizes2[0])
@@ -436,6 +454,26 @@ class TestOWScatterPlotBase(GuiTest):
             graph.scatterplot_item_sel.data["size"]
             - graph.scatterplot_item.data["size"],
             SELECTION_WIDTH)
+
+    @patch("Orange.widgets.visualize.owscatterplotgraph"
+           ".MAX_N_VALID_SIZE_ANIMATE", 5)
+    def test_size_animation(self):
+        self._update_sizes_for_points(5)
+        self.assertEqual(self.graph.scatterplot_item.setSize.call_count, 6)
+        self._update_sizes_for_points(6)
+        self.graph.scatterplot_item.setSize.assert_called_once()
+
+    def _update_sizes_for_points(self, n: int):
+        arr = np.arange(n, dtype=float)
+        self.master.get_coordinates_data = lambda: (arr, arr)
+        self.master.get_size_data = lambda: arr
+        self.graph.reset_graph()
+        self.graph.scatterplot_item.setSize = Mock(
+            wraps=self.graph.scatterplot_item.setSize)
+        self.master.get_size_data = lambda: arr[::-1]
+        self.graph.update_sizes()
+        self.process_events(until=lambda: not (
+            self.graph.timer is not None and self.graph.timer.isActive()))
 
     def test_colors_discrete(self):
         self.master.is_continuous_color = lambda: False
@@ -712,6 +750,200 @@ class TestOWScatterPlotBase(GuiTest):
             self.assertEqual(label.x(), x[ind])
             self.assertEqual(label.y(), y[ind])
 
+    def test_label_mask_all_visible(self):
+        graph = self.graph
+
+        x, y = np.arange(10) / 10, np.arange(10) / 10
+        sel = np.array(
+            [True, True, False, False, False, True, True, True, False, False])
+        subset = np.array(
+            [True, False, True, True, False, True, True, False, False, False])
+        trues = np.ones(10, dtype=bool)
+
+        np.testing.assert_equal(graph._label_mask(x, y), trues)
+
+        # Selection present, subset is None
+        graph.selection = sel
+        graph.master.get_subset_mask = lambda: None
+
+        graph.label_only_selected = False
+        np.testing.assert_equal(graph._label_mask(x, y), trues)
+
+        graph.label_only_selected = True
+        np.testing.assert_equal(graph._label_mask(x, y), sel)
+
+        # Selection and subset present
+        graph.selection = sel
+        graph.master.get_subset_mask = lambda: subset
+
+        graph.label_only_selected = False
+        np.testing.assert_equal(graph._label_mask(x, y), trues)
+
+        graph.label_only_selected = True
+        np.testing.assert_equal(graph._label_mask(x, y), np.array(
+            [True, True, True, True, False, True, True, True, False, False]
+        ))
+
+        # No selection, subset present
+        graph.selection = None
+        graph.master.get_subset_mask = lambda: subset
+
+        graph.label_only_selected = False
+        np.testing.assert_equal(graph._label_mask(x, y), trues)
+
+        graph.label_only_selected = True
+        np.testing.assert_equal(graph._label_mask(x, y), subset)
+
+        # No selection, no subset
+        graph.selection = None
+        graph.master.get_subset_mask = lambda: None
+
+        graph.label_only_selected = False
+        np.testing.assert_equal(graph._label_mask(x, y), trues)
+
+        graph.label_only_selected = True
+        self.assertIsNone(graph._label_mask(x, y))
+
+    def test_label_mask_with_invisible(self):
+        graph = self.graph
+
+        x, y = np.arange(5, 10) / 10, np.arange(5, 10) / 10
+        sel = np.array(
+            [True, True, False, False, False,  # these 5 are not in the sample
+             True, True, True, False, False])
+        subset = np.array(
+            [True, False, True, True, False,  # these 5 are not in the sample
+             True, True, False, False, True])
+        graph.sample_indices = np.arange(5, 10, dtype=int)
+        trues = np.ones(5, dtype=bool)
+
+        np.testing.assert_equal(graph._label_mask(x, y), trues)
+
+        # Selection present, subset is None
+        graph.selection = sel
+        graph.master.get_subset_mask = lambda: None
+
+        graph.label_only_selected = False
+        np.testing.assert_equal(graph._label_mask(x, y), trues)
+
+        graph.label_only_selected = True
+        np.testing.assert_equal(graph._label_mask(x, y), sel[5:])
+
+        # Selection and subset present
+        graph.selection = sel
+        graph.master.get_subset_mask = lambda: subset
+
+        graph.label_only_selected = False
+        np.testing.assert_equal(graph._label_mask(x, y), trues)
+
+        graph.label_only_selected = True
+        np.testing.assert_equal(
+            graph._label_mask(x, y),
+            np.array([True, True, True, False, True]))
+
+        # No selection, subset present
+        graph.selection = None
+        graph.master.get_subset_mask = lambda: subset
+
+        graph.label_only_selected = False
+        np.testing.assert_equal(graph._label_mask(x, y), trues)
+
+        graph.label_only_selected = True
+        np.testing.assert_equal(graph._label_mask(x, y), subset[5:])
+
+        # No selection, no subset
+        graph.selection = None
+        graph.master.get_subset_mask = lambda: None
+
+        graph.label_only_selected = False
+        np.testing.assert_equal(graph._label_mask(x, y), trues)
+
+        graph.label_only_selected = True
+        self.assertIsNone(graph._label_mask(x, y))
+
+    def test_label_mask_with_invisible_and_view(self):
+        graph = self.graph
+
+        x, y = np.arange(5, 10) / 10, np.arange(5) / 10
+        sel = np.array(
+            [True, True, False, False, False,  # these 5 are not in the sample
+             True, True, True, False, False])  # first and last out of the view
+        subset = np.array(
+            [True, False, True, True, False,  # these 5 are not in the sample
+             True, True, False, True, True])  # first and last out of the view
+        graph.sample_indices = np.arange(5, 10, dtype=int)
+        graph.view_box.viewRange = lambda: ((0.6, 1), (0, 0.3))
+        viewed = np.array([False, True, True, True, False])
+
+        np.testing.assert_equal(graph._label_mask(x, y), viewed)
+
+        # Selection present, subset is None
+        graph.selection = sel
+        graph.master.get_subset_mask = lambda: None
+
+        graph.label_only_selected = False
+        np.testing.assert_equal(graph._label_mask(x, y), viewed)
+
+        graph.label_only_selected = True
+        np.testing.assert_equal(
+            graph._label_mask(x, y),
+            np.array([False, True, True, False, False]))
+
+        # Selection and subset present
+        graph.selection = sel
+        graph.master.get_subset_mask = lambda: subset
+
+        graph.label_only_selected = False
+        np.testing.assert_equal(graph._label_mask(x, y), viewed)
+
+        graph.label_only_selected = True
+        np.testing.assert_equal(
+            graph._label_mask(x, y),
+            np.array([False, True, True, True, False]))
+
+        # No selection, subset present
+        graph.selection = None
+        graph.master.get_subset_mask = lambda: subset
+
+        graph.label_only_selected = False
+        np.testing.assert_equal(graph._label_mask(x, y), viewed)
+
+        graph.label_only_selected = True
+        np.testing.assert_equal(
+            graph._label_mask(x, y),
+            np.array([False, True, False, True, False]))
+
+        # No selection, no subset
+        graph.selection = None
+        graph.master.get_subset_mask = lambda: None
+
+        graph.label_only_selected = False
+        np.testing.assert_equal(graph._label_mask(x, y), viewed)
+
+        graph.label_only_selected = True
+        self.assertIsNone(graph._label_mask(x, y))
+
+    def test_labels_observes_mask(self):
+        graph = self.graph
+        get_label_data = graph.master.get_label_data
+        graph.reset_graph()
+
+        self.assertEqual(graph.labels, [])
+
+        get_label_data.reset_mock()
+        graph._label_mask = lambda *_: None
+        graph.update_labels()
+        get_label_data.assert_not_called()
+
+        self.master.get_label_data = lambda: \
+            np.array([str(x) for x in range(10)], dtype=object)
+        graph._label_mask = \
+            lambda *_: np.array([False, True, True] + [False] * 7)
+        graph.update_labels()
+        self.assertEqual(
+            [label.textItem.toPlainText() for label in graph.labels],
+            ["1", "2"])
+
     def test_labels_update_coordinates(self):
         graph = self.graph
         self.master.get_label_data = lambda: \
@@ -954,6 +1186,56 @@ class TestOWScatterPlotBase(GuiTest):
         graph.update_selection_colors.assert_not_called()
         graph.update_labels.assert_not_called()
         self.master.selection_changed.assert_not_called()
+
+    def test_hiding_too_many_labels(self):
+        spy = QSignalSpy(self.graph.too_many_labels)
+        self.graph.MAX_VISIBLE_LABELS = 5
+
+        graph = self.graph
+        coords = np.array(
+            [(x, 0) for x in range(10)], dtype=float).T
+        self.master.get_coordinates_data = lambda: coords
+        graph.reset_graph()
+
+        self.assertFalse(spy and spy[-1][0])
+
+        self.master.get_label_data = lambda: \
+            np.array([str(x) for x in range(10)], dtype=object)
+        graph.update_labels()
+        self.assertTrue(spy[-1][0])
+        self.assertFalse(bool(self.graph.labels))
+
+        graph.view_box.setRange(QRectF(1, -1, 4, 4))
+        graph.view_box.sigRangeChangedManually.emit(((1, 5), (-1, 3)))
+        self.assertFalse(spy[-1][0])
+        self.assertTrue(bool(self.graph.labels))
+
+        graph.view_box.setRange(QRectF(1, -1, 8, 8))
+        graph.view_box.sigRangeChangedManually.emit(((1, 9), (-1, 7)))
+        self.assertTrue(spy[-1][0])
+        self.assertFalse(bool(self.graph.labels))
+
+        graph.label_only_selected = True
+        graph.update_labels()
+        self.assertFalse(spy[-1][0])
+        self.assertFalse(bool(self.graph.labels))
+
+        graph.selection_select([1, 2, 3, 4, 5, 6])
+        self.assertTrue(spy[-1][0])
+        self.assertFalse(bool(self.graph.labels))
+
+        graph.selection_select([1, 2, 3])
+        self.assertFalse(spy[-1][0])
+        self.assertTrue(bool(self.graph.labels))
+
+        graph.label_only_selected = False
+        graph.update_labels()
+        self.assertTrue(spy[-1][0])
+        self.assertFalse(bool(self.graph.labels))
+
+        graph.clear()
+        self.assertFalse(spy[-1][0])
+        self.assertFalse(bool(self.graph.labels))
 
 
 if __name__ == "__main__":

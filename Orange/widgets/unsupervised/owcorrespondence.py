@@ -1,5 +1,3 @@
-import sys
-
 from collections import namedtuple, OrderedDict
 
 import numpy as np
@@ -14,6 +12,7 @@ from Orange.statistics import contingency
 
 from Orange.widgets import widget, gui, settings
 from Orange.widgets.utils import itemmodels, colorpalette
+from Orange.widgets.utils.widgetpreview import WidgetPreview
 
 from Orange.widgets.visualize.owscatterplotgraph import ScatterPlotItem
 from Orange.widgets.widget import Input
@@ -366,7 +365,8 @@ def correspondence(A):
     row_sum = np.sum(corr_mat, axis=1, keepdims=True)
     E = row_sum * col_sum
 
-    D_r, D_c = row_sum.ravel() ** -1, col_sum.ravel() ** -1
+    with np.errstate(divide="ignore"):
+        D_r, D_c = row_sum.ravel() ** -1, col_sum.ravel() ** -1
     D_r, D_c = np.nan_to_num(D_r), np.nan_to_num(D_c)
 
     def gsvd(M, wu, wv):
@@ -405,27 +405,5 @@ class CA(CA):
         return np.sum(self.row_inertia(), axis=0)
 
 
-def main(argv=None):
-    import sip
-    if argv is None:
-        argv = sys.argv[1:]
-
-    if argv:
-        filename = argv[0]
-    else:
-        filename = "smokers_ct"
-
-    data = Orange.data.Table(filename)
-    app = QApplication([argv])
-    w = OWCorrespondenceAnalysis()
-    w.set_data(data)
-    w.show()
-    w.raise_()
-    rval = app.exec_()
-    w.onDeleteWidget()
-    sip.delete(w)
-    del w
-    return rval
-
-if __name__ == "__main__":
-    sys.exit(main())
+if __name__ == "__main__":  # pragma: no cover
+    WidgetPreview(OWCorrespondenceAnalysis).run(Orange.data.Table("smokers_ct"))

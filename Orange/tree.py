@@ -5,7 +5,7 @@ from collections import OrderedDict
 import numpy as np
 import scipy.sparse as sp
 
-from Orange.base import Model, TreeModel as TreeModelInterface
+from Orange.base import TreeModel as TreeModelInterface
 
 
 class Node:
@@ -114,7 +114,7 @@ class NumericNode(Node):
 
     def descend(self, inst):
         val = inst[self.attr_idx]
-        return np.nan if np.isnan(val) else val > self.threshold
+        return np.nan if np.isnan(val) else int(val > self.threshold)
 
     def _set_child_descriptions(self, child, child_idx, conditions):
         attr = self.attr

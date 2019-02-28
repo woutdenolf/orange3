@@ -76,6 +76,22 @@ class TestOWTestLearners(WidgetTest):
         self.widget.resampling = OWTestLearners.TestOnTest
         self.send_signal(self.widget.Inputs.test_data, data)
 
+    def test_testOnTest_incompatible_domain(self):
+        iris = Table("iris")
+        self.send_signal(self.widget.Inputs.train_data, iris)
+        self.send_signal(self.widget.Inputs.learner, LogisticRegressionLearner(), 0)
+        self.get_output(self.widget.Outputs.evaluations_results, wait=5000)
+        self.assertFalse(self.widget.Error.test_data_incompatible.is_shown())
+        self.widget.resampling = OWTestLearners.TestOnTest
+        # test data with the same class (otherwise the widget shows a different error)
+        # and a non-nan X
+        iris_test = iris.transform(Domain([ContinuousVariable()],
+                                          class_vars=iris.domain.class_vars))
+        iris_test.X[:, 0] = 1
+        self.send_signal(self.widget.Inputs.test_data, iris_test)
+        self.get_output(self.widget.Outputs.evaluations_results, wait=5000)
+        self.assertTrue(self.widget.Error.test_data_incompatible.is_shown())
+
     def test_CrossValidationByFeature(self):
         data = Table("iris")
         attrs = data.domain.attributes
@@ -198,7 +214,6 @@ class TestOWTestLearners(WidgetTest):
                 "yyyy"))
         )
         self.widget.n_folds = 0
-        self.widget.class_selection = "y"
         self.assertFalse(self.widget.Error.only_one_class_var_value.is_shown())
         self.send_signal("Data", table)
         self.send_signal("Learner", MajorityLearner(), 0, wait=1000)

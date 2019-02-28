@@ -5,8 +5,12 @@ import numpy as np
 from AnyQt.QtCore import QSize
 from AnyQt.QtWidgets import QApplication
 
-from Orange.data import Table, ContinuousVariable, Domain, Variable
+from Orange.data import (
+    Table, ContinuousVariable, Domain, Variable, StringVariable
+)
+from Orange.data.util import get_unique_names, array_equal
 from Orange.data.sql.table import SqlTable
+from Orange.preprocess.preprocess import Preprocess, ApplyDomain
 from Orange.statistics.util import bincount
 
 from Orange.widgets import gui, report
@@ -14,12 +18,12 @@ from Orange.widgets.settings import (
     Setting, ContextSetting, DomainContextHandler, SettingProvider
 )
 from Orange.widgets.utils.annotated_data import (
-    create_annotated_table, ANNOTATED_DATA_SIGNAL_NAME, create_groups_table,
-    get_unique_names
+    create_annotated_table, ANNOTATED_DATA_SIGNAL_NAME, create_groups_table
 )
 from Orange.widgets.utils.colorpalette import (
     ColorPaletteGenerator, ContinuousPaletteGenerator, DefaultRGBColors
 )
+from Orange.widgets.utils.plot import OWPlotGUI
 from Orange.widgets.utils.sql import check_sql_input
 from Orange.widgets.visualize.owscatterplotgraph import OWScatterPlotBase
 from Orange.widgets.visualize.utils.component import OWGraphWithAnchors
@@ -356,6 +360,15 @@ class OWDataProjectionWidget(OWProjectionWidgetBase):
         selected_data = Output("Selected Data", Table, default=True)
         annotated_data = Output(ANNOTATED_DATA_SIGNAL_NAME, Table)
 
+    class Warning(OWProjectionWidgetBase.Warning):
+        too_many_labels = Msg(
+            "Too many labels to show (zoom in or label only selected)")
+        subset_not_subset = Msg(
+            "Subset data contains some instances that do not appear in "
+            "input data")
+        subset_independent = Msg(
+            "No subset data instances appear in input data")
+
     settingsHandler = DomainContextHandler()
     selection = Setting(None, schema_only=True)
     auto_commit = Setting(True)
@@ -370,6 +383,7 @@ class OWDataProjectionWidget(OWProjectionWidgetBase):
         self.subset_data = None
         self.subset_indices = None
         self.__pending_selection = self.selection
+        self._invalidated = True
         self.setup_gui()
 
     # GUI
@@ -381,52 +395,95 @@ class OWDataProjectionWidget(OWProjectionWidgetBase):
         box = gui.vBox(self.mainArea, True, margin=0)
         self.graph = self.GRAPH_CLASS(self, box)
         box.layout().addWidget(self.graph.plot_widget)
+        self.graph.too_many_labels.connect(
+            lambda too_many: self.Warning.too_many_labels(shown=too_many))
 
     def _add_controls(self):
-        self._point_box = self.graph.gui.point_properties_box(self.controlArea)
-        self._effects_box = self.graph.gui.effects_box(self.controlArea)
-        self._plot_box = self.graph.gui.plot_properties_box(self.controlArea)
-        self.control_area_stretch = gui.widgetBox(self.controlArea)
+        self.gui = OWPlotGUI(self)
+        area = self.controlArea
+        self._point_box = self.gui.point_properties_box(area)
+        self._effects_box = self.gui.effects_box(area)
+        self._plot_box = self.gui.plot_properties_box(area)
+        self.control_area_stretch = gui.widgetBox(area)
         self.control_area_stretch.layout().addStretch(100)
-        self.graph.box_zoom_select(self.controlArea)
-        gui.auto_commit(self.controlArea, self, "auto_commit",
-                        "Send Selection", "Send Automatically")
+        self.gui.box_zoom_select(area)
+        gui.auto_commit(
+            area, self, "auto_commit", "Send Selection", "Send Automatically")
+
+    @property
+    def effective_variables(self):
+        return self.data.domain.attributes
+
+    @property
+    def effective_data(self):
+        return self.data.transform(Domain(self.effective_variables,
+                                          self.data.domain.class_vars,
+                                          self.data.domain.metas))
 
     # Input
     @Inputs.data
     @check_sql_input
     def set_data(self, data):
-        same_domain = (self.data and data and
+        data_existed = self.data is not None
+        effective_data = self.effective_data if data_existed else None
+        same_domain = (data_existed and data is not None and
                        data.domain.checksum() == self.data.domain.checksum())
         self.closeContext()
-        self.clear()
         self.data = data
         self.check_data()
         if not same_domain:
             self.init_attr_values()
         self.openContext(self.data)
-        self.cb_class_density.setEnabled(self.can_draw_density())
+        self.use_context()
+        self._invalidated = not (
+            data_existed and self.data is not None and
+            array_equal(effective_data.X, self.effective_data.X))
+        if self._invalidated:
+            self.clear()
+        self.enable_controls()
 
     def check_data(self):
+        self.valid_data = None
         self.clear_messages()
+
+    def use_context(self):
+        pass
+
+    def enable_controls(self):
+        self.cb_class_density.setEnabled(self.can_draw_density())
 
     @Inputs.data_subset
     @check_sql_input
     def set_subset_data(self, subset):
         self.subset_data = subset
-        self.subset_indices = {e.id for e in subset} \
-            if subset is not None else {}
         self.controls.graph.alpha_value.setEnabled(subset is None)
 
     def handleNewSignals(self):
-        self.setup_plot()
+        self.Warning.subset_independent.clear()
+        self.Warning.subset_not_subset.clear()
+        if self.data is None or self.subset_data is None:
+            self.subset_indices = set()
+        else:
+            self.subset_indices = set(self.subset_data.ids)
+            ids = set(self.data.ids)
+            if not self.subset_indices & ids:
+                self.Warning.subset_independent()
+            elif self.subset_indices - ids:
+                self.Warning.subset_not_subset()
+
+        if self._invalidated:
+            self._invalidated = False
+            self.setup_plot()
+        else:
+            self.graph.update_point_props()
         self.commit()
 
     def get_subset_mask(self):
-        if self.subset_indices:
-            return np.array([ex.id in self.subset_indices
-                             for ex in self.data[self.valid_data]])
-        return None
+        if not self.subset_indices:
+            return None
+        valid_data = self.data[self.valid_data]
+        return np.fromiter((ex.id in self.subset_indices for ex in valid_data),
+                           dtype=np.bool, count=len(valid_data))
 
     # Plot
     def get_embedding(self):
@@ -436,7 +493,7 @@ class OWDataProjectionWidget(OWProjectionWidgetBase):
         should return embedding for all data (valid and invalid). Invalid
         data embedding coordinates should be set to 0 (in some cases to Nan).
 
-        The method should also sets self.valid_data.
+        The method should also set self.valid_data.
 
         Returns:
             np.array: Array of embedding coordinates with shape
@@ -446,8 +503,9 @@ class OWDataProjectionWidget(OWProjectionWidgetBase):
 
     def get_coordinates_data(self):
         embedding = self.get_embedding()
-        return embedding[self.valid_data].T[:2] if embedding is not None \
-            else (None, None)
+        if embedding is not None and len(embedding[self.valid_data]):
+            return embedding[self.valid_data].T
+        return None, None
 
     def setup_plot(self):
         self.graph.reset_graph()
@@ -456,11 +514,10 @@ class OWDataProjectionWidget(OWProjectionWidgetBase):
 
     # Selection
     def apply_selection(self):
-        if self.data is not None and self.__pending_selection is not None \
-                and self.graph.n_valid:
-            index_group = [(index, group) for index, group in
-                           self.__pending_selection if index < len(self.data)]
-            index_group = np.array(index_group).T
+        pending = self.__pending_selection
+        if self.data is not None and pending is not None and len(pending) \
+                and max(i for i, _ in pending) < self.graph.n_valid:
+            index_group = np.array(pending).T
             selection = np.zeros(self.graph.n_valid, dtype=np.uint8)
             selection[index_group[0]] = index_group[1]
 
@@ -502,11 +559,8 @@ class OWDataProjectionWidget(OWProjectionWidgetBase):
         return data
 
     def _get_projection_variables(self):
-        domain = self.data.domain
         names = get_unique_names(
-            [v.name for v in domain.variables + domain.metas],
-            self.embedding_variables_names
-        )
+            self.data.domain, self.embedding_variables_names)
         return ContinuousVariable(names[0]), ContinuousVariable(names[1])
 
     @staticmethod
@@ -549,8 +603,6 @@ class OWDataProjectionWidget(OWProjectionWidgetBase):
         return QSize(1132, 708)
 
     def clear(self):
-        self.data = None
-        self.valid_data = None
         self.selection = None
         self.graph.selection = None
 
@@ -558,6 +610,7 @@ class OWDataProjectionWidget(OWProjectionWidgetBase):
         super().onDeleteWidget()
         self.graph.plot_widget.getViewBox().deleteLater()
         self.graph.plot_widget.clear()
+        self.graph.clear()
 
 
 class OWAnchorProjectionWidget(OWDataProjectionWidget):
@@ -569,15 +622,17 @@ class OWAnchorProjectionWidget(OWDataProjectionWidget):
 
     class Outputs(OWDataProjectionWidget.Outputs):
         components = Output("Components", Table)
+        preprocessor = Output("Preprocessor", Preprocess)
 
     class Error(OWDataProjectionWidget.Error):
         sparse_data = Msg("Sparse data is not supported")
         no_valid_data = Msg("No projection due to no valid data")
-        not_enough_features = Msg("At least two features are required")
+        no_instances = Msg("At least two data instances are required")
+        proj_error = Msg("An error occurred while projecting data.\n{}")
 
     def __init__(self):
         super().__init__()
-        self.projection = None
+        self.projector = self.projection = None
         self.graph.view_box.started.connect(self._manual_move_start)
         self.graph.view_box.moved.connect(self._manual_move)
         self.graph.view_box.finished.connect(self._manual_move_finish)
@@ -591,19 +646,42 @@ class OWAnchorProjectionWidget(OWDataProjectionWidget):
         if self.data is not None:
             if self.data.is_sparse():
                 error(self.Error.sparse_data)
+            elif len(self.data) < 2:
+                error(self.Error.no_instances)
             else:
                 self.valid_data = np.all(np.isfinite(self.data.X), axis=1)
                 if not np.sum(self.valid_data):
                     error(self.Error.no_valid_data)
 
+    def init_projection(self):
+        self.projection = None
+        if not self.effective_variables:
+            return
+        try:
+            self.projection = self.projector(self.effective_data)
+        except Exception as ex:  # pylint: disable=broad-except
+            self.Error.proj_error(ex)
+
+    def get_embedding(self):
+        if self.data is None or self.projection is None:
+            return None
+        embedding = self.projection(self.data).X
+        self.valid_data = np.all(np.isfinite(embedding), axis=1)
+        return embedding
+
     def get_anchors(self):
-        raise NotImplementedError
+        if self.projection is None:
+            return None, None
+        components = self.projection.components_
+        if components.shape == (1, 1):
+            components = np.array([[1.], [0.]])
+        return components.T, [a.name for a in self.effective_variables]
 
     def _manual_move_start(self):
         self.graph.set_sample_size(self.SAMPLE_SIZE)
 
     def _manual_move(self, anchor_idx, x, y):
-        self.projection[anchor_idx] = [x, y]
+        self.projection.components_[:, anchor_idx] = [x, y]
         self.graph.update_coordinates()
 
     def _manual_move_finish(self, anchor_idx, x, y):
@@ -611,16 +689,45 @@ class OWAnchorProjectionWidget(OWDataProjectionWidget):
         self.graph.set_sample_size(None)
         self.commit()
 
+    def _get_projection_data(self):
+        if self.data is None or self.projection is None:
+            return None
+        return self.data.transform(
+            Domain(self.data.domain.attributes,
+                   self.data.domain.class_vars,
+                   self.data.domain.metas + self.projection.domain.attributes))
+
     def commit(self):
         super().commit()
         self.send_components()
+        self.send_preprocessor()
 
     def send_components(self):
-        raise NotImplementedError
+        components = None
+        if self.data is not None and self.projection is not None:
+            meta_attrs = [StringVariable(name='component')]
+            domain = Domain(self.effective_variables, metas=meta_attrs)
+            components = Table(domain, self._send_components_x(),
+                               metas=self._send_components_metas())
+            components.name = "components"
+        self.Outputs.components.send(components)
+
+    def _send_components_x(self):
+        return self.projection.components_
+
+    def _send_components_metas(self):
+        variable_names = [a.name for a in self.projection.domain.attributes]
+        return np.array(variable_names, dtype=object)[:, None]
+
+    def send_preprocessor(self):
+        prep = None
+        if self.data is not None and self.projection is not None:
+            prep = ApplyDomain(self.projection.domain, self.projection.name)
+        self.Outputs.preprocessor.send(prep)
 
     def clear(self):
         super().clear()
-        self.projection = None
+        self.projector = self.projection = None
 
 
 if __name__ == "__main__":

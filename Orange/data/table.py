@@ -1,5 +1,6 @@
 import operator
 import os
+import warnings
 import zlib
 from collections import MutableSequence, Iterable, Sequence, Sized
 from functools import reduce
@@ -42,6 +43,15 @@ chaining of domain conversions also works with caching even with descendants
 of Table."""
 _conversion_cache = None
 _conversion_cache_lock = RLock()
+
+
+def pending_deprecation_resize(name):
+    warnings.warn(f"Method Table.{name} will be removed in Orange 3.24",
+                  PendingDeprecationWarning)
+
+
+class DomainTransformationError(Exception):
+    pass
 
 
 class RowInstance(Instance):
@@ -297,7 +307,7 @@ class Table(MutableSequence, Storage):
                 return match_density(_subarray(source.X, row_indices, src_cols))
             if all(isinstance(x, Integral) and x < 0 for x in src_cols):
                 arr = match_density(_subarray(source.metas, row_indices,
-                                            [-1 - x for x in src_cols]))
+                                              [-1 - x for x in src_cols]))
                 if arr.dtype != dtype:
                     return arr.astype(dtype)
                 return arr
@@ -554,6 +564,7 @@ class Table(MutableSequence, Storage):
                 self.metas[i, j] = var.to_val(val)
         if weights is not None:
             self.W = np.array(weights)
+        self.attributes = {}
         return self
 
     @classmethod
@@ -824,6 +835,7 @@ class Table(MutableSequence, Storage):
                 self.metas[row_idx, meta_cols] = value
 
     def __delitem__(self, key):
+        pending_deprecation_resize("__delitem__(key)")
         if not self._check_all_dense():
             raise ValueError("Rows of sparse data cannot be deleted")
         if key is ...:
@@ -852,6 +864,7 @@ class Table(MutableSequence, Storage):
 
     def clear(self):
         """Remove all rows from the table."""
+        pending_deprecation_resize("clear()")
         if not self._check_all_dense():
             raise ValueError("Tables with sparse data cannot be cleared")
         del self[...]
@@ -863,6 +876,7 @@ class Table(MutableSequence, Storage):
         :param instance: a data instance
         :type instance: Orange.data.Instance or a sequence of values
         """
+        pending_deprecation_resize("append(inst)")
         self.insert(len(self), instance)
 
     def insert(self, row, instance):
@@ -874,6 +888,7 @@ class Table(MutableSequence, Storage):
         :param instance: a data instance
         :type instance: Orange.data.Instance or a sequence of values
         """
+        pending_deprecation_resize("insert(i, inst)")
         if row < 0:
             row += len(self)
         if row < 0 or row > len(self):
@@ -910,6 +925,7 @@ class Table(MutableSequence, Storage):
         :param instances: additional instances
         :type instances: Orange.data.Table or a sequence of instances
         """
+        pending_deprecation_resize("extend(insts)")
         if isinstance(instances, Table) and instances.domain == self.domain:
             self.X = vstack((self.X, instances.X))
             self._Y = vstack((self._Y, instances._Y))
@@ -930,20 +946,54 @@ class Table(MutableSequence, Storage):
                 self._resize_all(old_length)
                 raise
 
-    @staticmethod
-    def concatenate(tables, axis=1):
+    @classmethod
+    def concatenate(cls, tables, axis=1):
         """Return concatenation of `tables` by `axis`."""
+        def vstack(arrs):
+            return [np, sp][any(sp.issparse(arr) for arr in arrs)].vstack(arrs)
+
+        def merge1d(arrs):
+            arrs = list(arrs)
+            ydims = {arr.ndim for arr in arrs}
+            if ydims == {1}:
+                return np.hstack(arrs)
+            else:
+                return vstack([
+                    arr if arr.ndim == 2 else np.atleast_2d(arr).T
+                    for arr in arrs
+                ])
+
+        def collect(attr):
+            return [getattr(arr, attr) for arr in tables]
+
         if not tables:
             raise ValueError('need at least one table to concatenate')
         if len(tables) == 1:
             return tables[0].copy()
         CONCAT_ROWS, CONCAT_COLS = 0, 1
         if axis == CONCAT_ROWS:
-            table = tables[0].copy()
-            for t in tables[1:]:
-                table.extend(t)
-            return table
+            domain = tables[0].domain
+            if any(table.domain != domain for table in tables):
+                raise ValueError('concatenated tables must have the same domain')
+
+            conc = cls.from_numpy(
+                domain,
+                vstack(collect("X")),
+                merge1d(collect("Y")),
+                vstack(collect("metas")),
+                merge1d(collect("W"))
+            )
+            conc.ids = np.hstack([table.ids for table in tables])
+            names = [table.name for table in tables if table.name != "untitled"]
+            if names:
+                conc.name = names[0]
+            # TODO: Add attributes = {} to __init__
+            conc.attributes = getattr(conc, "attributes", {})
+            for table in reversed(tables):
+                conc.attributes.update(table.attributes)
+            return conc
         elif axis == CONCAT_COLS:
+            pending_deprecation_resize("concatenate with axis=1")
             if reduce(operator.iand,
                       (set(map(operator.attrgetter('name'),
                                chain(t.domain.variables, t.domain.metas)))
@@ -1065,9 +1115,23 @@ class Table(MutableSequence, Storage):
         missing_x = not sp.issparse(self.X) and bn.anynan(self.X)   # do not check for sparse X
         return missing_x or bn.anynan(self._Y)
 
+    def has_missing_attribute(self):
+        """Return `True` if there are any missing attribute values."""
+        return not sp.issparse(self.X) and bn.anynan(self.X)    # do not check for sparse X
+
     def has_missing_class(self):
         """Return `True` if there are any missing class values."""
         return bn.anynan(self._Y)
+
+    def get_nan_frequency_attribute(self):
+        if self.X.size == 0:
+            return 0
+        return np.isnan(self.X).sum() / self.X.size
+
+    def get_nan_frequency_class(self):
+        if self.Y.size == 0:
+            return 0
+        return np.isnan(self._Y).sum() / self._Y.size
 
     def checksum(self, include_metas=True):
         # TODO: zlib.adler32 does not work for numpy arrays with dtype object

@@ -170,11 +170,25 @@ class TestOWFile(WidgetTest):
         self.assertEqual(file_name, path.basename(self.widget.last_path()))
         self.assertTrue(self.widget.Error.file_not_found.is_shown())
         self.assertIsNone(self.get_output(self.widget.Outputs.data))
-        self.assertEqual(self.widget.info.text(), "No data.")
+        self.assertEqual(self.widget.infolabel.text(), "No data.")
 
         # Open a sample dataset
         self.open_dataset("iris")
         self.assertFalse(self.widget.Error.file_not_found.is_shown())
+
+    def test_nothing_selected(self):
+        # pylint: disable=protected-access
+        widget = self.widget = \
+            self.create_widget(OWFile, stored_settings={"recent_paths": []})
+
+        widget.Outputs.data.send = Mock()
+        widget._try_load()
+        widget.Outputs.data.send.assert_called_with(None)
+
+        widget.Outputs.data.send.reset_mock()
+        widget.source = widget.URL
+        widget._try_load()
+        widget.Outputs.data.send.assert_called_with(None)
 
     def test_check_column_noname(self):
         """
@@ -271,18 +285,20 @@ a
         self.assertTrue(self.widget.Warning.load_warning.is_shown())
 
     def test_fail(self):
-        with named_file("name\nc\n\nstring", suffix=".tab") as fn:
+        with named_file("name\nc\n\nstring", suffix=".tab") as fn, \
+                patch("Orange.widgets.data.owfile.log.exception") as log:
             self.open_dataset(fn)
+            log.assert_called()
         self.assertTrue(self.widget.Error.unknown.is_shown())
 
     def test_read_format(self):
         iris = Table("iris")
 
-        def open_iris_with_no_specific_format(a, b, c, filters, e):
+        def open_iris_with_no_spec_format(a, b, c, filters, e):
             return iris.__file__, filters.split(";;")[0]
 
         with patch("AnyQt.QtWidgets.QFileDialog.getOpenFileName",
-                   open_iris_with_no_specific_format):
+                   open_iris_with_no_spec_format):
             self.widget.browse_file()
 
         self.assertIsNone(self.widget.recent_paths[0].file_format)

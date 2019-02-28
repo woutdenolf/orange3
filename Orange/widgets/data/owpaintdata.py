@@ -1,9 +1,9 @@
 
 import os
-import sys
 import unicodedata
 import itertools
-from functools import partial
+from functools import partial, singledispatch
+from collections import namedtuple
 
 import numpy as np
 
@@ -28,6 +28,7 @@ from Orange.widgets.settings import Setting
 from Orange.widgets.utils import itemmodels, colorpalette
 
 from Orange.util import scale, namegen
+from Orange.widgets.utils.widgetpreview import WidgetPreview
 from Orange.widgets.widget import OWWidget, Msg, Input, Output
 
 
@@ -70,14 +71,6 @@ def stack_on_condition(a, b, condition):
 # ###########################
 # Data manipulation operators
 # ###########################
-
-from collections import namedtuple
-if sys.version_info < (3, 4):
-    # use singledispatch backports from pypi
-    from singledispatch import singledispatch
-else:
-    from functools import singledispatch
-
 
 # Base commands
 Append = namedtuple("Append", ["points"])
@@ -742,8 +735,8 @@ class ColoredListModel(itemmodels.PyListModel):
             return super().data(index, role)
 
 
-def _i(name, icon_path="icons/paintdata",
-       widg_path=os.path.dirname(os.path.abspath(__file__))):
+def _icon(name, icon_path="icons/paintdata",
+          widg_path=os.path.dirname(os.path.abspath(__file__))):
     return os.path.join(widg_path, icon_path, name)
 
 
@@ -816,7 +809,7 @@ class OWPaintData(OWWidget):
         self.class_model.rowsInserted.connect(self._class_count_changed)
         self.class_model.rowsRemoved.connect(self._class_count_changed)
 
-        if not self.data:
+        if self.data is None or not len(self.data):
             self.data = []
             self.__buffer = np.zeros((0, 3))
         elif isinstance(self.data, np.ndarray):
@@ -953,8 +946,7 @@ class OWPaintData(OWWidget):
             tBox, self, "Reset to Input Data", self.reset_to_input)
         self.btResetToInput.setDisabled(True)
 
-        gui.rubber(self.controlArea)
-        gui.auto_commit(self.left_side, self, "autocommit",
+        gui.auto_commit(self.controlArea, self, "autocommit",
                         "Send")
 
         # main area GUI
@@ -1000,11 +992,11 @@ class OWPaintData(OWWidget):
         if self.hasAttr2:
             self.plot.setYRange(0, 1, padding=0.01)
             self.plot.showAxis('left')
-            self.plotview.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Minimum)
+            self.plotview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         else:
             self.plot.setYRange(-.5, .5, padding=0.01)
             self.plot.hideAxis('left')
-            self.plotview.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Maximum)
+            self.plotview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         self._replot()
         for button, tool in self.toolButtons:
             if tool.only2d:
@@ -1309,23 +1301,6 @@ class OWPaintData(OWWidget):
         self.report_items("Painted data", settings)
         self.report_plot()
 
-def test():
-    from AnyQt.QtWidgets import QApplication
-    import gc
-    import sip
-    app = QApplication([])
-    ow = OWPaintData()
-    ow.show()
-    ow.raise_()
-    rval = app.exec_()
-    ow.saveSettings()
-    ow.onDeleteWidget()
-    sip.delete(ow)
-    del ow
-    gc.collect()
-    app.processEvents()
-    return rval
 
-
-if __name__ == "__main__":
-    sys.exit(test())
+if __name__ == "__main__":  # pragma: no cover
+    WidgetPreview(OWPaintData).run()

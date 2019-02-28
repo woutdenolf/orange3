@@ -6,6 +6,106 @@ Change Log
 * ...
 
 
+[3.20.1] - 2019-02-12
+--------------------
+##### Enhancements
+* t-SNE: Add Normalize data checkbox ([#3570](../../pull/3570))
+* Louvain show number of clusters ([#3572](../../pull/3572))
+
+##### Bugfixes
+* t-SNE speed-ups ([#3592](../../pull/3592))
+* setup.py: Specify python-louvain version constraint ([#3587](../../pull/3587))
+
+
+[3.20.0] - 2019-02-01
+--------------------
+##### Enhancements
+* Naive Bayes: Implement predict, fix predict_storage ([#3540](../../pull/3540))
+* OWTransform: add option to keep original data #3526 ([#3549](../../pull/3549))
+* Implement better randomized PCA ([#3532](../../pull/3532))
+* Scatterplot: Draw separate regression lines for colors; add orthonormal regression ([#3518](../../pull/3518))
+* Edit Domain: Add support for ordered categorical variables ([#3535](../../pull/3535))
+* Warn when data subset is unrelated to data ([#3507](../../pull/3507))
+* Label subset ([#3506](../../pull/3506))
+* OWLouvain: Ensure deterministic clustering ([#3492](../../pull/3492))
+* t-SNE: Updates 2. ([#3475](../../pull/3475))
+* Save Data: Support saving to Excel ([#3453](../../pull/3453))
+* OWLinePlot: Move from prototypes to core ([#3440](../../pull/3440))
+
+##### Bugfixes
+* Warning about a window title without a placeholder ([#3554](../../pull/3554))
+* PaintData: Fix control area width ([#3560](../../pull/3560))
+* OWWidget: Remove wheelEvent reimplementation ([#3557](../../pull/3557))
+* Data sets: Remove class from 'bupa' ([#3556](../../pull/3556))
+* Neighbours: Show error when data and reference have different domain. ([#3547](../../pull/3547))
+* Feature statistics fixes ([#3480](../../pull/3480))
+* Removed header types and flags from .csv and .tab ([#3427](../../pull/3427))
+* Python script widget: prevent data loss  ([#3529](../../pull/3529))
+* setup.cfg: Change the default for with-htmlhelp config option ([#3536](../../pull/3536))
+* Don't add miniconda to path and register as system python ([#3525](../../pull/3525))
+* OWDataProjectionWidget: check validity, fix sparse data reloading ([#3485](../../pull/3485))
+* OWMergeData removes table meta attributes ([#3474](../../pull/3474))
+* [MNT] Remove segfault in tests for building documentation ([#3491](../../pull/3491))
+* OWFeatureStatistics: Fix scipy.stats.mode crash on sparse data ([#3488](../../pull/3488))
+* OWDataProjectionWidget: Fix applying selection ([#3466](../../pull/3466))
+
+
+[3.19.0] - 2018-12-11
+--------------------
+##### Enhancements
+* Remove discrete attributes from scatter plot's axes ([#3434](../../pull/3434))
+* OWScatterPlotBase: Animate dot resize ([#3436](../../pull/3436))
+* Introduce stacking ([#3291](../../pull/3291))
+* OWWidget: Input/output summary  ([#2556](../../pull/2556))
+* File: Provide percent missing values in Info box ([#3305](../../pull/3305))
+* OWHierarchicalClustering: Use selection indices for selection restore ([#3282](../../pull/3282))
+* Data Info display data set name ([#3187](../../pull/3187))
+* tSNE: Output preprocessor ([#3407](../../pull/3407))
+* Pythagorean Tree: children order ([#3393](../../pull/3393))
+
+##### Bugfixes
+* RemoveNaNColumns: Move to preprocess ([#3464](../../pull/3464))
+* Scatterplot Vizrank: Don't use discrete variables ([#3463](../../pull/3463))
+* canvas/widgetsscheme: Remove use of QObject.destroyed for logging ([#3447](../../pull/3447))
+* OWFeatureStatistics: Don't attempt to sort when no data on input ([#3449](../../pull/3449))
+* Rank: Fix crash on dataset with missing values ([#3458](../../pull/3458))
+* Radviz: Enable projection for less than two selected variables ([#3444](../../pull/3444))
+* t-SNE: Generate temporary projection data ([#3454](../../pull/3454))
+* Scatter Plot: Always setup plot ([#3450](../../pull/3450))
+* Mosaic: Always reset discrete_data ([#3445](../../pull/3445))
+* Save Data: Reset writer upon changing the extension ([#3437](../../pull/3437))
+* Scatter Plot: Replot when input Features ([#3439](../../pull/3439))
+* build-conda-installer: Update the included Miniconda installer ([#3429](../../pull/3429))
+* OWDataProjectionWidget: Consider tables with nan-s equal ([#3435](../../pull/3435))
+* Projections: Retain embedding if non-relevant variables change ([#3428](../../pull/3428))
+* PCA: Rename components to PC1, PC2, PC3, ... ([#3423](../../pull/3423))
+
+
+[3.18.0] - 2018-11-13
+--------------------
+##### Enhancements
+* tSNE: Move from single-cell to core ([#3379](../../pull/3379))
+* Transform: Add new widget ([#3346](../../pull/3346))
+* Correlations: Move from prototypes to core ([#3362](../../pull/3362))
+* Install widget help files ([#3345](../../pull/3345))
+* Feature Statistics: Move from prototypes to core ([#3303](../../pull/3303))
+* Replace scikit-learn tSNE with faster implementation ([#3192](../../pull/3192))
+* Select Columns: Enable filtering of used features ([#3363](../../pull/3363))
+
+##### Bugfixes
+* setup.py: Remove trailing slash from directory names in data_files ([#3394](../../pull/3394))
+* condainstall.bat: Add conda.bat and activate.bat scripts again ([#3389](../../pull/3389))
+* LearnerScorer: fix for preprocessed data ([#3381](../../pull/3381))
+* Feature Statistics: Update outputs on new data ([#3382](../../pull/3382))
+* python-framework.sh: Fix 'Current' symlink creation ([#3373](../../pull/3373))
+* Fix wrong indices in tooltips in projection when some data was invalid ([#3357](../../pull/3357))
+* Scatterplot's VizRank no longer crashes in presence of nonprimitive metas ([#3347](../../pull/3347))
+* Predictions: Fix failure after failed predictor ([#3337](../../pull/3337))
+* Louvain Clustering: Do not invalidate output on PCA slider change with apply disabled ([#3339](../../pull/3339))
+* Use minimal keyring implementation for tests ([#3359](../../pull/3359))
+* OWFreeViz: Fix optimization for data with missing values ([#3358](../../pull/3358))
+
+
 [3.17.0] - 2018-10-26
 --------------------
 ##### Enhancements
@@ -939,7 +1039,11 @@ Change Log
 * Initial version based on Python 1.5.2 and Qt 2.3
 
 
-[next]: https://github.com/biolab/orange3/compare/3.17.0...HEAD
+[next]: https://github.com/biolab/orange3/compare/3.20.1...HEAD
+[3.20.1]: https://github.com/biolab/orange3/compare/3.20.0...3.20.1
+[3.20.0]: https://github.com/biolab/orange3/compare/3.19.0...3.20.0
+[3.19.0]: https://github.com/biolab/orange3/compare/3.18.0...3.19.0
+[3.18.0]: https://github.com/biolab/orange3/compare/3.17.0...3.18.0
 [3.17.0]: https://github.com/biolab/orange3/compare/3.16.0...3.17.0
 [3.16.0]: https://github.com/biolab/orange3/compare/3.15.0...3.16.0
 [3.15.0]: https://github.com/biolab/orange3/compare/3.14.0...3.15.0

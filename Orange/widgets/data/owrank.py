@@ -5,7 +5,7 @@ Rank
 Rank (score) features for prediction.
 
 """
-
+import warnings
 from collections import namedtuple, OrderedDict
 import logging
 from functools import partial
@@ -33,7 +33,10 @@ from Orange.widgets.settings import (DomainContextHandler, Setting,
                                      ContextSetting)
 from Orange.widgets.utils.itemmodels import PyTableModel
 from Orange.widgets.utils.sql import check_sql_input
-from Orange.widgets.widget import OWWidget, Msg, Input, Output, AttributeList
+from Orange.widgets.utils.widgetpreview import WidgetPreview
+from Orange.widgets.widget import (
+    OWWidget, Msg, Input, Output, AttributeList
+)
 
 
 log = logging.getLogger(__name__)
@@ -140,7 +143,10 @@ class TableModel(PyTableModel):
     def setExtremesFrom(self, column, values):
         """Set extremes for columnn's ratio bars from values"""
         try:
-            vmin = np.nanmin(values)
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore", ".*All-NaN slice encountered.*", RuntimeWarning)
+                vmin = np.nanmin(values)
             if np.isnan(vmin):
                 raise TypeError
         except TypeError:
@@ -365,21 +371,22 @@ class OWRank(OWWidget):
 
     @memoize_method()
     def get_method_scores(self, method):
+        # These errors often happen, but they result in nans, which
+        # are handled correctly by the widget
         estimator = method.scorer()
         data = self.data
         try:
             scores = np.asarray(estimator(data))
         except ValueError:
-            log.warning("Scorer %s wasn't able to compute all scores at once",
-                        method.name)
             try:
                 scores = np.array([estimator(data, attr)
                                    for attr in data.domain.attributes])
             except ValueError:
-                log.error(
-                    "Scorer %s wasn't able to compute scores at all",
-                    method.name)
+                log.error("%s doesn't work on this data", method.name)
                 scores = np.full(len(data.domain.attributes), np.nan)
+            else:
+                log.warning("%s had to be computed separately for each "
+                            "variable", method.name)
         return scores
 
     @memoize_method()
@@ -387,9 +394,7 @@ class OWRank(OWWidget):
         try:
             scores = scorer.scorer.score_data(self.data).T
         except ValueError:
-            log.error(
-                "Scorer %s wasn't able to compute scores at all",
-                scorer.name)
+            log.error("%s doesn't work on this data", scorer.name)
             scores = np.full((len(self.data.domain.attributes), 1), np.nan)
 
         labels = ((scorer.shortname,)
@@ -584,13 +589,16 @@ class OWRank(OWWidget):
             context.values['selected_rows'] = []
 
 
-if __name__ == "__main__":
-    from AnyQt.QtWidgets import QApplication
+if __name__ == "__main__":  # pragma: no cover
     from Orange.classification import RandomForestLearner
-    a = QApplication([])
-    ow = OWRank()
-    ow.set_learner(RandomForestLearner(), (3, 'Learner', None))
-    ow.setData(Table("heart_disease.tab"))
-    ow.show()
-    a.exec_()
-    ow.saveSettings()
+    previewer = WidgetPreview(OWRank)
+    previewer.run(Table("heart_disease.tab"), no_exit=True)
+    previewer.send_signals(
+        set_learner=(RandomForestLearner(), (3, 'Learner', None)))
+    previewer.run()
+
+    """
+    WidgetPreview(OWRank).run(
+        set_learner=(RandomForestLearner(), (3, 'Learner', None)),
+        set_data=Table("heart_disease.tab"))
+"""

@@ -17,7 +17,10 @@ except ImportError:
 
 
 try:
+    # need sphinx and recommonmark for build_htmlhelp command
     from sphinx.setup_command import BuildDoc
+    # pylint: disable=unused-import
+    import recommonmark
     have_sphinx = True
 except ImportError:
     have_sphinx = False
@@ -28,8 +31,8 @@ from numpy.distutils.command import install_data, sdist, config, build
 
 NAME = 'Orange3'
 
-VERSION = '3.18.0'
-ISRELEASED = False
+VERSION = '3.20.1'
+ISRELEASED = True
 # full version identifier including a git revision identifier for development
 # build/releases (this is filled/updated in `write_version_py`)
 FULLVERSION = VERSION
@@ -248,7 +251,7 @@ class build_ext_error(build_ext):
 
 
 # ${prefix} relative install path for html help files
-DATAROOTDIR = "share/help/en/orange3/htmlhelp/"
+DATAROOTDIR = "share/help/en/orange3/htmlhelp"
 
 
 def findall(startdir, followlinks=False, ):
@@ -271,9 +274,15 @@ def find_htmlhelp_files(subdir):
     )
     for file in files:
         relpath = os.path.relpath(file, start=subdir)
-        data_files.append(
-            (os.path.join(DATAROOTDIR, os.path.dirname(relpath)), [file])
-        )
+        relsubdir = os.path.dirname(relpath)
+        # path.join("a", "") results in "a/"; distutils install_data does not
+        # accept paths that end with "/" on windows.
+        if relsubdir:
+            targetdir = os.path.join(DATAROOTDIR, relsubdir)
+        else:
+            targetdir = DATAROOTDIR
+        assert not targetdir.endswith("/")
+        data_files.append((targetdir, [file]))
     return data_files
 
 

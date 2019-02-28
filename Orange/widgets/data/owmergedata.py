@@ -5,7 +5,6 @@ from collections import defaultdict
 from AnyQt.QtWidgets import QApplication, QStyle, QSizePolicy
 
 import numpy as np
-import scipy.sparse as sp
 
 import Orange
 from Orange.data import StringVariable, ContinuousVariable
@@ -13,6 +12,7 @@ from Orange.data.util import hstack
 from Orange.widgets import widget, gui, settings
 from Orange.widgets.utils import itemmodels
 from Orange.widgets.utils.sql import check_sql_input
+from Orange.widgets.utils.widgetpreview import WidgetPreview
 from Orange.widgets.widget import Input, Output
 
 
@@ -396,7 +396,11 @@ def left_join_indices(table1, table2, vars1, vars2):
         string_cols = [i for i, var in enumerate(domain.metas) if var.is_string]
         metas = self._join_array_by_indices(
             self.data.metas, reduced_extra.metas, indices, string_cols)
-        return Orange.data.Table.from_numpy(domain, X, Y, metas)
+        table = Orange.data.Table.from_numpy(domain, X, Y, metas)
+        table.name = getattr(self.data, 'name', '')
+        table.attributes = getattr(self.data, 'attributes', {})
+        table.ids = self.data.ids
+        return table
 
     @staticmethod
     def _join_array_by_indices(left, right, indices, string_cols=None):
@@ -424,19 +428,7 @@ def left_join_indices(table1, table2, vars1, vars2):
         return res
 
 
-def main():
-    app = QApplication([])
-
-    w = OWMergeData()
-    zoo = Orange.data.Table("zoo")
-    A = zoo[:, [0, 1, 2, "type", -1]]
-    B = zoo[:, [3, 4, 5, "type", -1]]
-    w.setDataA(A)
-    w.setDataB(B)
-    w.handleNewSignals()
-    w.show()
-    app.exec_()
-
-
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__":  # pragma: no cover
+    WidgetPreview(OWMergeData).run(
+        setData=Orange.data.Table("tests/data-gender-region"),
+        setExtraData=Orange.data.Table("tests/data-regions"))
