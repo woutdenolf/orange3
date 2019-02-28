@@ -31,7 +31,7 @@ _Signal = namedtuple(
 
 is_enabled = attrgetter("enabled")
 
-MAX_CONCURRENT = 1
+MAX_CONCURRENT = 5
 
 
 class SignalManager(QObject):
@@ -446,8 +446,11 @@ class SignalManager(QObject):
 
         log.debug("Pending nodes: %s", pending)
         log.debug("Blocking nodes: %s", blocking_nodes)
-
-        noneligible = pending_downstream | blocked_nodes
+        # return pending
+        # noneligible = pending_downstream | blocked_nodes
+        # modification needed for cycle: for a cycle there is not really the
+        # concept of upstream / downstream node
+        noneligible = blocked_nodes
         return [node for node in pending if node not in noneligible]
 
     @Slot()
