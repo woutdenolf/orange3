@@ -195,4 +195,4 @@ def get_unique_names(names, proposed):
     if not (set(proposed) & set(names) or indicess):
         return proposed
     max_index = max(map(max, indicess), default=0) + 1
-    return [f"{name} ({max_index})" for name in proposed]
+    return ["{%s} ({%s})" % (name, max_index) for name in proposed]
