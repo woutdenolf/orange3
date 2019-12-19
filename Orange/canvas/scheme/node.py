@@ -26,7 +26,7 @@ class UserMessage(object):
 
     """
     #: Severity flags
-    Info, Warning, Error = 1, 2, 3
+    Info, Warning, Error, Processing = 1, 2, 3, 4
 
     def __init__(self, contents, severity=Info, message_id=None, data={}):
         self.contents = contents
