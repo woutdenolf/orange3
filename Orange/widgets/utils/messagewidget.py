@@ -55,6 +55,8 @@ class Severity(enum.IntEnum):
     Warning = QMessageBox.Warning
     #: An error message severity.
     Error = QMessageBox.Critical
+    # some information regarding processing
+    Processing = QMessageBox.Question
 
 
 class Message(
@@ -97,6 +99,8 @@ class Message(
     Warning = Severity.Warning
     #: Alias for :attr:`Severity.Error`
     Error = Severity.Error
+    #: Alias for :attr:`Severity.Processing`
+    Processing = Severity.Processing
 
     def __new__(cls, severity=Severity.Information, icon=QIcon(), text="",
                 informativeText="", detailedText="", textFormat=Qt.PlainText):
@@ -172,6 +176,7 @@ def standard_pixmap(severity):
         Severity.Information: QStyle.SP_MessageBoxInformation,
         Severity.Warning: QStyle.SP_MessageBoxWarning,
         Severity.Error: QStyle.SP_MessageBoxCritical,
+        Severity.Processing: QStyle.SP_MessageBoxInformation,
     }
     return mapping[severity]
 
@@ -203,7 +208,7 @@ def message_icon(message, style=None):
 
 
 def categorize(messages):
-    # type: (List[Message]) -> Tuple[Optional[Message], List[Message], List[Message], List[Message]]
+    # type: (List[Message]) -> Tuple[Optional[Message], List[Message], List[Message], List[Message], List[Message]]
     """
     Categorize the messages by severity picking the message leader if
     possible.
@@ -222,6 +227,7 @@ def categorize(messages):
     errors = [m for m in messages if m.severity == Severity.Error]
     warnings = [m for m in messages if m.severity == Severity.Warning]
     info = [m for m in messages if m.severity == Severity.Information]
+    processings = [m for m in messages if m.severity == Severity.Processing]
     lead = None
     if len(errors) == 1:
         lead = errors.pop(-1)
@@ -229,7 +235,9 @@ def categorize(messages):
         lead = warnings.pop(-1)
     elif not errors and not warnings and len(info) == 1:
         lead = info.pop(-1)
-    return lead, errors, warnings, info
+    elif not errors and not warnings and not info and len(processings) == 1:
+        lead = processings.pop(-1)
+    return lead, errors, warnings, processings, info
 
 
 # pylint: disable=too-many-branches
@@ -252,7 +260,7 @@ def summarize(messages):
     if len(messages) == 1:
         return messages[0]
 
-    lead, errors, warnings, info = categorize(messages)
+    lead, errors, warnings, info, processings = categorize(messages)
     severity = Severity.Information
     icon = QIcon()
     leading_text = ""
@@ -265,6 +273,8 @@ def summarize(messages):
         severity = Severity.Error
     elif warnings:
         severity = Severity.Warning
+    elif processings:
+        severity = Severity.Processing
 
     def format_plural(fstr, items, *args, **kwargs):
         return fstr.format(len(items), *args,
@@ -279,6 +289,11 @@ def summarize(messages):
             text_parts.append(format_plural("{} message{s}", info))
         else:
             text_parts.append(format_plural("{} other", info))
+    if processings:
+        if not (errors and warnings and lead):
+            text_parts.append(format_plural("{} message{s}", processings))
+        else:
+            text_parts.append(format_plural("{} other", processings))
 
     if leading_text:
         text = leading_text
@@ -315,6 +330,8 @@ class MessagesWidget(QWidget):
     Warning = Severity.Warning
     #: An error message severity.
     Error = Severity.Error
+    #: An processing message severity.
+    Processing = Severity.Processing
 
     Message = Message
 
@@ -696,6 +713,10 @@ def main(argv=None):  # pragma: no cover
                 textFormat=Qt.RichText),
         Message(Severity.Error,
                 text="I did not do this!",
+                informativeText="The computer made suggestions...",
+                detailedText="... and the default options was yes."),
+        Message(Severity.Processing,
+                text='currently processing',
                 informativeText="The computer made suggestions...",
                 detailedText="... and the default options was yes."),
         Message(),
