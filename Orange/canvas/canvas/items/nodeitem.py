@@ -30,6 +30,7 @@ from ...resources import icon_loader
 from .utils import uniform_linear_layout
 try:
     from silx.gui import icons as silxicons
+    import functools
     has_silx = True
 except ImportError:
     has_silx = False
@@ -805,6 +806,11 @@ class NodeItem(QGraphicsWidget):
             self._advancement_icon = silxicons.getWaitIcon()
             self.__threadAnimation = QWaiterThread(0.15)
             self.__threadAnimation.finished.connect(self._updateAnimatedIcon)
+            # remove thread when the widget is about to be delete
+            self.destroyed.connect(
+                functools.partial(self.__threadAnimation.finished.disconnect,
+                                  self._updateAnimatedIcon))
+            self.destroyed.connect(self.__threadAnimation.exit)
             self.__threadAnimation.start()
         else:
             self._advancement_icon = None
