@@ -77,7 +77,7 @@ class DiscretizeEditor(BaseEditor):
 
         layout = QVBoxLayout()
         self.setLayout(layout)
-        self.__group = group = QButtonGroup(self, exclusive=True)
+        self.__group = group = QButtonGroup(self, True)
 
         for method in [self.EntropyMDL, self.EqualFreq, self.EqualWidth,
                        self.Drop]:
@@ -204,7 +204,7 @@ class ContinuizeEditor(BaseEditor):
         super().__init__(parent, **kwargs)
         self.setLayout(QVBoxLayout())
         self.__treatment = Continuize.Indicators
-        self.__group = group = QButtonGroup(exclusive=True)
+        self.__group = group = QButtonGroup(True)
         group.buttonClicked.connect(self.__on_buttonClicked)
 
         for treatment, text in ContinuizeEditor.Continuizers.items():
@@ -277,7 +277,8 @@ class ImputeEditor(BaseEditor):
         self.setLayout(QVBoxLayout())
 
         self.__method = ImputeEditor.Average
-        self.__group = group = QButtonGroup(self, exclusive=True)
+        self.__group = group = QButtonGroup(self, True)
+        self.__group = group = QButtonGroup(self, True)
         group.buttonClicked.connect(self.__on_buttonClicked)
 
         for methodid in [self.Average, self.Random, self.DropRows]:
@@ -355,7 +356,7 @@ class UnivariateFeatureSelect(QWidget):
         self.layout().addWidget(box)
 
         box = QGroupBox(title="Strategy", flat=True)
-        self.__group = group = QButtonGroup(self, exclusive=True)
+        self.__group = group = QButtonGroup(self, True)
         self.__spins = {}
 
         form = QFormLayout()
@@ -535,7 +536,7 @@ class RandomFeatureSelectEditor(BaseEditor):
         self.__p = 75.0
 
         box = QGroupBox(title="Strategy", flat=True)
-        self.__group = group = QButtonGroup(self, exclusive=True)
+        self.__group = group = QButtonGroup(self, True)
         self.__spins = {}
 
         form = QFormLayout()

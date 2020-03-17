@@ -528,7 +528,7 @@ class TabBarWidget(QWidget):
 
         self.__iconSize = QSize(26, 26)
 
-        self.__group = QButtonGroup(self, exclusive=True)
+        self.__group = QButtonGroup(self, True)
         self.__group.buttonPressed[QAbstractButton].connect(
             self.__onButtonPressed
         )

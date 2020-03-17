@@ -227,7 +227,7 @@ class OWSelectAttributes(widget.OWWidget):
         layout.addWidget(bbox, 1, 1, 1, 1)
         self.move_class_button = gui.button(bbox, self, ">",
             callback=partial(self.move_selected,
-                             self.class_attrs_view, exclusive=True))
+                             self.class_attrs_view, True))
 
         bbox = gui.vBox(self.controlArea, addToLayout=False, margin=0)
         layout.addWidget(bbox, 2, 1, 1, 1)
