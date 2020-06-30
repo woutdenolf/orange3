@@ -618,8 +618,8 @@ def main(argv=None):
         canvas_window.load_scheme(open_requests[-1].toLocalFile())
 
     # local references prevent destruction
-    survey = show_survey()
-    update_check = check_for_updates()
+    #survey = show_survey()
+    #update_check = check_for_updates()
 
     # Tee stdout and stderr into Output dock
     log_view = canvas_window.log_view()
@@ -655,8 +655,8 @@ def main(argv=None):
     app.processEvents()
     app.flush()
     del canvas_window
-    del survey
-    del update_check
+    #del survey
+    #del update_check
 
     app.processEvents()
     app.flush()
