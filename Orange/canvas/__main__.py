@@ -381,12 +381,12 @@ def main(argv=None):
 
     # File handler should always be at least INFO level so we need
     # the application root level to be at least at INFO.
-    root_level = min(levels[options.log_level], logging.INFO)
+    root_level = min(levels[options.log_level], logging.WARNING)
     rootlogger = logging.getLogger(canvas.__name__)
     rootlogger.setLevel(root_level)
 
     # Initialize SQL query and execution time logger (in SqlTable)
-    sql_level = min(levels[options.log_level], logging.INFO)
+    sql_level = min(levels[options.log_level], logging.WARNING)
     make_sql_logger(sql_level)
 
     # Standard output stream handler at the requested level
