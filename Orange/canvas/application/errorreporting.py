@@ -55,6 +55,7 @@ def get_installed_distributions():
 
 
 def internet_on():
+    return False
     try:
         urlopen(REPORT_POST_URL, timeout=1)
         return True
