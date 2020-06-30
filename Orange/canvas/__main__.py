@@ -22,7 +22,7 @@ import pkg_resources
 from AnyQt.QtGui import QFont, QColor, QPalette, QDesktopServices
 from AnyQt.QtWidgets import QMessageBox
 from AnyQt.QtCore import (
-    Qt, QDir, QUrl, QSettings, QThread, pyqtSignal, QT_VERSION
+    Qt, QDir, QUrl, QSettings, QThread, pyqtSignal, QT_VERSION, QLocale
 )
 
 from Orange import canvas
@@ -438,6 +438,7 @@ def main(argv=None):
         defaultstylesheet = "darkorange.qss"
 
     # NOTE: config.init() must be called after the QApplication constructor
+    QLocale.setDefault(QLocale(QLocale.English))
     config.init()
 
     clear_settings_flag = os.path.join(
