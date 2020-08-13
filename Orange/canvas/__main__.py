@@ -523,7 +523,10 @@ def main(argv=None):
 
     canvas_window = CanvasMainWindow()
     canvas_window.setAttribute(Qt.WA_DeleteOnClose)
-    canvas_window.setWindowIcon(config.application_icon())
+    try:
+        canvas_window.setWindowIcon(config.Config.application_icon())
+    except:
+        canvas_window.setWindowIcon(config.application_icon())
 
     if stylesheet_string is not None:
         canvas_window.setStyleSheet(stylesheet_string)
