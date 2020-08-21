@@ -38,6 +38,7 @@ from Orange.canvas import config
 from Orange.canvas.registry import qt
 from Orange.canvas.registry import WidgetRegistry, set_global_registry
 from Orange.canvas.registry import cache
+import multiprocessing
 
 log = logging.getLogger(__name__)
 
@@ -308,6 +309,7 @@ def dealWithLogFile():
 
 
 def main(argv=None):
+    multiprocessing.set_start_method('spawn')
     dealWithLogFile()
     logFile = LOG_FILE_NAME
     if os.path.exists(LOG_FOLDER) and os.access(LOG_FOLDER, os.W_OK):
