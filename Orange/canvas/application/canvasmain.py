@@ -30,15 +30,7 @@ from AnyQt.QtCore import (
     QObject, QFileInfo
 )
 
-try:
-    from AnyQt.QtWebEngineWidgets import QWebEngineView
-except ImportError:
-    QWebEngineView = None
-    try:
-        from AnyQt.QtWebKitWidgets import QWebView
-        from AnyQt.QtNetwork import QNetworkDiskCache
-    except ImportError:
-        QWebView = None
+QWebEngineView = None
 
 from AnyQt.QtCore import pyqtProperty as Property, pyqtSignal as Signal
 

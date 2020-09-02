@@ -13,12 +13,7 @@ from Orange.widgets.utils.matplotlib_export import scene_code
 
 # Importing WebviewWidget can fail if neither QWebKit (old, deprecated) nor
 # QWebEngine (bleeding-edge, hard to install) are available
-try:
-    from Orange.widgets.utils.webview import WebviewWidget
-except ImportError:
-    warn('WebView from QWebKit or QWebEngine is not available. Orange '
-         'widgets that depend on it will fail to work.')
-    WebviewWidget = None
+WebviewWidget = None
 
 
 class ImgFormat(FileFormat):
