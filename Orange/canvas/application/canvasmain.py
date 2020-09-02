@@ -31,6 +31,7 @@ from AnyQt.QtCore import (
 )
 
 QWebEngineView = None
+QWebView = None
 
 from AnyQt.QtCore import pyqtProperty as Property, pyqtSignal as Signal
 
