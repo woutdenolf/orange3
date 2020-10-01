@@ -654,7 +654,7 @@ def main(argv=None):
         status = 42
 
     log.info('orange closing')
-    canvas_window.deleteLater()
+    #canvas_window.deleteLater()
     app.processEvents()
     app.flush()
     del canvas_window
