@@ -24,18 +24,9 @@ from AnyQt.QtCore import Qt, QObject, QFile, QTimer, QUrl, QSize, QEventLoop, \
 from AnyQt.QtGui import QColor
 from AnyQt.QtWidgets import QSizePolicy, QWidget, qApp
 
-try:
-    from AnyQt.QtWebKitWidgets import QWebView
-    HAVE_WEBKIT = True
-except ImportError:
-    HAVE_WEBKIT = False
+HAVE_WEBKIT = False
+HAVE_WEBENGINE = False
 
-try:
-    from AnyQt.QtWebEngineWidgets import QWebEngineView, QWebEngineScript
-    from AnyQt.QtWebChannel import QWebChannel
-    HAVE_WEBENGINE = True
-except ImportError:
-    HAVE_WEBENGINE = False
 
 from Orange.util import inherit_docstrings, OrangeDeprecationWarning
 
