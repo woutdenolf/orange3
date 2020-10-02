@@ -172,7 +172,7 @@ def main(argv=None):
                       action="store_true",
                       help='display only add-on widgets',
                       default=False)
-    parser.add_option('--color-stdout-logs', '--colored-logs',
+    parser.add_option('--no-color-stdout-logs', '--no-colored-logs',
                       action="store_true",
                       help='instead of having logs in the log view, color logs of the stdout',
                       default=False)
@@ -319,10 +319,7 @@ def main(argv=None):
     else:
         only_addon = False
 
-    if options.color_stdout_logs is True:
-        color_logs = True
-    else:
-        color_logs = False
+    color_logs = not options.no_color_stdout_logs
     os.environ['ORANGE_COLOR_STDOUT_LOG'] = str(color_logs)
 
     widget_discovery = qt.QtWidgetDiscovery(cached_descriptions=reg_cache)
