@@ -143,7 +143,7 @@ class OutputView(QWidget):
         string = string.replace('[1;34m', '')
         string = string.replace('[1;35m', '')
         
-        color = self.get_log_level(string) or qt.Qt.Red
+        color = self.get_log_level(string) or qt.Qt.red
         charformat.setForeground(color)
         self.__text.moveCursor(QTextCursor.End, QTextCursor.MoveAnchor)
         self.__text.setCurrentCharFormat(charformat)
