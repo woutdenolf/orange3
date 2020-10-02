@@ -83,12 +83,6 @@ class OutputView(QWidget):
 
     # A file like interface.
     def write(self, string):
-        # remove linux reset sequence
-        string = string.replace(qt.QString('\033[0m'), '')
-        # remove linux reset sequence
-        string = string.replace(qt.QString('\033[1;%dm'), '')
-        # remove linux reset sequence
-        string = string.replace(qt.QString('\033[1m'), '')
         assert QThread.currentThread() is self.thread()
         self.__text.moveCursor(QTextCursor.End, QTextCursor.MoveAnchor)
         self.__text.setCurrentCharFormat(self.__currentCharFormat)
