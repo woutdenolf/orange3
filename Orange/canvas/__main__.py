@@ -615,12 +615,8 @@ def main(argv=None):
                  open_requests[-1])
         canvas_window.load_scheme(open_requests[-1].toLocalFile())
 
-    # local references prevent destruction
-    #survey = show_survey()
-    #update_check = check_for_updates()
-
     # Tee stdout and stderr into Output dock
-    log_view = canvas_window.log_view()
+    log_view = canvas_window.log_view().unformated()
 
     stdout = TextStream()
     stdout.stream.connect(log_view.write)
@@ -629,9 +625,8 @@ def main(argv=None):
         stdout.flushed.connect(sys.stdout.flush)
 
     stderr = TextStream()
-    if color_logs is False:
-        error_writer = log_view.formated(color=Qt.red)
-        stderr.stream.connect(error_writer.write)
+    error_writer = log_view.formated(color=Qt.red)
+    stderr.stream.connect(error_writer.write)
     if sys.stderr:
         stderr.stream.connect(sys.stderr.write)
         stderr.flushed.connect(sys.stderr.flush)
