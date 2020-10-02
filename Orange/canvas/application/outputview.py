@@ -82,6 +82,13 @@ class OutputView(QWidget):
 
     # A file like interface.
     def write(self, string):
+        # remove linux reset sequence
+        string = string.replace(qt.QString('\033[0m'), '')
+        # remove linux reset sequence
+        string = string.replace(qt.QString('\033[1;%dm'), '')
+        # remove linux reset sequence
+        string = string.replace(qt.QString('\033[1m'), '')
+        assert QThread.currentThread() is self.thread()
         self.__text.moveCursor(QTextCursor.End, QTextCursor.MoveAnchor)
         self.__text.setCurrentCharFormat(self.__currentCharFormat)
 
@@ -94,6 +101,13 @@ class OutputView(QWidget):
         pass
 
     def writeWithFormat(self, string, charformat):
+        # remove linux reset sequence
+        string = string.replace('\033[0m', '')
+        # remove linux reset sequence
+        string = string.replace('\033[1;%dm', '')
+        # remove linux reset sequence
+        string = string.replace('[1;35m', '')
+        assert QThread.currentThread() is self.thread()
         self.__text.moveCursor(QTextCursor.End, QTextCursor.MoveAnchor)
         self.__text.setCurrentCharFormat(charformat)
         self.__text.insertPlainText(string)
@@ -111,6 +125,14 @@ class OutputView(QWidget):
             italic, underline, font
         )
         return formater(self, charformat)
+
+    def unformated(self, color=None, background=None, weight=None,
+                 italic=None, underline=None, font=None):
+        charformat = flat_format(
+            self.currentCharFormat(), color, background, weight,
+            italic, underline, font
+        )
+        return Formatter(self, charformat)
 
 
 def update_char_format(baseformat, color=None, background=None, weight=None,
@@ -136,6 +158,31 @@ def update_char_format(baseformat, color=None, background=None, weight=None,
 
     return charformat
 
+
+def flat_format(baseformat, color=None, background=None, weight=None,
+                       italic=None, underline=None, font=None):
+    """
+    Return a copy of `baseformat` :class:`QTextCharFormat` with
+    updated color, weight, background and font properties.
+
+    """
+    charformat = QTextCharFormat(baseformat)
+
+    print('start define forground')
+    if color is not None:
+        charformat.setForeground(color)
+    print('end define forground')
+
+    if background is not None:
+        charformat.setBackground(background)
+
+    if font is not None:
+        charformat.setFont(font)
+    else:
+        font = update_font(baseformat.font(), weight, italic, underline)
+        charformat.setFont(font)
+
+    return charformat
 
 def update_font(basefont, weight=None, italic=None, underline=None,
                 pixelSize=None, pointSize=None):
@@ -181,6 +228,13 @@ class formater(object):
         charformat = update_char_format(self.charformat, color, background,
                                         weight, italic, underline, font)
         return formater(self.outputview, charformat)
+
+    def unformated(self, color=None, background=None, weight=None,
+                 italic=None, underline=None, font=None):
+        charformat = flat_format(self.charformat, color, background,
+                                 weight, italic, underline, font)
+        return Formatter(self.outputview, charformat)
+
 
     def __enter__(self):
         return self

@@ -394,32 +394,8 @@ def main(argv=None):
                  open_requests[-1])
         canvas_window.load_scheme(open_requests[-1].toLocalFile())
 
-    # If run for the first time, open a browser tab with a survey
-    show_survey = settings.value("startup/show-survey", True, type=bool)
-    if show_survey:
-        question = QMessageBox(
-            QMessageBox.Question,
-            'Orange Survey',
-            'We would like to know more about how our software is used.\n\n'
-            'Would you care to fill our short 1-minute survey?',
-            QMessageBox.Yes | QMessageBox.No)
-        question.setDefaultButton(QMessageBox.Yes)
-        later = question.addButton('Ask again later', QMessageBox.NoRole)
-        question.setEscapeButton(later)
-
-        def handle_response(result):
-            if result == QMessageBox.Yes:
-                success = QDesktopServices.openUrl(
-                    QUrl("http://orange.biolab.si/survey/short.html"));
-                settings.setValue("startup/show-survey", not success)
-            else:
-                settings.setValue("startup/show-survey", result != QMessageBox.No)
-
-        question.finished.connect(handle_response)
-        question.show()
-
     # Tee stdout and stderr into Output dock
-    log_view = canvas_window.log_view()
+    log_view = canvas_window.log_view().unformated()
 
     stdout = TextStream()
     stdout.stream.connect(log_view.write)
@@ -428,9 +404,8 @@ def main(argv=None):
         stdout.flushed.connect(sys.stdout.flush)
 
     stderr = TextStream()
-    if color_logs is False:
-        error_writer = log_view.formated(color=Qt.red)
-        stderr.stream.connect(error_writer.write)
+    error_writer = log_view.formated(color=Qt.red)
+    stderr.stream.connect(error_writer.write)
     if sys.stderr:
         stderr.stream.connect(sys.stderr.write)
         stderr.flushed.connect(sys.stderr.flush)
