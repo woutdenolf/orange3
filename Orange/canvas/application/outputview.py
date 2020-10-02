@@ -9,6 +9,7 @@ from AnyQt.QtGui import (
 )
 from AnyQt.QtCore import Qt, QObject, QCoreApplication, QThread, QSize
 from AnyQt.QtCore import pyqtSignal as Signal, pyqtSlot as Slot
+from silx.gui import qt
 
 
 class TerminalView(QPlainTextEdit):
@@ -116,14 +117,50 @@ class OutputView(QWidget):
     def flush(self):
         assert QThread.currentThread() is self.thread()
 
+    @staticmethod
+    def get_log_level(my_str):
+        if 'DEBUG' in my_str:
+            return qt.Qt.darkBlue
+        elif 'ERROR' in my_str:
+            return qt.Qt.red
+        elif 'WARNING' in my_str:
+            return qt.Qt.magenta
+        elif 'CRITICAL' in my_str:
+            return qt.Qt.red
+        elif 'Info' in my_str:
+            return qt.Qt.black
+        elif 'CRITICAL' in my_str:
+            return qt.Qt.darkYellow
+        elif 'PROCESS_STARTED' in my_str:
+            return qt.Qt.black
+        elif 'PROCESS_SUCCEED' in my_str:
+            return qt.Qt.darkGreen
+        elif 'PROCESS_FAILED' in my_str:
+            return qt.Qt.red
+        elif 'PROCESS_ENDED' in my_str:
+            return qt.Qt.black
+        elif 'PROCESS_SKIPPED' in my_str:
+            return qt.Qt.magenta
+        else:
+            return None
+
     def writeWithFormat(self, string, charformat):
+        assert QThread.currentThread() is self.thread()
         # remove linux reset sequence
         string = string.replace('\033[0m', '')
         # remove linux reset sequence
         string = string.replace('\033[1;%dm', '')
         # remove linux reset sequence
+        string = string.replace('[1m', '')
+        string = string.replace('[1;30m', '')
+        string = string.replace('[1;31m', '')
+        string = string.replace('[1;32m', '')
+        string = string.replace('[1;33m', '')
+        string = string.replace('[1;34m', '')
         string = string.replace('[1;35m', '')
-        assert QThread.currentThread() is self.thread()
+        
+        color = self.get_log_level(string) or qt.Qt.Red
+        charformat.setForeground(color)
         self.__text.moveCursor(QTextCursor.End, QTextCursor.MoveAnchor)
         self.__text.setCurrentCharFormat(charformat)
         self.__text.insertPlainText(string)
@@ -185,10 +222,8 @@ def flat_format(baseformat, color=None, background=None, weight=None,
     """
     charformat = QTextCharFormat(baseformat)
 
-    print('start define forground')
     if color is not None:
         charformat.setForeground(color)
-    print('end define forground')
 
     if background is not None:
         charformat.setBackground(background)
