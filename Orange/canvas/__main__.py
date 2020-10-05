@@ -197,6 +197,12 @@ def main(argv=None):
     root_level = min(levels[options.log_level], logging.INFO)
     rootlogger = logging.getLogger(canvas.__name__)
     rootlogger.setLevel(root_level)
+    try:
+        from tomwer.core.log.logger import TomwerLogger
+        rootlogger = TomwerLogger(rootlogger)
+        logging.setLoggerClass(TomwerLogger)
+    except:
+        pass
 
     # Initialize SQL query and execution time logger (in SqlTable)
     sql_level = min(levels[options.log_level], logging.INFO)
