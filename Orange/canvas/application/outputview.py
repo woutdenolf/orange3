@@ -320,7 +320,10 @@ class TextStream(QObject):
         self.stream.emit("".join(lines))
 
     def flush(self):
-        self.flushed.emit()
+        try:
+            self.flushed.emit()
+        except Exception:
+            pass
 
 
 class ExceptHook(QObject):
