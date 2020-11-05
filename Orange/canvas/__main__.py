@@ -330,9 +330,11 @@ def main(argv=None):
                       action="store_true",
                       help="Force full widget discovery "
                            "(invalidate cache)")
-    parser.add_option("--clear-widget-settings",
-                      action="store_true",
-                      help="Remove stored widget setting")
+    parser.add_option("--load-widget-settings",
+                      dest="clear_widget_settings",
+                      action="store_false",
+                      default=True,
+                      help="Load widget setting stored")
     parser.add_option("--no-welcome",
                       action="store_true",
                       help="Don't show welcome dialog.")
