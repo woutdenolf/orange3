@@ -171,6 +171,7 @@ class SchemeEditWidget(QWidget):
             self.__widgetMenu.addAction(self.__showSettingsAction)
 
         self.__linkMenu = QMenu(self.tr("Link"), self)
+        self.__linkMenu.addAction(self.__linkTriggerAction)
         self.__linkMenu.addAction(self.__linkEnableAction)
         self.__linkMenu.addSeparator()
         self.__linkMenu.addAction(self.__nodeInsertAction)
@@ -328,6 +329,13 @@ class SchemeEditWidget(QWidget):
                     checkable=True,
                     )
 
+        self.__linkTriggerAction = \
+            QAction(self.tr("Trigger"), self,
+                    objectName="link-trigger-action",
+                    triggered=self.__linkTrigger,
+                    toolTip=self.tr("Trigger again the scan if any in memory."),
+                    )
+
         self.__linkRemoveAction = \
             QAction(self.tr("Remove"), self,
                     objectName="link-remove-action",
@@ -359,6 +367,7 @@ class SchemeEditWidget(QWidget):
         self.addActions([self.__newTextAnnotationAction,
                          self.__newArrowAnnotationAction,
                          self.__linkEnableAction,
+                         self.__linkTriggerAction,
                          self.__linkRemoveAction,
                          self.__nodeInsertAction,
                          self.__linkResetAction,
@@ -1674,6 +1683,17 @@ class SchemeEditWidget(QWidget):
                 self, link.source_node, link.sink_node
             )
             action.edit_links()
+
+    def __linkTrigger(self):
+        """
+        Trigger the signal
+        """
+        if not self.__contextMenuTarget:
+            return
+
+        original_link = self.__contextMenuTarget
+        self.removeLink(original_link)
+        self.addLink(original_link)
 
     def __nodeInsert(self):
         """
