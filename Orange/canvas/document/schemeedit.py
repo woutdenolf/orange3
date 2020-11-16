@@ -162,6 +162,7 @@ class SchemeEditWidget(QWidget):
         self.__widgetMenu.addAction(self.__helpAction)
 
         self.__linkMenu = QMenu(self.tr("Link"), self)
+        self.__linkMenu.addAction(self.__linkTriggerAction)
         self.__linkMenu.addAction(self.__linkEnableAction)
         self.__linkMenu.addSeparator()
         self.__linkMenu.addAction(self.__linkRemoveAction)
@@ -319,6 +320,13 @@ class SchemeEditWidget(QWidget):
                     checkable=True,
                     )
 
+        self.__linkTriggerAction = \
+            QAction(self.tr("Trigger"), self,
+                    objectName="link-trigger-action",
+                    triggered=self.__linkTrigger,
+                    toolTip=self.tr("Trigger again the scan if any in memory."),
+                    )
+
         self.__linkRemoveAction = \
             QAction(self.tr("Remove"), self,
                     objectName="link-remove-action",
@@ -343,6 +351,7 @@ class SchemeEditWidget(QWidget):
         self.addActions([self.__newTextAnnotationAction,
                          self.__newArrowAnnotationAction,
                          self.__linkEnableAction,
+                         self.__linkTriggerAction,
                          self.__linkRemoveAction,
                          self.__linkResetAction,
                          self.__duplicateSelectedAction])
@@ -1505,6 +1514,61 @@ class SchemeEditWidget(QWidget):
                 self, link.source_node, link.sink_node
             )
             action.edit_links()
+
+    def __linkTrigger(self):
+        """
+        Trigger the signal
+        """
+        if not self.__contextMenuTarget:
+            return
+
+        original_link = self.__contextMenuTarget
+        self.removeLink(original_link)
+        self.addLink(original_link)
+
+    def __nodeInsert(self):
+        """
+        Node insert was requested from the context menu.
+        """
+        if not self.__contextMenuTarget:
+            return
+
+        original_link = self.__contextMenuTarget
+        source_node = original_link.source_node
+        sink_node = original_link.sink_node
+
+        def filterFunc(index):
+            desc = index.data(QtWidgetRegistry.WIDGET_DESC_ROLE)
+            if isinstance(desc, WidgetDescription):
+                return can_insert_node(desc, original_link)
+            else:
+                return False
+
+        x = (source_node.position[0] + sink_node.position[0]) / 2
+        y = (source_node.position[1] + sink_node.position[1]) / 2
+
+        menu = self.quickMenu()
+        menu.setFilterFunc(filterFunc)
+        menu.setSortingFunc(None)
+
+        view = self.view()
+        try:
+            action = menu.exec_(view.mapToGlobal(view.mapFromScene(QPoint(x, y))))
+        finally:
+            menu.setFilterFunc(None)
+
+        if action:
+            item = action.property("item")
+            desc = item.data(QtWidgetRegistry.WIDGET_DESC_ROLE)
+        else:
+            return
+
+        if can_insert_node(desc, original_link):
+            new_node = self.newNodeHelper(desc, position=(x, y))
+            self.insertNode(new_node, original_link)
+        else:
+            log.info("Cannot insert node: links not possible.")
+
 
     def __duplicateSelected(self):
         """
