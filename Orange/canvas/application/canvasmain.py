@@ -70,6 +70,12 @@ from ..preview import previewdialog, previewmodel
 from .. import config
 
 from . import workflows
+try:
+    from tomwer.gui.control.processmanager import ProcessManagerWindow
+except ImportError:
+    has_tomwer_process_manager = False
+else:
+    has_tomwer_process_manager = True
 
 log = logging.getLogger(__name__)
 
@@ -167,6 +173,8 @@ class CanvasMainWindow(QMainWindow):
         self.__first_show = True
 
         self.widget_registry = None
+        if has_tomwer_process_manager:
+            self.process_supervisor_dock = None
 
         self.last_scheme_dir = user_documents_path()
         try:
@@ -344,8 +352,22 @@ class CanvasMainWindow(QMainWindow):
         self.help_dock = DockWidget(self.tr("Help"), self,
                                     objectName="help-dock",
                                     allowedAreas=Qt.RightDockWidgetArea |
-                                                 Qt.BottomDockWidgetArea)
+                                                 Qt.BottomDockWidgetArea,
+                                    visible=False)
         self.help_dock.setAllowedAreas(Qt.NoDockWidgetArea)
+        if has_tomwer_process_manager:
+            self.process_supervisor_dock = DockWidget(
+                self.tr('scan supervisor'), self, objectName="processes-dock",
+                allowedAreas=Qt.BottomDockWidgetArea,
+                visible=self.show_processes_manager_action.isChecked(),
+            )
+
+            self.process_supervisor_dock.setWidget(ProcessManagerWindow(parent=None))
+            self.process_supervisor_dock.visibilityChanged[bool].connect(
+                self.show_processes_manager_action.setChecked
+            )
+            self.addDockWidget(Qt.BottomDockWidgetArea, self.process_supervisor_dock)
+
         if USE_WEB_ENGINE:
             self.help_view = QWebEngineView()
         else:
@@ -526,6 +548,14 @@ class CanvasMainWindow(QMainWindow):
                     triggered=lambda checked: self.log_dock.setVisible(checked),
                     )
 
+        if has_tomwer_process_manager:
+            self.show_processes_manager_action = \
+                QAction(self.tr("&Scan supervisor"), self,
+                        toolTip=self.tr("Show scan states relative to processes."),
+                        checkable=True,
+                        triggered=lambda checked: self.process_supervisor_dock.setVisible(checked),
+                        )
+
         self.show_report_action = \
             QAction(self.tr("&Report"), self,
                     triggered=self.show_report_view,
@@ -643,6 +673,8 @@ class CanvasMainWindow(QMainWindow):
 
         self.view_menu.addAction(self.toggle_tool_dock_expand)
         self.view_menu.addAction(self.show_log_action)
+        if has_tomwer_process_manager:
+            self.view_menu.addAction(self.show_processes_manager_action)
         self.view_menu.addAction(self.show_report_action)
 
         self.view_menu.addSeparator()
