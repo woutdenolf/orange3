@@ -361,13 +361,21 @@ class CanvasMainWindow(QMainWindow):
                 allowedAreas=Qt.BottomDockWidgetArea,
                 visible=self.show_processes_manager_action.isChecked(),
             )
-
             self.process_supervisor_dock.setWidget(ProcessManagerWindow(parent=None))
             self.process_supervisor_dock.visibilityChanged[bool].connect(
                 self.show_processes_manager_action.setChecked
             )
             self.addDockWidget(Qt.BottomDockWidgetArea, self.process_supervisor_dock)
+            from silx.gui import qt
+            self.setDockOptions(qt.QMainWindow.AllowNestedDocks | qt.QMainWindow.AllowTabbedDocks)
+            self.tabifyDockWidget(self.log_dock, self.process_supervisor_dock)
 
+
+        self.help_dock = DockWidget(
+            self.tr("Help"), self, objectName="help-dock",
+            allowedAreas=Qt.RightDockWidgetArea | Qt.BottomDockWidgetArea,
+            visible=False
+        )
         if USE_WEB_ENGINE:
             self.help_view = QWebEngineView()
         else:
