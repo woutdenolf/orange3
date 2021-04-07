@@ -119,11 +119,15 @@ class WidgetToolGrid(ToolGrid):
                 ToolGrid.actionEvent(self, event)
 
                 button = self.buttonForAction(event.action())
+                if button is None:
+                    return
                 button.installEventFilter(self.__dragListener)
                 button.installEventFilter(self.__statusTipPromoter)
                 return
             elif event.type() == QEvent.ActionRemoved:
                 button = self.buttonForAction(event.action())
+                if button is None:
+                    return
                 button.removeEventFilter(self.__dragListener)
                 button.removeEventFilter(self.__statusTipPromoter)
 
