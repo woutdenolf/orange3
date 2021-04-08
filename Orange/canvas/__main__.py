@@ -170,7 +170,7 @@ def main(argv=None):
     parser.add_option("--qt",
                       help="Additional arguments for QApplication",
                       type="str", default=None)
-    parser.add_option('--only-addon',
+    parser.add_option('--all-addon',
                       action="store_true",
                       help='display only add-on widgets',
                       default=False)
@@ -322,10 +322,10 @@ def main(argv=None):
     else:
         reg_cache = None
 
-    if options.only_addon:
-        only_addon = True
-    else:
+    if options.all_addon:
         only_addon = False
+    else:
+        only_addon = True
 
     color_logs = not options.no_color_stdout_logs
     os.environ['ORANGE_COLOR_STDOUT_LOG'] = str(color_logs)

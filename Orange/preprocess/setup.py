@@ -13,12 +13,12 @@ def configuration(parent_package='', top_path=None):
         libraries.append('m')
 
     config = Configuration('preprocess', parent_package, top_path)
-    for source in ('_discretize.c',
-                   '_relieff.cpp'):
-        config.add_extension(source.rsplit('.', 1)[0],
-                             sources=[source],
-                             include_dirs=[numpy.get_include()],
-                             libraries=libraries)
+    # for source in ('_discretize.c',
+    #                '_relieff.cpp'):
+    #     config.add_extension(source.rsplit('.', 1)[0],
+    #                          sources=[source],
+    #                          include_dirs=[numpy.get_include()],
+    #                          libraries=libraries)
     return config
 
 if __name__ == '__main__':
