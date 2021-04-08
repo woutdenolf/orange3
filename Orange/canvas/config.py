@@ -268,8 +268,8 @@ def widget_settings_dir():
     return orangewidget.settings.widget_settings_dir()
 
 
-def widgets_entry_points():
-    return Config.widgets_entry_points(with_default_entry=True)
+def widgets_entry_points(with_default_entry=True):
+    return Config.widgets_entry_points(with_default_entry=with_default_entry)
 
 
 def addon_entry_points():

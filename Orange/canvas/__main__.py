@@ -464,7 +464,10 @@ def main(argv=None):
     # Fix streams before configuring logging (otherwise it will store
     # and write to the old file descriptors)
     fix_win_pythonw_std_stream()
-
+    logging.getLogger("orangecanvas.registry.discovery").setLevel(levels[options.log_level])
+    logging.getLogger("orangecanvas.scheme.scheme").setLevel(levels[options.log_level])
+    logging.getLogger("orangewidget.workflow.widgetsscheme").setLevel(levels[options.log_level])
+    log.setLevel(levels[options.log_level])
     logging.basicConfig(
         level=levels[options.log_level],
         handlers=[make_stdout_handler(levels[options.log_level])]
@@ -507,13 +510,6 @@ def main(argv=None):
     if style is None and palette.color(QPalette.Window).value() < 127:
         log.info("Switching default stylesheet to darkorange")
         defaultstylesheet = "darkorange.qss"
-
-    try:
-        from tomwer.core.log.logger import TomwerLogger
-        rootlogger = TomwerLogger(rootlogger)
-        logging.setLoggerClass(TomwerLogger)
-    except:
-        pass
 
     QLocale.setDefault(QLocale(QLocale.English))
     # NOTE: config.init() must be called after the QApplication constructor
