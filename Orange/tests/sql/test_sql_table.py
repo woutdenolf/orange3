@@ -2,14 +2,15 @@
 # pylint: disable=missing-docstring
 
 import pickle
-import unittest
+import contextlib
 import unittest.mock
+import unittest
+import string
 
 import numpy as np
-from Orange.data.sql.backend.base import BackendError
-
 from numpy.testing import assert_almost_equal
 
+from Orange.data.sql.backend.base import BackendError
 from Orange.data import filter, ContinuousVariable, DiscreteVariable, \
     StringVariable, TimeVariable, Table, Domain
 from Orange.data.sql.table import SqlTable
@@ -17,11 +18,34 @@ from Orange.preprocess.discretize import EqualWidth
 from Orange.statistics.basic_stats import BasicStats, DomainBasicStats
 from Orange.statistics.contingency import Continuous, Discrete, get_contingencies
 from Orange.statistics.distribution import get_distributions
-from Orange.tests.sql.base import PostgresTest, sql_version, sql_test
+from Orange.tests.sql.base import DataBaseTest as dbt
 
 
-@sql_test
-class TestSqlTable(PostgresTest):
+class TestSqlTable(unittest.TestCase, dbt):
+    def setUpDB(self):
+        self.conn, self.iris = self.create_iris_sql_table()
+
+    def tearDownDB(self):
+        self.drop_iris_sql_table()
+
+    def float_variable(self, size):
+        return [i * .1 for i in range(size)]
+
+    def discrete_variable(self, size):
+        return ["mf"[i % 2] for i in range(size)]
+
+    def string_variable(self, size):
+        return string.ascii_letters[:size]
+
+    @contextlib.contextmanager
+    def sql_table_from_data(self, data, guess_values=True):
+        params, table_name = self.create_sql_table(data)
+        yield SqlTable(params, table_name,
+                       inspect_values=guess_values)
+
+        self.drop_sql_table(table_name)
+
+    @dbt.run_on(["postgres"])
     def test_constructs_correct_attributes(self):
         data = list(zip(self.float_variable(21),
                         self.discrete_variable(21),
@@ -30,7 +54,7 @@ class TestSqlTable(PostgresTest):
             self.assertEqual(len(table.domain), 2)
             self.assertEqual(len(table.domain.metas), 1)
 
-            float_attr, discrete_attr = table.domain
+            float_attr, discrete_attr = table.domain.variables
             string_attr, = table.domain.metas
 
             self.assertIsInstance(float_attr, ContinuousVariable)
@@ -40,12 +64,19 @@ class TestSqlTable(PostgresTest):
             self.assertIsInstance(discrete_attr, DiscreteVariable)
             self.assertEqual(discrete_attr.name, "col1")
             self.assertTrue('"col1"' in discrete_attr.to_sql())
-            self.assertEqual(discrete_attr.values, ['f', 'm'])
+            self.assertEqual(discrete_attr.values, ('f', 'm'))
 
             self.assertIsInstance(string_attr, StringVariable)
             self.assertEqual(string_attr.name, "col2")
             self.assertTrue('"col2"' in string_attr.to_sql())
 
+    @dbt.run_on(["postgres"])
+    def test_make_attributes(self):
+        table1 = SqlTable(self.conn, self.iris)
+        table2 = SqlTable(self.conn, self.iris)
+        self.assertEqual(table1.domain[0], table2.domain[0])
+
+    @dbt.run_on(["postgres", "mssql"])
     def test_len(self):
         with self.sql_table_from_data(zip(self.float_variable(26))) as table:
             self.assertEqual(len(table), 26)
@@ -53,12 +84,14 @@ class TestSqlTable(PostgresTest):
         with self.sql_table_from_data(zip(self.float_variable(0))) as table:
             self.assertEqual(len(table), 0)
 
+    @dbt.run_on(["postgres", "mssql"])
     def test_bool(self):
         with self.sql_table_from_data(()) as table:
             self.assertEqual(bool(table), False)
         with self.sql_table_from_data(zip(self.float_variable(1))) as table:
             self.assertEqual(bool(table), True)
 
+    @dbt.run_on(["postgres", "mssql"])
     def test_len_with_filter(self):
         data = zip(self.discrete_variable(26))
         with self.sql_table_from_data(data) as table:
@@ -67,19 +100,22 @@ class TestSqlTable(PostgresTest):
             filtered_table = filter.SameValue(table.domain[0], 'm')(table)
             self.assertEqual(len(filtered_table), 13)
 
-            table.domain[0].values.append('x')
+            table.domain[0].add_value('x')
             filtered_table = filter.SameValue(table.domain[0], 'x')(table)
             self.assertEqual(len(filtered_table), 0)
 
+    @dbt.run_on(["postgres", "mssql"])
     def test_XY_small(self):
         mat = np.random.randint(0, 2, (20, 3))
         conn, table_name = self.create_sql_table(mat)
         sql_table = SqlTable(conn, table_name,
                              type_hints=Domain([], DiscreteVariable(
-                                 name='col2', values=['0', '1', '2'])))
+                                 name='col2', values=('0', '1', '2'))))
         assert_almost_equal(sql_table.X, mat[:, :2])
         assert_almost_equal(sql_table.Y.flatten(), mat[:, 2])
+        self.drop_sql_table(table_name)
 
+    @dbt.run_on(["postgres", "mssql"])
     @unittest.mock.patch("Orange.data.sql.table.AUTO_DL_LIMIT", 100)
     def test_XY_large(self):
         from Orange.data.sql.table import AUTO_DL_LIMIT as DLL
@@ -87,7 +123,7 @@ class TestSqlTable(PostgresTest):
         conn, table_name = self.create_sql_table(mat)
         sql_table = SqlTable(conn, table_name,
                              type_hints=Domain([], DiscreteVariable(
-                                 name='col2', values=['0', '1', '2'])))
+                                 name='col2', values=('0', '1', '2'))))
         self.assertRaises(ValueError, lambda: sql_table.X)
         self.assertRaises(ValueError, lambda: sql_table.Y)
         with self.assertRaises(ValueError):
@@ -100,28 +136,34 @@ class TestSqlTable(PostgresTest):
         sql_table.download_data()
         assert_almost_equal(sql_table.X, mat[:, :2])
         assert_almost_equal(sql_table.Y.flatten(), mat[:, 2])
+        self.drop_sql_table(table_name)
 
+    @dbt.run_on(["postgres", "mssql"])
     def test_download_data(self):
         mat = np.random.randint(0, 2, (20, 3))
         conn, table_name = self.create_sql_table(mat)
         for member in ('X', 'Y', 'metas', 'W', 'ids'):
             sql_table = SqlTable(conn, table_name,
                                  type_hints=Domain([], DiscreteVariable(
-                                     name='col2', values=['0', '1', '2'])))
+                                     name='col2', values=('0', '1', '2'))))
             self.assertFalse(getattr(sql_table, member) is None)
         # has all necessary class members to create a standard Table
-        Table(sql_table.domain, sql_table)
+        Table.from_table(sql_table.domain, sql_table)
+        self.drop_sql_table(table_name)
 
+    @dbt.run_on(["postgres", "mssql"])
     def test_query_all(self):
         table = SqlTable(self.conn, self.iris, inspect_values=True)
         results = list(table)
 
         self.assertEqual(len(results), 150)
 
+    @dbt.run_on(["postgres", "mssql"])
     def test_unavailable_row(self):
         table = SqlTable(self.conn, self.iris)
         self.assertRaises(IndexError, lambda: table[151])
 
+    @dbt.run_on(["postgres", "mssql"])
     def test_query_subset_of_attributes(self):
         table = SqlTable(self.conn, self.iris)
         attributes = [
@@ -142,6 +184,7 @@ class TestSqlTable(PostgresTest):
              (5.0, 3.6, 7.2)]
         )
 
+    @dbt.run_on(["postgres"])
     def test_query_subset_of_rows(self):
         table = SqlTable(self.conn, self.iris)
         all_results = list(table._query())
@@ -162,11 +205,12 @@ class TestSqlTable(PostgresTest):
         self.assertEqual(len(results), 140)
         self.assertSequenceEqual(results, all_results[10:])
 
+    @dbt.run_on(["postgres", "mssql"])
     def test_getitem_single_value(self):
         table = SqlTable(self.conn, self.iris, inspect_values=True)
         self.assertAlmostEqual(table[0, 0], 5.1)
 
-
+    @dbt.run_on(["postgres", "mssql"])
     def test_type_hints(self):
         table = SqlTable(self.conn, self.iris, inspect_values=True)
         self.assertEqual(len(table.domain), 5)
@@ -177,6 +221,7 @@ class TestSqlTable(PostgresTest):
         self.assertEqual(len(table.domain), 4)
         self.assertEqual(len(table.domain.metas), 1)
 
+    @dbt.run_on(["postgres"])
     def test_joins(self):
         table = SqlTable(
             self.conn,
@@ -191,7 +236,7 @@ class TestSqlTable(PostgresTest):
                  ORDER BY a."sepal length", b. "petal length" ASC""",
             type_hints=Domain([DiscreteVariable(
                 name="qualitative petal length",
-                values=['<', '>'])], []))
+                values=('<', '>'))], []))
 
         self.assertEqual(len(table), 498)
         self.assertAlmostEqual(list(table[497]), [5.8, 1.2, 0.])
@@ -209,6 +254,7 @@ class TestSqlTable(PostgresTest):
 
         return Attr
 
+    @dbt.run_on(["postgres"])
     def test_universal_table(self):
         _, table_name = self.construct_universal_table()
 
@@ -235,12 +281,13 @@ class TestSqlTable(PostgresTest):
         for row in range(1, 6):
             for col in range(1, 6):
                 values.extend((row, col, row * col))
-        table = Table(np.array(values).reshape((-1, 3)))
+        table = Table.from_numpy(None, np.array(values).reshape((-1, 3)))
         return self.create_sql_table(table)
 
     IRIS_VARIABLE = DiscreteVariable(
-        "iris", values=['Iris-setosa', 'Iris-virginica', 'Iris-versicolor'])
+        "iris", values=('Iris-setosa', 'Iris-virginica', 'Iris-versicolor'))
 
+    @dbt.run_on(["postgres", "mssql"])
     def test_class_var_type_hints(self):
         iris = SqlTable(self.conn, self.iris,
                         type_hints=Domain([], self.IRIS_VARIABLE))
@@ -248,6 +295,21 @@ class TestSqlTable(PostgresTest):
         self.assertEqual(len(iris.domain.class_vars), 1)
         self.assertEqual(iris.domain.class_vars[0].name, 'iris')
 
+    @dbt.run_on(["postgres", "mssql"])
+    def test_meta_type_hints(self):
+        iris = SqlTable(
+            self.conn,
+            self.iris,
+            type_hints=Domain([], metas=[self.IRIS_VARIABLE]),
+        )
+
+        self.assertEqual(len(iris.domain.metas), 1)
+        self.assertEqual(iris.domain.metas[0].name, "iris")
+        np.testing.assert_array_equal(
+            iris.metas.flatten(), [0] * 50 + [2] * 50 + [1] * 50
+        )
+
+    @dbt.run_on(["postgres", "mssql"])
     def test_metas_type_hints(self):
         iris = SqlTable(self.conn, self.iris,
                         type_hints=Domain([], [], metas=[self.IRIS_VARIABLE]))
@@ -255,12 +317,14 @@ class TestSqlTable(PostgresTest):
         self.assertEqual(len(iris.domain.metas), 1)
         self.assertEqual(iris.domain.metas[0].name, 'iris')
 
+    @dbt.run_on(["postgres", "mssql"])
     def test_select_all(self):
         iris = SqlTable(self.conn, "SELECT * FROM iris",
                         type_hints=Domain([], self.IRIS_VARIABLE))
 
         self.assertEqual(len(iris.domain), 5)
 
+    @dbt.run_on(["postgres"])
     def test_discrete_bigint(self):
         table = np.arange(6).reshape((-1, 1))
         conn, table_name = self.create_sql_table(table, ['bigint'])
@@ -270,7 +334,9 @@ class TestSqlTable(PostgresTest):
 
         sql_table = SqlTable(conn, table_name, inspect_values=True)
         self.assertFirstAttrIsInstance(sql_table, DiscreteVariable)
+        self.drop_sql_table(table_name)
 
+    @dbt.run_on(["postgres", "mssql"])
     def test_continous_bigint(self):
         table = np.arange(25).reshape((-1, 1))
         conn, table_name = self.create_sql_table(table, ['bigint'])
@@ -280,7 +346,9 @@ class TestSqlTable(PostgresTest):
 
         sql_table = SqlTable(conn, table_name, inspect_values=True)
         self.assertFirstAttrIsInstance(sql_table, ContinuousVariable)
+        self.drop_sql_table(table_name)
 
+    @dbt.run_on(["postgres"])
     def test_discrete_int(self):
         table = np.arange(6).reshape((-1, 1))
         conn, table_name = self.create_sql_table(table, ['int'])
@@ -290,7 +358,9 @@ class TestSqlTable(PostgresTest):
 
         sql_table = SqlTable(conn, table_name, inspect_values=True)
         self.assertFirstAttrIsInstance(sql_table, DiscreteVariable)
+        self.drop_sql_table(table_name)
 
+    @dbt.run_on(["postgres", "mssql"])
     def test_continous_int(self):
         table = np.arange(25).reshape((-1, 1))
         conn, table_name = self.create_sql_table(table, ['int'])
@@ -300,7 +370,9 @@ class TestSqlTable(PostgresTest):
 
         sql_table = SqlTable(conn, table_name, inspect_values=True)
         self.assertFirstAttrIsInstance(sql_table, ContinuousVariable)
+        self.drop_sql_table(table_name)
 
+    @dbt.run_on(["postgres"])
     def test_discrete_smallint(self):
         table = np.arange(6).reshape((-1, 1))
         conn, table_name = self.create_sql_table(table, ['smallint'])
@@ -310,7 +382,9 @@ class TestSqlTable(PostgresTest):
 
         sql_table = SqlTable(conn, table_name, inspect_values=True)
         self.assertFirstAttrIsInstance(sql_table, DiscreteVariable)
+        self.drop_sql_table(table_name)
 
+    @dbt.run_on(["postgres", "mssql"])
     def test_continous_smallint(self):
         table = np.arange(25).reshape((-1, 1))
         conn, table_name = self.create_sql_table(table, ['smallint'])
@@ -320,7 +394,9 @@ class TestSqlTable(PostgresTest):
 
         sql_table = SqlTable(conn, table_name, inspect_values=True)
         self.assertFirstAttrIsInstance(sql_table, ContinuousVariable)
+        self.drop_sql_table(table_name)
 
+    @dbt.run_on(["postgres"])
     def test_boolean(self):
         table = np.array(['F', 'T', 0, 1, 'False', 'True']).reshape(-1, 1)
         conn, table_name = self.create_sql_table(table, ['boolean'])
@@ -330,7 +406,9 @@ class TestSqlTable(PostgresTest):
 
         sql_table = SqlTable(conn, table_name, inspect_values=True)
         self.assertFirstAttrIsInstance(sql_table, DiscreteVariable)
+        self.drop_sql_table(table_name)
 
+    @dbt.run_on(["postgres", "mssql"])
     def test_discrete_char(self):
         table = np.array(['M', 'F', 'M', 'F', 'M', 'F']).reshape(-1, 1)
         conn, table_name = self.create_sql_table(table, ['char(1)'])
@@ -340,7 +418,19 @@ class TestSqlTable(PostgresTest):
 
         sql_table = SqlTable(conn, table_name, inspect_values=True)
         self.assertFirstAttrIsInstance(sql_table, DiscreteVariable)
+        self.drop_sql_table(table_name)
 
+    @dbt.run_on(["postgres"])
+    def test_discrete_bigger_char(self):
+        """Test if the discrete values are the same for bigger char fields"""
+        table = np.array(['M', 'F', 'M', 'F', 'M', 'F']).reshape(-1, 1)
+        conn, table_name = self.create_sql_table(table, ['char(10)'])
+
+        sql_table = SqlTable(conn, table_name, inspect_values=True)
+        self.assertSequenceEqual(sql_table.domain[0].values, ['F', 'M'])
+        self.drop_sql_table(table_name)
+
+    @dbt.run_on(["postgres", "mssql"])
     def test_meta_char(self):
         table = np.array(list('ABCDEFGHIJKLMNOPQRSTUVW')).reshape(-1, 1)
         conn, table_name = self.create_sql_table(table, ['char(1)'])
@@ -350,7 +440,24 @@ class TestSqlTable(PostgresTest):
 
         sql_table = SqlTable(conn, table_name, inspect_values=True)
         self.assertFirstMetaIsInstance(sql_table, StringVariable)
+        self.drop_sql_table(table_name)
 
+        # test if NULL is transformed to emtpy string
+        table = np.array(list("ABCDEFGHIJKLMNOPQRSTUVW") + [None]).reshape(
+            -1, 1
+        )
+        conn, table_name = self.create_sql_table(table, ["char(1)"])
+
+        sql_table = SqlTable(conn, table_name, inspect_values=False)
+        self.assertFirstMetaIsInstance(sql_table, StringVariable)
+        self.assertEqual("", sql_table.metas[-1, 0])
+
+        sql_table = SqlTable(conn, table_name, inspect_values=True)
+        self.assertFirstMetaIsInstance(sql_table, StringVariable)
+        self.assertEqual("", sql_table.metas[-1, 0])
+        self.drop_sql_table(table_name)
+
+    @dbt.run_on(["postgres", "mssql"])
     def test_discrete_varchar(self):
         table = np.array(['M', 'F', 'M', 'F', 'M', 'F']).reshape(-1, 1)
         conn, table_name = self.create_sql_table(table, ['varchar(1)'])
@@ -360,7 +467,9 @@ class TestSqlTable(PostgresTest):
 
         sql_table = SqlTable(conn, table_name, inspect_values=True)
         self.assertFirstAttrIsInstance(sql_table, DiscreteVariable)
+        self.drop_sql_table(table_name)
 
+    @dbt.run_on(["postgres", "mssql"])
     def test_meta_varchar(self):
         table = np.array(list('ABCDEFGHIJKLMNOPQRSTUVW')).reshape(-1, 1)
         conn, table_name = self.create_sql_table(table, ['varchar(1)'])
@@ -370,7 +479,9 @@ class TestSqlTable(PostgresTest):
 
         sql_table = SqlTable(conn, table_name, inspect_values=True)
         self.assertFirstMetaIsInstance(sql_table, StringVariable)
+        self.drop_sql_table(table_name)
 
+    @dbt.run_on(["postgres"])
     def test_time_date(self):
         table = np.array(['2014-04-12', '2014-04-13', '2014-04-14',
                           '2014-04-15', '2014-04-16']).reshape(-1, 1)
@@ -382,6 +493,7 @@ class TestSqlTable(PostgresTest):
         sql_table = SqlTable(conn, table_name, inspect_values=True)
         self.assertFirstAttrIsInstance(sql_table, TimeVariable)
 
+    @dbt.run_on(["postgres"])
     def test_time_time(self):
         table = np.array(['17:39:51', '11:51:48.46', '05:20:21.492149',
                           '21:47:06', '04:47:35.8']).reshape(-1, 1)
@@ -392,7 +504,9 @@ class TestSqlTable(PostgresTest):
 
         sql_table = SqlTable(conn, table_name, inspect_values=True)
         self.assertFirstAttrIsInstance(sql_table, TimeVariable)
+        self.drop_sql_table(table_name)
 
+    @dbt.run_on(["postgres"])
     def test_time_timetz(self):
         table = np.array(['17:39:51+0200', '11:51:48.46+01', '05:20:21.4921',
                           '21:47:06-0600', '04:47:35.8+0330']).reshape(-1, 1)
@@ -403,7 +517,9 @@ class TestSqlTable(PostgresTest):
 
         sql_table = SqlTable(conn, table_name, inspect_values=True)
         self.assertFirstAttrIsInstance(sql_table, TimeVariable)
+        self.drop_sql_table(table_name)
 
+    @dbt.run_on(["postgres"])
     def test_time_timestamp(self):
         table = np.array(['2014-07-15 17:39:51.348149',
                           '2008-10-05 11:51:48.468149',
@@ -417,7 +533,9 @@ class TestSqlTable(PostgresTest):
 
         sql_table = SqlTable(conn, table_name, inspect_values=True)
         self.assertFirstAttrIsInstance(sql_table, TimeVariable)
+        self.drop_sql_table(table_name)
 
+    @dbt.run_on(["postgres"])
     def test_time_timestamptz(self):
         table = np.array(['2014-07-15 17:39:51.348149+0200',
                           '2008-10-05 11:51:48.468149+02',
@@ -431,7 +549,9 @@ class TestSqlTable(PostgresTest):
 
         sql_table = SqlTable(conn, table_name, inspect_values=True)
         self.assertFirstAttrIsInstance(sql_table, TimeVariable)
+        self.drop_sql_table(table_name)
 
+    @dbt.run_on(["postgres", "mssql"])
     def test_double_precision(self):
         table = np.arange(25).reshape((-1, 1))
         conn, table_name = self.create_sql_table(table, ['double precision'])
@@ -441,7 +561,9 @@ class TestSqlTable(PostgresTest):
 
         sql_table = SqlTable(conn, table_name, inspect_values=True)
         self.assertFirstAttrIsInstance(sql_table, ContinuousVariable)
+        self.drop_sql_table(table_name)
 
+    @dbt.run_on(["postgres", "mssql"])
     def test_numeric(self):
         table = np.arange(25).reshape((-1, 1))
         conn, table_name = self.create_sql_table(table, ['numeric(15, 2)'])
@@ -451,7 +573,9 @@ class TestSqlTable(PostgresTest):
 
         sql_table = SqlTable(conn, table_name, inspect_values=True)
         self.assertFirstAttrIsInstance(sql_table, ContinuousVariable)
+        self.drop_sql_table(table_name)
 
+    @dbt.run_on(["postgres", "mssql"])
     def test_real(self):
         table = np.arange(25).reshape((-1, 1))
         conn, table_name = self.create_sql_table(table, ['real'])
@@ -461,7 +585,9 @@ class TestSqlTable(PostgresTest):
 
         sql_table = SqlTable(conn, table_name, inspect_values=True)
         self.assertFirstAttrIsInstance(sql_table, ContinuousVariable)
+        self.drop_sql_table(table_name)
 
+    @dbt.run_on(["postgres"])
     def test_serial(self):
         table = np.arange(25).reshape((-1, 1))
         conn, table_name = self.create_sql_table(table, ['serial'])
@@ -471,9 +597,9 @@ class TestSqlTable(PostgresTest):
 
         sql_table = SqlTable(conn, table_name, inspect_values=True)
         self.assertFirstAttrIsInstance(sql_table, ContinuousVariable)
+        self.drop_sql_table(table_name)
 
-    @unittest.skipIf(sql_version < 90200,
-                     "Type not supported on this server version.")
+    @dbt.run_on(["postgres>90200"])
     def test_smallserial(self):
         table = np.arange(25).reshape((-1, 1))
         conn, table_name = self.create_sql_table(table, ['smallserial'])
@@ -483,9 +609,9 @@ class TestSqlTable(PostgresTest):
 
         sql_table = SqlTable(conn, table_name, inspect_values=True)
         self.assertFirstAttrIsInstance(sql_table, ContinuousVariable)
+        self.drop_sql_table(table_name)
 
-    @unittest.skipIf(sql_version < 90200,
-                     "Type not supported on this server version.")
+    @dbt.run_on(["postgres>90200"])
     def test_bigserial(self):
         table = np.arange(25).reshape((-1, 1))
         conn, table_name = self.create_sql_table(table, ['bigserial'])
@@ -495,7 +621,9 @@ class TestSqlTable(PostgresTest):
 
         sql_table = SqlTable(conn, table_name, inspect_values=True)
         self.assertFirstAttrIsInstance(sql_table, ContinuousVariable)
+        self.drop_sql_table(table_name)
 
+    @dbt.run_on(["postgres"])
     def test_text(self):
         table = np.array(list('ABCDEFGHIJKLMNOPQRSTUVW')).reshape((-1, 1))
         conn, table_name = self.create_sql_table(table, ['text'])
@@ -505,13 +633,14 @@ class TestSqlTable(PostgresTest):
 
         sql_table = SqlTable(conn, table_name, inspect_values=True)
         self.assertFirstMetaIsInstance(sql_table, StringVariable)
+        self.drop_sql_table(table_name)
 
+    @dbt.run_on(["postgres"])
     def test_other(self):
         table = np.array(['bcd4d9c0-361e-bad4-7ceb-0d171cdec981',
                           '544b7ddc-d861-0201-81c8-9f7ad0bbf531',
                           'b35a10f7-7901-f313-ec16-5ad9778040a6',
-                          'b267c4be-4a26-60b5-e664-737a90a40e93']
-                         ).reshape(-1, 1)
+                          'b267c4be-4a26-60b5-e664-737a90a40e93']).reshape(-1, 1)
         conn, table_name = self.create_sql_table(table, ['uuid'])
 
         sql_table = SqlTable(conn, table_name, inspect_values=False)
@@ -520,9 +649,11 @@ class TestSqlTable(PostgresTest):
         sql_table = SqlTable(conn, table_name, inspect_values=True)
         self.assertFirstMetaIsInstance(sql_table, StringVariable)
 
-        filters = filter.Values([filter.FilterString(-1, 0, 'foo')])
+        filters = filter.Values([filter.FilterString(-1, filter.FilterString.Equal, 'foo')])
         self.assertEqual(len(filters(sql_table)), 0)
+        self.drop_sql_table(table_name)
 
+    @dbt.run_on(["postgres", "mssql"])
     def test_recovers_connection_after_sql_error(self):
         conn, table_name = self.create_sql_table(
             np.arange(25).reshape((-1, 1)))
@@ -540,7 +671,9 @@ class TestSqlTable(PostgresTest):
             sql_table.domain.attributes[0].to_sql(), sql_table.table_name)
         with sql_table.backend.execute_sql_query(working_query) as cur:
             cur.fetchall()
+        self.drop_sql_table(table_name)
 
+    @dbt.run_on(["postgres"])
     def test_basic_stats(self):
         iris = SqlTable(self.conn, self.iris, inspect_values=True)
         stats = BasicStats(iris, iris.domain['sepal length'])
@@ -560,14 +693,32 @@ class TestSqlTable(PostgresTest):
         self.assertEqual(stats.nans, 0)
         self.assertEqual(stats.non_nans, 150)
 
+    @dbt.run_on(["postgres"])
     @unittest.mock.patch("Orange.data.sql.table.LARGE_TABLE", 100)
     def test_basic_stats_on_large_data(self):
         # By setting LARGE_TABLE to 100, iris will be treated as
         # a large table and sampling will be used. As the table
         # is actually small, time base sampling should return
         # all rows, so the same assertions can be used.
-        self.test_basic_stats()
+        iris = SqlTable(self.conn, self.iris, inspect_values=True)
+        stats = BasicStats(iris, iris.domain['sepal length'])
+        self.assertAlmostEqual(stats.min, 4.3)
+        self.assertAlmostEqual(stats.max, 7.9)
+        self.assertAlmostEqual(stats.mean, 5.8, 1)
+        self.assertEqual(stats.nans, 0)
+        self.assertEqual(stats.non_nans, 150)
 
+        domain_stats = DomainBasicStats(iris, include_metas=True)
+        self.assertEqual(len(domain_stats.stats),
+                         len(iris.domain) + len(iris.domain.metas))
+        stats = domain_stats['sepal length']
+        self.assertAlmostEqual(stats.min, 4.3)
+        self.assertAlmostEqual(stats.max, 7.9)
+        self.assertAlmostEqual(stats.mean, 5.8, 1)
+        self.assertEqual(stats.nans, 0)
+        self.assertEqual(stats.non_nans, 150)
+
+    @dbt.run_on(["postgres", "mssql"])
     def test_distributions(self):
         iris = SqlTable(self.conn, self.iris, inspect_values=True)
 
@@ -578,9 +729,10 @@ class TestSqlTable(PostgresTest):
         self.assertAlmostEqual(dist.max(), 7.9)
         self.assertAlmostEqual(dist.mean(), 5.8, 1)
 
+    @dbt.run_on(["postgres"])
     def test_contingencies(self):
         iris = SqlTable(self.conn, self.iris, inspect_values=True)
-        iris.domain = Domain(iris.domain[:2] + (EqualWidth()(iris, iris.domain['sepal width']),),
+        iris.domain = Domain(iris.domain[2:4] + (EqualWidth()(iris, iris.domain['sepal width']),),
                              iris.domain['iris'])
 
         conts = get_contingencies(iris)
@@ -589,12 +741,14 @@ class TestSqlTable(PostgresTest):
         self.assertIsInstance(conts[1], Continuous)
         self.assertIsInstance(conts[2], Discrete)
 
+    @dbt.run_on(["postgres"])
     def test_pickling_restores_connection_pool(self):
         iris = SqlTable(self.conn, self.iris, inspect_values=True)
         iris2 = pickle.loads(pickle.dumps(iris))
 
         self.assertEqual(iris[0], iris2[0])
 
+    @dbt.run_on(["postgres"])
     def test_list_tables_with_schema(self):
         with self.backend.execute_sql_query("DROP SCHEMA IF EXISTS orange_tests CASCADE") as cur:
             cur.execute("CREATE SCHEMA orange_tests")
@@ -619,3 +773,7 @@ class TestSqlTable(PostgresTest):
         self.assertGreater(len(table.domain.metas), 0)
         attr = table.domain[-1]
         self.assertIsInstance(attr, variable_type)
+
+
+if __name__ == "__main__":
+    unittest.main()

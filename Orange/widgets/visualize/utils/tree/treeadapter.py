@@ -2,6 +2,7 @@
 from abc import ABCMeta, abstractmethod
 from functools import reduce
 from operator import add
+import random
 
 
 class BaseTreeAdapter(metaclass=ABCMeta):
@@ -16,6 +17,12 @@ class BaseTreeAdapter(metaclass=ABCMeta):
     ROOT_PARENT = None
     NO_CHILD = -1
     FEATURE_UNDEFINED = -2
+
+    def __init__(self, model):
+        self.model = model
+        self.domain = model.domain
+        self.instances = model.instances
+        self.instances_transformed = self.instances.transform(self.domain)
 
     @abstractmethod
     def weight(self, node):
@@ -34,7 +41,6 @@ class BaseTreeAdapter(metaclass=ABCMeta):
             The weight of the node relative to its siblings.
 
         """
-        pass
 
     @abstractmethod
     def num_samples(self, node):
@@ -50,7 +56,6 @@ class BaseTreeAdapter(metaclass=ABCMeta):
         int
 
         """
-        pass
 
     @abstractmethod
     def parent(self, node):
@@ -65,7 +70,6 @@ class BaseTreeAdapter(metaclass=ABCMeta):
         object
 
         """
-        pass
 
     @abstractmethod
     def has_children(self, node):
@@ -80,7 +84,6 @@ class BaseTreeAdapter(metaclass=ABCMeta):
         bool
 
         """
-        pass
 
     def is_leaf(self, node):
         """Check if the given node is a leaf node.
@@ -110,7 +113,18 @@ class BaseTreeAdapter(metaclass=ABCMeta):
             A iterable object containing the labels of the child nodes.
 
         """
-        pass
+
+    def reverse_children(self, node):
+        """Reverse children of a given node.
+
+        Parameters
+        ----------
+        node : object
+        """
+
+    def shuffle_children(self):
+        """Randomly shuffle node's children in the entire tree.
+        """
 
     @abstractmethod
     def get_distribution(self, node):
@@ -131,7 +145,6 @@ class BaseTreeAdapter(metaclass=ABCMeta):
             the number of nodes that belong to a given class inside the node.
 
         """
-        pass
 
     @abstractmethod
     def get_impurity(self, node):
@@ -146,7 +159,6 @@ class BaseTreeAdapter(metaclass=ABCMeta):
         object
 
         """
-        pass
 
     @abstractmethod
     def rules(self, node):
@@ -162,6 +174,9 @@ class BaseTreeAdapter(metaclass=ABCMeta):
             A list of Rule objects, can be of any type.
 
         """
+
+    @abstractmethod
+    def short_rule(self, node):
         pass
 
     @abstractmethod
@@ -176,7 +191,6 @@ class BaseTreeAdapter(metaclass=ABCMeta):
         -------
 
         """
-        pass
 
     def is_root(self, node):
         """Check if a given node is the root node.
@@ -203,7 +217,6 @@ class BaseTreeAdapter(metaclass=ABCMeta):
         -------
 
         """
-        pass
 
     @abstractmethod
     def get_instances_in_nodes(self, dataset, nodes):
@@ -221,6 +234,9 @@ class BaseTreeAdapter(metaclass=ABCMeta):
         -------
 
         """
+
+    @abstractmethod
+    def get_indices(self, nodes):
         pass
 
     @property
@@ -233,7 +249,6 @@ class BaseTreeAdapter(metaclass=ABCMeta):
         int
 
         """
-        pass
 
     @property
     @abstractmethod
@@ -248,7 +263,6 @@ class BaseTreeAdapter(metaclass=ABCMeta):
         int
 
         """
-        pass
 
     @property
     @abstractmethod
@@ -260,27 +274,9 @@ class BaseTreeAdapter(metaclass=ABCMeta):
         object
 
         """
-        pass
-
-    @property
-    @abstractmethod
-    def domain(self):
-        """Get the domain of the given tree.
-
-        The domain contains information about the classes what the tree
-        represents.
-
-        Returns
-        -------
-
-        """
-        pass
 
 
 class TreeAdapter(BaseTreeAdapter):
-    def __init__(self, model):
-        self.model = model
-
     def weight(self, node):
         return len(node.subset) / len(node.parent.subset)
 
@@ -299,6 +295,17 @@ class TreeAdapter(BaseTreeAdapter):
     def children(self, node):
         return [child for child in node.children if child is not None]
 
+    def reverse_children(self, node):
+        node.children = node.children[::-1]
+
+    def shuffle_children(self):
+        def _shuffle_children(node):
+            if node and node.children:
+                random.shuffle(node.children)
+                for c in node.children:
+                    _shuffle_children(c)
+        _shuffle_children(self.root)
+
     def get_distribution(self, node):
         return [node.value]
 
@@ -308,6 +315,9 @@ class TreeAdapter(BaseTreeAdapter):
     def rules(self, node):
         return self.model.rule(node)
 
+    def short_rule(self, node):
+        return node.description
+
     def attribute(self, node):
         return node.attr
 
@@ -316,11 +326,14 @@ class TreeAdapter(BaseTreeAdapter):
             return reduce(add, map(_leaves, self.children(node)), []) or [node]
         return _leaves(node)
 
-    def get_instances_in_nodes(self, dataset, nodes):
+    def get_instances_in_nodes(self, nodes):
         from Orange import tree
         if isinstance(nodes, tree.Node):
             nodes = [nodes]
         return self.model.get_instances(nodes)
+
+    def get_indices(self, nodes):
+        return self.model.get_indices(nodes)
 
     @property
     def max_depth(self):
@@ -333,7 +346,3 @@ class TreeAdapter(BaseTreeAdapter):
     @property
     def root(self):
         return self.model.root
-
-    @property
-    def domain(self):
-        return self.model.domain

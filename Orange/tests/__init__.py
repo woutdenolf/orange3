@@ -3,12 +3,20 @@ import unittest
 import tempfile
 from contextlib import contextmanager
 
+try:
+    from numpy.testing import assert_array_compare
+except ImportError:
+    # numpy < 1.14
+    from numpy.testing.utils import assert_array_compare
+
+import numpy as np
 import Orange
 
 
 @contextmanager
-def named_file(content, encoding=None):
-    file = tempfile.NamedTemporaryFile("wt", delete=False, encoding=encoding)
+def named_file(content, encoding=None, suffix=''):
+    file = tempfile.NamedTemporaryFile("wt", delete=False,
+                                       encoding=encoding, suffix=suffix)
     file.write(content)
     name = file.name
     file.close()
@@ -16,6 +24,31 @@ def named_file(content, encoding=None):
         yield name
     finally:
         os.remove(name)
+
+
+@np.vectorize
+def naneq(a, b):
+    try:
+        return (np.isnan(a) and np.isnan(b)) or a == b
+    except TypeError:
+        return a == b
+
+
+def assert_array_nanequal(a, b, *args, **kwargs):
+    """
+    Similar as np.testing.assert_array_equal but with better handling of
+    object arrays.
+
+    Note
+    ----
+    Is not fast!
+
+    Parameters
+    ----------
+    a : array-like
+    b : array-like
+    """
+    return assert_array_compare(naneq, a, b, *args, **kwargs)
 
 
 def test_dirname():
@@ -51,13 +84,19 @@ def suite(loader=None, pattern='test*.py'):
         loader = unittest.TestLoader()
     if pattern is None:
         pattern = 'test*.py'
-    top_level_dir = os.path.dirname(os.path.dirname(Orange.__file__))
-    all_tests = [
-        loader.discover(test_dir, pattern, top_level_dir),
-    ]
-
+    orange_dir = os.path.dirname(Orange.__file__)
+    top_level_dir = os.path.dirname(orange_dir)
+    all_tests = [loader.discover(test_dir, pattern, top_level_dir)]
+    if not suite.in_tests:  # prevent recursion
+        suite.in_tests = True
+        all_tests += (loader.discover(dir, pattern, dir)
+                      for dir in (os.path.join(orange_dir, fn, "tests")
+                                  for fn in os.listdir(orange_dir)
+                                  if fn != "widgets")
+                      if os.path.exists(dir))
     return unittest.TestSuite(all_tests)
 
+suite.in_tests = False
 
 def load_tests(loader, tests, pattern):
     return suite(loader, pattern)

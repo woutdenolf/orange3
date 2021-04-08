@@ -15,8 +15,7 @@ def widget_discovery(discovery):
     pkgs = [
         "Orange.widgets.data",
         "Orange.widgets.visualize",
-        "Orange.widgets.classify",
-        "Orange.widgets.regression",
+        "Orange.widgets.model",
         "Orange.widgets.evaluate",
         "Orange.widgets.unsupervised",
     ]
@@ -26,7 +25,8 @@ def widget_discovery(discovery):
 
 WIDGET_HELP_PATH = (
     ("{DEVELOP_ROOT}/doc/visual-programming/build/htmlhelp/index.html", None),
-#     os.path.join(sysconfig.get_path("data"),
-#                  "share", "doc", "Orange-{}".format(Orange.__version__)),
-    ("http://docs.orange.biolab.si/3/visual-programming/", "")
+    (os.path.join(sysconfig.get_path("data"),
+                  "share/help/en/orange3/htmlhelp/index.html"),
+     None),
+    ("https://docs.biolab.si/orange/3/visual-programming/", ""),
 )

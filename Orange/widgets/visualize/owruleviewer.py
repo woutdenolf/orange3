@@ -13,6 +13,9 @@ from Orange.classification.rules import _RuleClassifier
 from Orange.widgets import widget, gui, settings
 from Orange.widgets.utils.annotated_data import (create_annotated_table,
                                                  ANNOTATED_DATA_SIGNAL_NAME)
+from Orange.widgets.utils.widgetpreview import WidgetPreview
+from Orange.widgets.utils.state_summary import format_summary_details
+from Orange.widgets.widget import Input, Output
 
 
 class OWRuleViewer(widget.OWWidget):
@@ -20,24 +23,31 @@ class OWRuleViewer(widget.OWWidget):
     description = "Review rules induced from data."
     icon = "icons/CN2RuleViewer.svg"
     priority = 1140
+    keywords = []
 
-    inputs = [("Data", Table, 'set_data'),
-              ("Classifier", _RuleClassifier, 'set_classifier')]
+    class Inputs:
+        data = Input("Data", Table)
+        classifier = Input("Classifier", _RuleClassifier)
 
-    data_output_identifier = "Selected Data"
-    outputs = [(data_output_identifier, Table, widget.Default),
-               (ANNOTATED_DATA_SIGNAL_NAME, Table)]
+    class Outputs:
+        selected_data = Output("Selected Data", Table, default=True)
+        annotated_data = Output(ANNOTATED_DATA_SIGNAL_NAME, Table)
 
     compact_view = settings.Setting(False)
 
     want_basic_layout = True
-    want_main_area = True
-    want_control_area = False
+    want_main_area = False
+    want_control_area = True
 
     def __init__(self):
+        super().__init__()
+
         self.data = None
         self.classifier = None
         self.selected = None
+
+        self.info.set_input_summary(self.info.NoInput)
+        self.info.set_output_summary(self.info.NoOutput)
 
         self.model = CustomRuleViewerTableModel(parent=self)
         self.model.set_horizontal_header_labels(
@@ -57,28 +67,28 @@ class OWRuleViewer(widget.OWWidget):
         self.dist_item_delegate = DistributionItemDelegate(self)
         self.view.setItemDelegateForColumn(3, self.dist_item_delegate)
 
-        self.mainArea.layout().setContentsMargins(0, 0, 0, 0)
-        self.mainArea.layout().addWidget(self.view)
-        bottom_box = gui.hBox(widget=self.mainArea, box=None,
-                              margin=0, spacing=0)
+        self.controlArea.layout().addWidget(self.view)
 
-        original_order_button = QPushButton(
-            "Restore original order", autoDefault=False)
-        original_order_button.setFixedWidth(180)
-        bottom_box.layout().addWidget(original_order_button)
+        gui.checkBox(widget=self.buttonsArea, master=self, value="compact_view",
+                     label="Compact view", callback=self.on_update)
+        gui.rubber(self.buttonsArea)
+
+        original_order_button = gui.button(
+            self.buttonsArea, self,
+            "Restore original order",
+            autoDefault=False,
+            callback=self.restore_original_order,
+            attribute=Qt.WA_LayoutUsesWidgetRect,
+        )
         original_order_button.clicked.connect(self.restore_original_order)
 
-        gui.separator(bottom_box, width=5, height=0)
-        gui.checkBox(widget=bottom_box, master=self, value="compact_view",
-                     label="Compact view", callback=self.on_update)
-
-        self.report_button.setFixedWidth(180)
-        bottom_box.layout().addWidget(self.report_button)
-
+    @Inputs.data
     def set_data(self, data):
         self.data = data
+        self._set_input_summary()
         self.commit()
 
+    @Inputs.classifier
     def set_classifier(self, classifier):
         self.classifier = classifier
         self.selected = None
@@ -95,6 +105,11 @@ class OWRuleViewer(widget.OWWidget):
 
         self.on_update()
         self.commit()
+
+    def _set_input_summary(self):
+        summary = len(self.data) if self.data else self.info.NoInput
+        details = format_summary_details(self.data) if self.data else ""
+        self.info.set_input_summary(summary, details)
 
     def on_update(self):
         self._save_selected()
@@ -115,9 +130,11 @@ class OWRuleViewer(widget.OWWidget):
         self.selected = None
         selection_model = self.view.selectionModel()
         if selection_model.hasSelection():
-            selection = (selection_model.selection() if not actual
-                         else self.proxy_model.mapSelectionToSource(
-                                selection_model.selection()))
+            if not actual:
+                selection = selection_model.selection()
+            else:
+                selection = self.proxy_model.mapSelectionToSource(
+                    selection_model.selection())
 
             self.selected = sorted(set(index.row() for index
                                        in selection.indexes()))
@@ -161,9 +178,11 @@ class OWRuleViewer(widget.OWWidget):
             data_output = data.from_table_rows(data, selected_indices) \
                 if len(selected_indices) else None
 
-        self.send(OWRuleViewer.data_output_identifier, data_output)
-        self.send(ANNOTATED_DATA_SIGNAL_NAME,
-                  create_annotated_table(data, selected_indices))
+        summary = len(data_output) if data_output else self.info.NoOutput
+        details = format_summary_details(data_output) if data_output else ""
+        self.info.set_output_summary(summary, details)
+        self.Outputs.selected_data.send(data_output)
+        self.Outputs.annotated_data.send(create_annotated_table(data, selected_indices))
 
     def send_report(self):
         if self.classifier is not None:
@@ -198,6 +217,7 @@ class CustomRuleViewerTableModel(QAbstractTableModel):
             headers = self._headers.get(orientation)
             return (headers[section] if headers and section < len(headers)
                     else str(section))
+        return None
 
     def set_horizontal_header_labels(self, labels):
         self._headers[Qt.Horizontal] = labels
@@ -230,7 +250,7 @@ class CustomRuleViewerTableModel(QAbstractTableModel):
 
     def data(self, index, role=Qt.DisplayRole):
         if self._domain is None or not index.isValid():
-            return
+            return None
 
         def _display_role():
             if column == 0:
@@ -269,11 +289,13 @@ class CustomRuleViewerTableModel(QAbstractTableModel):
             if column == 6:
                 return rule.length
 
+            return None
+
         def _tooltip_role():
             if column == 0:
                 return _display_role().replace(" AND ", " AND\n")
             if column == 1:
-                return
+                return None
             if column == 3:
                 # list of int, float
                 curr_class_dist = _display_role()
@@ -371,19 +393,11 @@ class DistributionItemDelegate(QItemDelegate):
 
         painter.restore()
 
-if __name__ == "__main__":
-    from PyQt4.QtGui import QApplication
 
+if __name__ == "__main__":  # pragma: no cover
     from Orange.classification import CN2Learner
-
     data = Table("iris")
     learner = CN2Learner()
     model = learner(data)
     model.instances = data
-
-    a = QApplication([])
-    ow = OWRuleViewer()
-    ow.set_classifier(model)
-
-    ow.show()
-    a.exec()
+    WidgetPreview(OWRuleViewer).run(model)

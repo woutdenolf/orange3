@@ -3,8 +3,9 @@
 from collections import OrderedDict
 
 import numpy as np
+import scipy.sparse as sp
 
-from Orange.base import Model
+from Orange.base import TreeModel as TreeModelInterface
 
 
 class Node:
@@ -113,7 +114,7 @@ class NumericNode(Node):
 
     def descend(self, inst):
         val = inst[self.attr_idx]
-        return np.nan if np.isnan(val) else val > self.threshold
+        return np.nan if np.isnan(val) else int(val > self.threshold)
 
     def _set_child_descriptions(self, child, child_idx, conditions):
         attr = self.attr
@@ -128,7 +129,7 @@ class NumericNode(Node):
             "{} {}".format("≤>"[child_idx], attr.str_val(threshold))
 
 
-class TreeModel(Model):
+class TreeModel(TreeModelInterface):
     """
     Tree classifier with proper handling of nominal attributes and binarization
     and the interface API for visualization.
@@ -191,8 +192,14 @@ class TreeModel(Model):
 
     def get_values(self, X):
         from Orange.classification import _tree_scorers
-        return _tree_scorers.compute_predictions(
-            X, self._code, self._values, self._thresholds)
+        if sp.isspmatrix_csc(X):
+            func = _tree_scorers.compute_predictions_csc
+        elif sp.issparse(X):
+            func = _tree_scorers.compute_predictions_csr
+            X = X.tocsr()
+        else:
+            func = _tree_scorers.compute_predictions
+        return func(X, self._code, self._values, self._thresholds)
 
     def predict(self, X):
         predictions = self.get_values(X)

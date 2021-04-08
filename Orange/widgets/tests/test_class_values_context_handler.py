@@ -5,8 +5,8 @@ from Orange.data import ContinuousVariable
 from Orange.widgets.settings import ContextSetting, ClassValuesContextHandler
 from Orange.widgets.utils import vartype
 
-Continuous = vartype(ContinuousVariable())
-Discrete = vartype(DiscreteVariable())
+Continuous = vartype(ContinuousVariable("x"))
+Discrete = vartype(DiscreteVariable("x"))
 
 
 class TestClassValuesContextHandler(TestCase):
@@ -34,7 +34,7 @@ class TestClassValuesContextHandler(TestCase):
                 with_metas=[('d1', Discrete), ('d2', Discrete)]
             ))
         self.handler.global_contexts = \
-            [Mock(values={}), context, Mock(values={})]
+            [Mock(classes=[], values={}), context, Mock(classes=[], values={})]
 
         widget = SimpleWidget()
         self.handler.initialize(widget)
@@ -51,7 +51,7 @@ class TestClassValuesContextHandler(TestCase):
                 with_metas=[('d1', Discrete), ('d2', Discrete)]
             ))
         self.handler.global_contexts = \
-            [Mock(values={}), context, Mock(values={})]
+            [Mock(classes=[], values={}), context, Mock(classes=(), values={})]
         widget = SimpleWidget()
         self.handler.initialize(widget)
         widget.text = 'u'
@@ -59,18 +59,15 @@ class TestClassValuesContextHandler(TestCase):
         self.handler.open_context(widget, self.args[0][1])
 
         context = widget.current_context
-        self.assertEqual(context.classes, ['a', 'b', 'c'])
+        self.assertEqual(context.classes, ('a', 'b', 'c'))
         self.assertEqual(widget.text, 'u')
         self.assertEqual(widget.with_metas, [])
 
 
 class SimpleWidget:
-    text = ContextSetting("", not_attribute=True)
-    with_metas = ContextSetting([], exclude_metas=False)
+    text = ContextSetting("")
+    with_metas = ContextSetting([])
     required = ContextSetting("", required=ContextSetting.REQUIRED)
-    if_selected = ContextSetting([], required=ContextSetting.IF_SELECTED,
-                                 selected='selected')
-    selected = ""
 
     def retrieveSpecificSettings(self):
         pass

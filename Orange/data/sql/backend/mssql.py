@@ -2,11 +2,18 @@ import re
 import warnings
 from contextlib import contextmanager
 
-import pymssql
+import pymssql  # pylint: disable=import-error
 
 from Orange.data import StringVariable, TimeVariable, ContinuousVariable, DiscreteVariable
 from Orange.data.sql.backend import Backend
 from Orange.data.sql.backend.base import ToSql, BackendError
+
+
+def parse_ex(ex: Exception) -> str:
+    try:
+        return ex.args[0][1].decode().splitlines()[-1]
+    except:  # pylint: disable=bare-except
+        return str(ex)
 
 
 class PymssqlBackend(Backend):
@@ -23,13 +30,16 @@ class PymssqlBackend(Backend):
         try:
             self.connection = pymssql.connect(login_timeout=5, **connection_params)
         except pymssql.Error as ex:
-            raise BackendError(str(ex)) from ex
+            raise BackendError(parse_ex(ex)) from ex
+        except ValueError:
+            # ValueError is raised when 'server' contains "\\"
+            raise BackendError("Incorrect format of connection details")
 
     def list_tables_query(self, schema=None):
         return """
         SELECT [TABLE_SCHEMA], [TABLE_NAME]
           FROM information_schema.tables
-         WHERE TABLE_TYPE='BASE TABLE'
+         WHERE TABLE_TYPE in ('VIEW' ,'BASE TABLE')
       ORDER BY [TABLE_NAME]
         """
 
@@ -73,7 +83,7 @@ class PymssqlBackend(Backend):
                 cur.execute(query, *params)
                 yield cur
         except pymssql.Error as ex:
-            raise BackendError(str(ex)) from ex
+            raise BackendError(parse_ex(ex)) from ex
 
     def create_variable(self, field_name, field_metadata, type_hints, inspect_table=None):
         if field_name in type_hints:
@@ -93,6 +103,7 @@ class PymssqlBackend(Backend):
         return var
 
     def _guess_variable(self, field_name, field_metadata, inspect_table):
+        # pylint: disable=import-error
         from pymssql import STRING, NUMBER, DATETIME, DECIMAL
 
         type_code, *_ = field_metadata
@@ -117,17 +128,40 @@ class PymssqlBackend(Backend):
     EST_ROWS_RE = re.compile(r'StatementEstRows="(\d+)"')
 
     def count_approx(self, query):
-        try:
-            with self.connection.cursor() as cur:
+        with self.connection.cursor() as cur:
+            try:
                 cur.execute("SET SHOWPLAN_XML ON")
                 try:
                     cur.execute(query)
                     result = cur.fetchone()
-                    return int(self.EST_ROWS_RE.search(result[0]).group(1))
+                    match = self.EST_ROWS_RE.search(result[0])
+                    if not match:
+                    # Either StatementEstRows was not found or
+                    # a float is received.
+                    # If it is a float then it is most probable
+                    # that the server's statistics are out of date
+                    # and the result is false. In that case
+                    # it is preferable to return None so
+                    # an exact count be used.
+                        return None
+                    return int(match.group(1))
                 finally:
                     cur.execute("SET SHOWPLAN_XML OFF")
-        except pymssql.Error as ex:
-            if "SHOWPLAN permission denied" in str(ex):
-                warnings.warn("SHOWPLAN permission denied, count approximates will not be used")
-                return None
-            raise BackendError(str(ex)) from ex
+            except pymssql.Error as ex:
+                if "SHOWPLAN permission denied" in str(ex):
+                    warnings.warn("SHOWPLAN permission denied, count approximates will not be used")
+                    return None
+                raise BackendError(parse_ex(ex)) from ex
+
+    def distinct_values_query(self, field_name: str, table_name: str) -> str:
+        field = self.quote_identifier(field_name)
+        return self.create_sql_query(
+            table_name,
+            [field],
+            # workaround for collations that are not case sensitive and
+            # UTF characters sensitive - in the domain we still want to
+            # have all values (collation independent)
+            group_by=[f"{field}, Cast({field} as binary)"],
+            order_by=[field],
+            limit=21,
+        )

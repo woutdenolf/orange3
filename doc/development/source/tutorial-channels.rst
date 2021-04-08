@@ -23,7 +23,7 @@ be used to connect them with several output channels. That is, if a
 widget supports such a channel, several widgets can feed their input
 to that widget simultaneously.
 
-Say we want to build a widget that takes a data set and test
+Say we want to build a widget that takes a dataset and test
 various predictive modeling techniques on it. A widget has to have an
 input data channel, and this we know how to deal with from our
 :doc:`previous <tutorial-settings>` lesson. But, somehow differently, we
@@ -39,7 +39,7 @@ just in brief: learning curve is something that you can use to test
 some machine learning algorithm in trying to see how its performance
 depends on the size of the training set size. For this, one can draw a
 smaller subset of data, learn the classifier, and test it on remaining
-data set. To do this in a just way (by Salzberg, 1997), we perform
+dataset. To do this in a just way (by Salzberg, 1997), we perform
 k-fold cross validation but use only a proportion of the data for
 training. The output widget should then look something like:
 
@@ -55,28 +55,12 @@ widget are defined by
 
 
 Notice that everything is pretty much the same as it was with
-widgets from previous lessons, the only difference being
-``widget.Multiple + widget.Default`` (from the
-:mod:`Orange.widgets.widget` namespace) as the last value in the list
-that defines the :obj:`Learner` channel. This
-``widget.Multiple + widget.Default`` says that this
-is a multi-input channel and is the default input for its type.
-If it would be unspecified then by default value of
-``widget.Single`` would be used. That would mean that the
-widget can receive the input only from one widget and is not
-the default input channel for its type (more on default channels later).
+widgets from previous lessons, the only difference being the additional argument
+``multiple=True``, which says that this input can be connected to outputs of
+multiple widgets.
 
-.. note::
-   :obj:`Default` flag here is used for illustration. Since *"Learner"*
-   channel is the only channel for a :class:`Orange.classification.Learner`
-   type it is also the default.
-
-In Orange, tokens are sent around with an id of a widget that is
-sending the token, and having a multi-input channel only tells Orange to
-send a token together with sending widget id, the two arguments with
-which the receiving function is called. For our *"Learner"*
-channel the receiving function is :func:`set_learner`, and this looks
-like the following
+Handlers of multiple-input signals must accept two arguments: the sent object
+and the id of the sending widget.
 
 .. literalinclude:: orange-demo/orangedemo/OWLearningCurveA.py
    :pyobject: OWLearningCurveA.set_learner
@@ -101,29 +85,8 @@ and curve point for that channel id, marking for update in
 :func:`~Orange.widgets.widget.OWWidget.handleNewSignals`. A similar case is
 when we receive a learner for a new channel id.
 
-.. 
-
-   The function above first checks if the learner sent is empty
-   (:obj:`None`). Remember that sending an empty learner
-   essentially means that the link with the sending widget was removed,
-   hence we need to remove such learner from our list. If a non-empty
-   learner was sent, then it is either a new learner (say, from a widget
-   we have just linked to our learning curve widget), or an update
-   version of the previously sent learner. If the later is the case, then
-   there is an *id* which we already have in the learners list, and we
-   need to replace previous information on that learner. If a new learner
-   was sent, the case is somehow simpler, and we just add this learner
-   and its learning curve to the corresponding variables that hold this
-   information.
-
-   The function that handles :obj:`learners` as shown above is
-   the most complicated function in our learning curve widget. In fact,
-   the rest of the widget does some simple GUI management, and calls
-   learning curve routines from testing and performance scoring functions
-   from :mod:`~Orange.evaluation`.
-
 Note that in this widget the evaluation (k-fold cross
-validation) is carried out just once given the learner, data set and
+validation) is carried out just once given the learner, dataset and
 evaluation parameters, and scores are then derived from class
 probability estimates as obtained from the evaluation procedure. Which
 essentially means that switching from one to another scoring function
@@ -181,13 +144,13 @@ Default Channels (When Using Input Channels of the Same Type)
 
 Now, let's say we want to extend our learning curve widget such
 that it does the learning the same way as it used to, but can -
-provided that such data set is defined - test the
-learners (always) on the same, external data set. That is, besides the
-training data set, we need another channel of the same type but used
-for training data set. Notice, however, that most often we will only
-provide the training data set, so we would not like to be bothered (in
+provided that such dataset is defined - test the
+learners (always) on the same, external dataset. That is, besides the
+training dataset, we need another channel of the same type but used
+for training dataset. Notice, however, that most often we will only
+provide the training dataset, so we would not like to be bothered (in
 Orange Canvas) with the dialog which channel to connect to, as the
-training data set channel will be the default one.
+training dataset channel will be the default one.
 
 When enlisting the input channel of the same type, the default
 channels have a special flag in the channel specification list. So for
@@ -214,10 +177,9 @@ open, as the default *"Train Data"* was selected.
 Explicit Channels
 *****************
 
-
-Some times when a widget has multiple outputs of different types, some
+Sometimes when a widget has multiple outputs of different types, some
 of them should not be subject to this automatic default connection selection.
 An example of this is in Orange's `Logistic Regression` widget that outputs
-a suplimentary 'Coefficients' data table. Such outputs can be marked with
-and :attr:`~Orange.widgets.widget.Explicit` flag ensuring they are never
+a supplementary 'Coefficients' data table. Such outputs can be marked with
+and :attr:`~Orange.widgets.widget.Explicit` flag, which ensures they are never
 selected for a default connection.

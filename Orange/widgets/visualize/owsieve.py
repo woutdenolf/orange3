@@ -1,9 +1,10 @@
 import math
+from itertools import chain
 
 import numpy as np
 from scipy.stats.distributions import chi2
 
-from AnyQt.QtCore import Qt, QSize
+from AnyQt.QtCore import Qt, QSize, Signal
 from AnyQt.QtGui import QColor, QPen, QBrush
 from AnyQt.QtWidgets import QGraphicsScene, QGraphicsLineItem, QSizePolicy
 
@@ -12,15 +13,17 @@ from Orange.data.sql.table import SqlTable, LARGE_TABLE, DEFAULT_SAMPLE_TIME
 from Orange.preprocess import Discretize
 from Orange.preprocess.discretize import EqualFreq
 from Orange.statistics.contingency import get_contingency
-from Orange.widgets import gui, widget, settings
+from Orange.widgets import gui, settings
 from Orange.widgets.settings import DomainContextHandler, ContextSetting
-from Orange.widgets.utils import to_html as to_html
+from Orange.widgets.utils import to_html
 from Orange.widgets.utils.annotated_data import (create_annotated_table,
                                                  ANNOTATED_DATA_SIGNAL_NAME)
 from Orange.widgets.utils.itemmodels import DomainModel
+from Orange.widgets.utils.widgetpreview import WidgetPreview
+from Orange.widgets.utils.state_summary import format_summary_details
 from Orange.widgets.visualize.utils import (
     CanvasText, CanvasRectangle, ViewWithPress, VizRankDialogAttrPair)
-from Orange.widgets.widget import OWWidget, Default, AttributeList
+from Orange.widgets.widget import OWWidget, AttributeList, Input, Output
 
 
 class ChiSqStats:
@@ -29,13 +32,22 @@ class ChiSqStats:
     pair of attributes. The class is also used for ranking.
     """
     def __init__(self, data, attr1, attr2):
+        attr1 = data.domain[attr1]
+        attr2 = data.domain[attr2]
+        if attr1.is_discrete and not attr1.values or \
+                attr2.is_discrete and not attr2.values:
+            self.p = np.nan
+            return
         self.observed = get_contingency(data, attr1, attr2)
         self.n = np.sum(self.observed)
+        # pylint: disable=unexpected-keyword-arg
         self.probs_x = self.observed.sum(axis=0) / self.n
         self.probs_y = self.observed.sum(axis=1) / self.n
         self.expected = np.outer(self.probs_y, self.probs_x) * self.n
-        self.residuals = \
-            (self.observed - self.expected) / np.sqrt(self.expected)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            self.residuals = \
+                (self.observed - self.expected) / np.sqrt(self.expected)
+        self.residuals = np.nan_to_num(self.residuals)
         self.chisqs = self.residuals ** 2
         self.chisq = float(np.sum(self.chisqs))
         self.p = chi2.sf(
@@ -64,11 +76,15 @@ class OWSieveDiagram(OWWidget):
                   "for a combination of values."
     icon = "icons/SieveDiagram.svg"
     priority = 200
+    keywords = []
 
-    inputs = [("Data", Table, "set_data", Default),
-              ("Features", AttributeList, "set_input_features")]
-    outputs = [("Selected Data", Table, widget.Default),
-               (ANNOTATED_DATA_SIGNAL_NAME, Table)]
+    class Inputs:
+        data = Input("Data", Table, default=True)
+        features = Input("Features", AttributeList)
+
+    class Outputs:
+        selected_data = Output("Selected Data", Table, default=True)
+        annotated_data = Output(ANNOTATED_DATA_SIGNAL_NAME, Table)
 
     graph_name = "canvas"
 
@@ -76,9 +92,11 @@ class OWSieveDiagram(OWWidget):
 
     settings_version = 1
     settingsHandler = DomainContextHandler()
-    attr_x = ContextSetting(None, exclude_metas=False)
-    attr_y = ContextSetting(None, exclude_metas=False)
+    attr_x = ContextSetting(None)
+    attr_y = ContextSetting(None)
     selection = ContextSetting(set())
+
+    xy_changed_manually = Signal(Variable, Variable)
 
     def __init__(self):
         # pylint: disable=missing-docstring
@@ -90,30 +108,30 @@ class OWSieveDiagram(OWWidget):
         self.areas = []
         self.selection = set()
 
-        self.attr_box = gui.hBox(self.mainArea)
+        self.info.set_input_summary(self.info.NoInput)
+        self.info.set_output_summary(self.info.NoOutput)
+
+        self.mainArea.layout().setSpacing(0)
+        self.attr_box = gui.hBox(self.mainArea, margin=0)
         self.domain_model = DomainModel(valid_types=DomainModel.PRIMITIVE)
         combo_args = dict(
             widget=self.attr_box, master=self, contentsLength=12,
-            callback=self.update_attr, sendSelectedValue=True, valueType=str,
-            model=self.domain_model)
+            searchable=True, sendSelectedValue=True,
+            callback=self.attr_changed, model=self.domain_model)
         fixed_size = (QSizePolicy.Fixed, QSizePolicy.Fixed)
         gui.comboBox(value="attr_x", **combo_args)
-        gui.widgetLabel(self.attr_box, "\u2715", sizePolicy=fixed_size)
+        gui.widgetLabel(self.attr_box, "\u2717", sizePolicy=fixed_size)
         gui.comboBox(value="attr_y", **combo_args)
         self.vizrank, self.vizrank_button = SieveRank.add_vizrank(
             self.attr_box, self, "Score Combinations", self.set_attr)
         self.vizrank_button.setSizePolicy(*fixed_size)
 
-        self.canvas = QGraphicsScene()
+        self.canvas = QGraphicsScene(self)
         self.canvasView = ViewWithPress(
             self.canvas, self.mainArea, handler=self.reset_selection)
         self.mainArea.layout().addWidget(self.canvasView)
         self.canvasView.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.canvasView.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-
-        box = gui.hBox(self.mainArea)
-        box.layout().addWidget(self.graphButton)
-        box.layout().addWidget(self.report_button)
 
     def sizeHint(self):
         return QSize(450, 550)
@@ -133,6 +151,7 @@ class OWSieveDiagram(OWWidget):
             settings.rename_setting(context, "attrY", "attr_y")
             settings.migrate_str_to_variable(context)
 
+    @Inputs.data
     def set_data(self, data):
         """
         Discretize continuous attributes, and put all attributes and discrete
@@ -158,15 +177,12 @@ class OWSieveDiagram(OWWidget):
         if self.data is None:
             self.attrs[:] = []
             self.domain_model.set_domain(None)
+            self.discrete_data = None
+            self.info.set_input_summary(self.info.NoInput)
         else:
             self.domain_model.set_domain(data.domain)
-            if any(attr.is_continuous for attr in data.domain):
-                discretizer = Discretize(
-                    method=EqualFreq(n=4),
-                    discretize_classes=True, discretize_metas=True)
-                self.discrete_data = discretizer(data)
-            else:
-                self.discrete_data = self.data
+            self.info.set_input_summary(len(self.data),
+                                        format_summary_details(self.data))
         self.attrs = [x for x in self.domain_model if isinstance(x, Variable)]
         if self.attrs:
             self.attr_x = self.attrs[0]
@@ -176,6 +192,8 @@ class OWSieveDiagram(OWWidget):
             self.areas = []
             self.selection = set()
         self.openContext(self.data)
+        if self.data:
+            self.discrete_data = self.sparse_to_dense(data, True)
         self.resolve_shown_attributes()
         self.update_graph()
         self.update_selection()
@@ -183,18 +201,46 @@ class OWSieveDiagram(OWWidget):
         self.vizrank.initialize()
         self.vizrank_button.setEnabled(
             self.data is not None and len(self.data) > 1 and
-            len(self.data.domain.attributes) > 1)
+            len(self.data.domain.attributes) > 1 and not self.data.is_sparse())
 
     def set_attr(self, attr_x, attr_y):
         self.attr_x, self.attr_y = attr_x, attr_y
         self.update_attr()
 
+    def attr_changed(self):
+        self.update_attr()
+        self.xy_changed_manually.emit(self.attr_x, self.attr_y)
+
     def update_attr(self):
         """Update the graph and selection."""
         self.selection = set()
+        self.discrete_data = self.sparse_to_dense(self.data)
         self.update_graph()
         self.update_selection()
 
+    def sparse_to_dense(self, data, init=False):
+        """
+        Extracts two selected columns from sparse matrix.
+        GH-2260
+        """
+        def discretizer(data):
+            if any(attr.is_continuous for attr in chain(data.domain.variables, data.domain.metas)):
+                discretize = Discretize(
+                    method=EqualFreq(n=4), remove_const=False,
+                    discretize_classes=True, discretize_metas=True)
+                return discretize(data).to_dense()
+            return data
+
+        if not data.is_sparse() and not init:
+            return self.discrete_data
+        if data.is_sparse():
+            attrs = {self.attr_x,
+                     self.attr_y}
+            new_domain = data.domain.select_columns(attrs)
+            data = Table.from_table(new_domain, data)
+        return discretizer(data)
+
+    @Inputs.features
     def set_input_features(self, attr_list):
         """
         Handler for the Features signal.
@@ -216,6 +262,7 @@ class OWSieveDiagram(OWWidget):
         """
         self.warning()
         self.attr_box.setEnabled(True)
+        self.vizrank.setEnabled(True)
         if not self.input_features:  # None or empty
             return
         features = [f for f in self.input_features if f in self.domain_model]
@@ -226,6 +273,7 @@ class OWSieveDiagram(OWWidget):
         old_attrs = self.attr_x, self.attr_y
         self.attr_x, self.attr_y = [f for f in (features * 2)[:2]]
         self.attr_box.setEnabled(False)
+        self.vizrank.setEnabled(False)
         if (self.attr_x, self.attr_y) != old_attrs:
             self.selection = set()
             self.update_graph()
@@ -257,9 +305,9 @@ class OWSieveDiagram(OWWidget):
         Filter and output the data.
         """
         if self.areas is None or not self.selection:
-            self.send("Selected Data", None)
-            self.send(ANNOTATED_DATA_SIGNAL_NAME,
-                      create_annotated_table(self.data, []))
+            self.Outputs.selected_data.send(None)
+            self.Outputs.annotated_data.send(create_annotated_table(self.data, []))
+            self.info.set_output_summary(self.info.NoOutput)
             return
 
         filts = []
@@ -286,9 +334,12 @@ class OWSieveDiagram(OWWidget):
         sel_idx = [i for i, id in enumerate(self.data.ids) if id in idset]
         if self.discrete_data is not self.data:
             selection = self.data[sel_idx]
-        self.send("Selected Data", selection)
-        self.send(ANNOTATED_DATA_SIGNAL_NAME,
-                  create_annotated_table(self.data, sel_idx))
+
+        summary = len(selection) if selection is not None else self.info.NoOutput
+        details = format_summary_details(selection) if selection is not None else ""
+        self.info.set_output_summary(summary, details)
+        self.Outputs.selected_data.send(selection)
+        self.Outputs.annotated_data.send(create_annotated_table(self.data, sel_idx))
 
     def update_graph(self):
         # Function uses weird names like r, g, b, but it does it with utmost
@@ -297,11 +348,19 @@ class OWSieveDiagram(OWWidget):
         """Update the graph."""
 
         def text(txt, *args, **kwargs):
-            return CanvasText(self.canvas, "", html_text=to_html(txt),
+            text = html_text = None
+            if "max_width" in kwargs:
+                text = txt
+            else:
+                html_text = to_html(txt)
+            return CanvasText(self.canvas, text, html_text=html_text,
                               *args, **kwargs)
 
         def width(txt):
             return text(txt, 0, 0, show=False).boundingRect().width()
+
+        def height(txt):
+            return text(txt, 0, 0, show=False).boundingRect().height()
 
         def fmt(val):
             return str(int(val)) if val % 1 == 0 else "{:.2f}".format(val)
@@ -362,34 +421,30 @@ class OWSieveDiagram(OWWidget):
             the enclosing scope."""
             # pylint: disable=undefined-loop-variable
             def _oper(attr, txt):
-                if self.data.domain[attr.name] is ddomain[attr.name]:
-                    return "="
+                if self.data.domain[attr.name] == ddomain[attr.name]:
+                    return " = "
                 return " " if txt[0] in "<≥" else " in "
 
-            return (
-                "<b>{attr_x}{xeq}{xval_name}</b>: {obs_x}/{n} ({p_x:.0f} %)".
-                format(attr_x=to_html(attr_x.name),
-                       xeq=_oper(attr_x, xval_name),
-                       xval_name=to_html(xval_name),
-                       obs_x=fmt(chi.probs_x[x] * n),
-                       n=int(n),
-                       p_x=100 * chi.probs_x[x]) +
-                "<br/>" +
-                "<b>{attr_y}{yeq}{yval_name}</b>: {obs_y}/{n} ({p_y:.0f} %)".
-                format(attr_y=to_html(attr_y.name),
-                       yeq=_oper(attr_y, yval_name),
-                       yval_name=to_html(yval_name),
-                       obs_y=fmt(chi.probs_y[y] * n),
-                       n=int(n),
-                       p_y=100 * chi.probs_y[y]) +
-                "<hr/>" +
-                """<b>combination of values: </b><br/>
+            xt, yt = ["<b>{attr}{eq}{val_name}</b>: {obs}/{n} ({p:.0f} %)".format(
+                attr=to_html(attr.name),
+                eq=_oper(attr, val_name),
+                val_name=to_html(val_name),
+                obs=fmt(prob * n),
+                n=int(n),
+                p=100 * prob)
+                      for attr, val_name, prob in [(attr_x, xval_name, chi.probs_x[x]),
+                                                   (attr_y, yval_name, chi.probs_y[y])]]
+
+            ct = """<b>combination of values: </b><br/>
                    &nbsp;&nbsp;&nbsp;expected {exp} ({p_exp:.0f} %)<br/>
-                   &nbsp;&nbsp;&nbsp;observed {obs} ({p_obs:.0f} %)""".
-                format(exp=fmt(chi.expected[y, x]),
+                   &nbsp;&nbsp;&nbsp;observed {obs} ({p_obs:.0f} %)""".format(
+                       exp=fmt(chi.expected[y, x]),
                        p_exp=100 * chi.expected[y, x] / n,
                        obs=fmt(chi.observed[y, x]),
-                       p_obs=100 * chi.observed[y, x] / n))
+                       p_obs=100 * chi.observed[y, x] / n)
+
+            return f"{xt}<br/>{yt}<hr/>{ct}"
+
 
         for item in self.canvas.items():
             self.canvas.removeItem(item)
@@ -403,15 +458,25 @@ class OWSieveDiagram(OWWidget):
         view = self.canvasView
 
         chi = ChiSqStats(self.discrete_data, disc_x, disc_y)
-        n = chi.n
         max_ylabel_w = max((width(val) for val in disc_y.values), default=0)
         max_ylabel_w = min(max_ylabel_w, 200)
-        x_off = width(attr_x.name) + max_ylabel_w
+        x_off = height(attr_y.name) + max_ylabel_w
         y_off = 15
-        square_size = min(view.width() - x_off - 35, view.height() - y_off - 50)
+        square_size = min(view.width() - x_off - 35, view.height() - y_off - 80)
         square_size = max(square_size, 10)
         self.canvasView.setSceneRect(0, 0, view.width(), view.height())
-
+        if not disc_x.values or not disc_y.values:
+            text_ = "Features {} and {} have no values".format(disc_x, disc_y) \
+                if not disc_x.values and \
+                   not disc_y.values and \
+                          disc_x != disc_y \
+                else \
+                    "Feature {} has no values".format(
+                        disc_x if not disc_x.values else disc_y)
+            text(text_, view.width() / 2 + 70, view.height() / 2,
+                 Qt.AlignRight | Qt.AlignVCenter)
+            return
+        n = chi.n
         curr_x = x_off
         max_xlabel_h = 0
         self.areas = []
@@ -443,7 +508,7 @@ class OWSieveDiagram(OWWidget):
                 curr_y += height
 
             xl = text(xval_name, curr_x + width / 2, y_off + square_size,
-                      Qt.AlignHCenter | Qt.AlignTop)
+                      Qt.AlignHCenter | Qt.AlignTop, max_width=width)
             max_xlabel_h = max(int(xl.boundingRect().height()), max_xlabel_h)
             curr_x += width
 
@@ -452,6 +517,7 @@ class OWSieveDiagram(OWWidget):
              Qt.AlignLeft | Qt.AlignVCenter, bold=True, vertical=True)
         text(attr_x.name, x_off + square_size / 2, bottom,
              Qt.AlignHCenter | Qt.AlignTop, bold=True)
+        bottom += 30
         xl = text("χ²={:.2f}, p={:.3f}".format(chi.chisq, chi.p),
                   0, bottom)
         # Assume similar height for both lines
@@ -460,22 +526,11 @@ class OWSieveDiagram(OWWidget):
     def get_widget_name_extension(self):
         if self.data is not None:
             return "{} vs {}".format(self.attr_x.name, self.attr_y.name)
+        return None
 
     def send_report(self):
         self.report_plot()
 
 
-def main():
-    # pylint: disable=missing-docstring
-    import sys
-    from AnyQt.QtWidgets import QApplication
-    a = QApplication(sys.argv)
-    ow = OWSieveDiagram()
-    ow.show()
-    data = Table(r"zoo.tab")
-    ow.set_data(data)
-    a.exec_()
-    ow.saveSettings()
-
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__":  # pragma: no cover
+    WidgetPreview(OWSieveDiagram).run(Table("zoo"))

@@ -1,17 +1,22 @@
 import random
 import re
-
 from math import isnan
 from numbers import Real
 
 import numpy as np
 import bottleneck as bn
 
+from Orange.util import Reprable
 from Orange.data import Instance, Storage, Variable
-from Orange.misc.enum import Enum
+from Orange.util import Enum
 
 
-class Filter:
+__all__ = ["IsDefined", "HasClass", "Random", "SameValue", "Values",
+           "FilterDiscrete", "FilterContinuous", "FilterString",
+           "FilterStringList", "FilterRegex"]
+
+
+class Filter(Reprable):
     """
     The base class for filters.
 
@@ -162,21 +167,21 @@ class SameValue(Filter):
             if self.negate:
                 retain = np.fromiter(
                     (inst[column] != value for inst in data),
-                     bool, len(data))
+                    bool, len(data))
             else:
                 retain = np.fromiter(
                     (inst[column] == value for inst in data),
-                     bool, len(data))
+                    bool, len(data))
         else:
             column = -1 - column
             if self.negate:
                 retain = np.fromiter(
                     (inst._metas[column] != value for inst in data),
-                     bool, len(data))
+                    bool, len(data))
             else:
                 retain = np.fromiter(
                     (inst._metas[column] == value for inst in data),
-                     bool, len(data))
+                    bool, len(data))
         return data[retain]
 
 
@@ -250,11 +255,6 @@ class ValueFilter(Filter):
     def __init__(self, column):
         super().__init__()
         self.column = column
-        self.last_domain = None
-
-    def cache_position(self, domain):
-        self.pos_cache = domain.index(self.column)
-        self.last_domain = domain
 
 
 class FilterDiscrete(ValueFilter):
@@ -278,9 +278,7 @@ class FilterDiscrete(ValueFilter):
         self.values = values
 
     def __call__(self, inst):
-        if inst.domain is not self.last_domain:
-            self.cache_position(inst.domain)
-        value = inst[self.pos_cache]
+        value = inst[inst.domain.index(self.column)]
         if self.values is None:
             return not isnan(value)
         else:
@@ -315,18 +313,18 @@ class FilterContinuous(ValueFilter):
         `LessEqual`, `Greater`, `GreaterEqual`, `Between`, `Outside` or
         `IsDefined`.
     """
+    Type = Enum('FilterContinuous',
+                'Equal, NotEqual, Less, LessEqual, Greater,'
+                'GreaterEqual, Between, Outside, IsDefined')
+    (Equal, NotEqual, Less, LessEqual, Greater, GreaterEqual,
+     Between, Outside, IsDefined) = Type
 
-    def __init__(self, position, oper, ref=None, max=None, **a):
+    def __init__(self, position, oper, ref=None, max=None, min=None):
         super().__init__(position)
-        if a:
-            if len(a) != 1 or "min" not in a:
-                raise TypeError(
-                    "FilterContinuous got unexpected keyword arguments")
-            else:
-                ref = a["min"]
-        self.ref = ref
+        self.ref = ref if min is None else min
         self.max = max
         self.oper = oper
+        self.position = position
 
     @property
     def min(self):
@@ -337,9 +335,7 @@ class FilterContinuous(ValueFilter):
         self.ref = value
 
     def __call__(self, inst):
-        if inst.domain is not self.last_domain:
-            self.cache_position(inst.domain)
-        value = inst[self.pos_cache]
+        value = inst[inst.domain.index(self.column)]
         if isnan(value):
             return self.oper == self.Equal and isnan(self.ref)
         if self.oper == self.Equal:
@@ -388,17 +384,6 @@ class FilterContinuous(ValueFilter):
             return "{} is defined".format(column)
         return "invalid operator"
 
-    __repr__ = __str__
-
-
-    # For PyCharm:
-    Equal = NotEqual = Less = LessEqual = Greater = GreaterEqual = 0
-    Between = Outside = IsDefined = 0
-
-
-Enum("Equal", "NotEqual", "Less", "LessEqual", "Greater", "GreaterEqual",
-     "Between", "Outside", "IsDefined").pull_up(FilterContinuous)
-
 
 class FilterString(ValueFilter):
     """
@@ -428,6 +413,12 @@ class FilterString(ValueFilter):
 
         Tells whether the comparisons are case sensitive
     """
+    Type = Enum('FilterString',
+                'Equal, NotEqual, Less, LessEqual, Greater,'
+                'GreaterEqual, Between, Outside, Contains,'
+                'StartsWith, EndsWith, IsDefined')
+    (Equal, NotEqual, Less, LessEqual, Greater, GreaterEqual,
+     Between, Outside, Contains, StartsWith, EndsWith, IsDefined) = Type
 
     def __init__(self, position, oper, ref=None, max=None,
                  case_sensitive=True, **a):
@@ -442,6 +433,7 @@ class FilterString(ValueFilter):
         self.max = max
         self.oper = oper
         self.case_sensitive = case_sensitive
+        self.position = position
 
     @property
     def min(self):
@@ -452,9 +444,8 @@ class FilterString(ValueFilter):
         self.ref = value
 
     def __call__(self, inst):
-        if inst.domain is not self.last_domain:
-            self.cache_position(inst.domain)
-        value = inst[self.pos_cache]
+        # the function is a large 'switch'; pylint: disable=too-many-branches
+        value = inst[inst.domain.index(self.column)]
         if self.oper == self.IsDefined:
             return not np.isnan(value)
         if self.case_sensitive:
@@ -487,17 +478,6 @@ class FilterString(ValueFilter):
         if self.oper == self.Outside:
             return not refval <= value <= high
         raise ValueError("invalid operator")
-
-    # For PyCharm:
-    Equal = NotEqual = Less = LessEqual = Greater = GreaterEqual = 0
-    Between = Outside = Contains = StartsWith = EndsWith = IsDefined = 0
-
-
-Enum("Equal", "NotEqual",
-     "Less", "LessEqual", "Greater", "GreaterEqual",
-     "Between", "Outside",
-     "Contains", "StartsWith", "EndsWith",
-     "IsDefined").pull_up(FilterString)
 
 
 class FilterStringList(ValueFilter):
@@ -534,9 +514,7 @@ class FilterStringList(ValueFilter):
         self.values_lower = [x.lower() for x in values]
 
     def __call__(self, inst):
-        if inst.domain is not self.last_domain:
-            self.cache_position(inst.domain)
-        value = inst[self.pos_cache]
+        value = inst[inst.domain.index(self.column)]
         if self.case_sensitive:
             return value in self._values
         else:
@@ -548,6 +526,9 @@ class FilterRegex(ValueFilter):
     def __init__(self, column, pattern, flags=0):
         super().__init__(column)
         self._re = re.compile(pattern, flags)
+        self.column = column
+        self.pattern = pattern
+        self.flags = flags
 
     def __call__(self, inst):
         return bool(self._re.search(inst or ''))

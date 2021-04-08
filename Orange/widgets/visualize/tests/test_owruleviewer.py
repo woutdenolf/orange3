@@ -1,12 +1,14 @@
-# Test methods with long descriptive names can omit docstrings
-# pylint: disable=missing-docstring
+# pylint: disable=missing-docstring,protected-access
 from AnyQt.QtCore import Qt
 from AnyQt.QtWidgets import QApplication
+
+from orangewidget.widget import StateInfo
 
 from Orange.data import Table
 from Orange.widgets.tests.base import WidgetTest, WidgetOutputsTestMixin
 from Orange.classification import CN2Learner
 from Orange.widgets.visualize.owruleviewer import OWRuleViewer
+from Orange.widgets.utils.state_summary import format_summary_details
 
 
 class TestOWRuleViewer(WidgetTest, WidgetOutputsTestMixin):
@@ -32,24 +34,24 @@ class TestOWRuleViewer(WidgetTest, WidgetOutputsTestMixin):
     def test_set_data(self):
         # data must be None before assignment
         self.assertIsNone(self.widget.data)
-        self.assertIsNone(self.get_output(self.widget.data_output_identifier))
+        self.assertIsNone(self.get_output(self.widget.Outputs.selected_data))
 
         # assign None data
-        self.send_signal("Data", None)
+        self.send_signal(self.widget.Inputs.data, None)
         self.assertIsNone(self.widget.data)
-        self.assertIsNone(self.get_output(self.widget.data_output_identifier))
+        self.assertIsNone(self.get_output(self.widget.Outputs.selected_data))
 
         # assign data
-        self.send_signal("Data", self.titanic)
+        self.send_signal(self.widget.Inputs.data, self.titanic)
         self.assertEqual(self.titanic, self.widget.data)
 
         # output signal should not be sent without a classifier
-        self.assertIsNone(self.get_output(self.widget.data_output_identifier))
+        self.assertIsNone(self.get_output(self.widget.Outputs.selected_data))
 
         # remove data
-        self.send_signal("Data", None)
+        self.send_signal(self.widget.Inputs.data, None)
         self.assertIsNone(self.widget.data)
-        self.assertIsNone(self.get_output(self.widget.data_output_identifier))
+        self.assertIsNone(self.get_output(self.widget.Outputs.selected_data))
 
     def test_set_classifier(self):
         # classifier must be None before assignment
@@ -58,42 +60,44 @@ class TestOWRuleViewer(WidgetTest, WidgetOutputsTestMixin):
         self.assertIsNone(self.widget.selected)
 
         # assign the classifier
-        self.send_signal("Classifier", self.classifier)
+        self.send_signal(self.widget.Inputs.classifier, self.classifier)
         self.assertIsNone(self.widget.data)
         self.assertIsNotNone(self.widget.classifier)
         self.assertIsNone(self.widget.selected)
 
         # without data also set, the output should be None
-        self.assertIsNone(self.get_output(self.widget.data_output_identifier))
+        self.assertIsNone(self.get_output(self.widget.Outputs.selected_data))
 
     def test_filtered_data_output(self):
-        self.send_signal("Data", self.titanic)
-        self.send_signal("Classifier", self.classifier)
+        self.send_signal(self.widget.Inputs.data, self.titanic)
+        self.send_signal(self.widget.Inputs.classifier, self.classifier)
 
         # select the last rule (TRUE)
         selection_model = self.widget.view.selectionModel()
-        selection_model.select(self.widget.proxy_model.index(
-            len(self.classifier.rule_list) - 1, 0),
+        selection_model.select(
+            self.widget.proxy_model.index(
+                len(self.classifier.rule_list) - 1, 0),
             selection_model.Select | selection_model.Rows)
 
         # the number of output data instances (filtered)
         # must match the size of titanic data-set
-        output = self.get_output(self.widget.data_output_identifier)
+        output = self.get_output(self.widget.Outputs.selected_data)
         self.assertEqual(len(self.titanic), len(output))
 
         # clear selection,
         selection_model.clearSelection()
 
         # output should now be None
-        self.assertIsNone(self.get_output(self.widget.data_output_identifier))
+        self.assertIsNone(self.get_output(self.widget.Outputs.selected_data))
 
     def test_copy_to_clipboard(self):
-        self.send_signal("Classifier", self.classifier)
+        self.send_signal(self.widget.Inputs.classifier, self.classifier)
 
         # select the last rule (TRUE)
         selection_model = self.widget.view.selectionModel()
-        selection_model.select(self.widget.proxy_model.index(
-            len(self.classifier.rule_list) - 1, 0),
+        selection_model.select(
+            self.widget.proxy_model.index(
+                len(self.classifier.rule_list) - 1, 0),
             selection_model.Select | selection_model.Rows)
 
         # copy the selection and test if correct
@@ -103,7 +107,7 @@ class TestOWRuleViewer(WidgetTest, WidgetOutputsTestMixin):
                         clipboard_contents)
 
     def test_restore_original_order(self):
-        self.send_signal("Classifier", self.classifier)
+        self.send_signal(self.widget.Inputs.classifier, self.classifier)
         bottom_row = len(self.classifier.rule_list) - 1
 
         # sort the table
@@ -133,7 +137,7 @@ class TestOWRuleViewer(WidgetTest, WidgetOutputsTestMixin):
         self.assertEqual(bottom_row, q_index.row())
 
     def test_selection_compact_view(self):
-        self.send_signal("Classifier", self.classifier)
+        self.send_signal(self.widget.Inputs.classifier, self.classifier)
 
         # test that selection persists through view change
         selection_model = self.widget.view.selectionModel()
@@ -155,3 +159,41 @@ class TestOWRuleViewer(WidgetTest, WidgetOutputsTestMixin):
         selection_model.select(self.widget.proxy_model.index(2, 0),
                                selection_model.Select | selection_model.Rows)
         return list(range(586, 597))
+
+    def test_summary(self):
+        """Check if status bar is updated when data is received"""
+        info = self.widget.info
+        no_input, no_output = "No data on input", "No data on output"
+
+        data = self.titanic
+        self.send_signal(self.widget.Inputs.data, data)
+        summary, details = f"{len(data)}", format_summary_details(data)
+        self.assertEqual(info._StateInfo__input_summary.brief, summary)
+        self.assertEqual(info._StateInfo__input_summary.details, details)
+        self.assertIsInstance(info._StateInfo__output_summary, StateInfo.Empty)
+        self.assertEqual(info._StateInfo__output_summary.details, no_output)
+
+        self.send_signal(self.widget.Inputs.classifier, self.classifier)
+        summary, details = f"{len(data)}", format_summary_details(data)
+        self.assertEqual(info._StateInfo__input_summary.brief, summary)
+        self.assertEqual(info._StateInfo__input_summary.details, details)
+        self.assertIsInstance(info._StateInfo__output_summary, StateInfo.Empty)
+        self.assertEqual(info._StateInfo__output_summary.details, no_output)
+        self._select_data()
+        output = self.get_output(self.widget.Outputs.selected_data)
+        summary, details = f"{len(output)}", format_summary_details(output)
+        self.assertEqual(info._StateInfo__output_summary.brief, summary)
+        self.assertEqual(info._StateInfo__output_summary.details, details)
+
+        self.send_signal(self.widget.Inputs.data, None)
+        self.assertIsInstance(info._StateInfo__input_summary, StateInfo.Empty)
+        self.assertEqual(info._StateInfo__input_summary.details, no_input)
+        summary, details = f"{len(output)}", format_summary_details(output)
+        self.assertEqual(info._StateInfo__output_summary.brief, summary)
+        self.assertEqual(info._StateInfo__output_summary.details, details)
+
+        self.send_signal(self.widget.Inputs.classifier, None)
+        self.assertIsInstance(info._StateInfo__input_summary, StateInfo.Empty)
+        self.assertEqual(info._StateInfo__input_summary.details, no_input)
+        self.assertIsInstance(info._StateInfo__output_summary, StateInfo.Empty)
+        self.assertEqual(info._StateInfo__output_summary.details, no_output)

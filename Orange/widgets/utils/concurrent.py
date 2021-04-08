@@ -1,25 +1,33 @@
-"""\
-OWConcurent
-===========
-
-General helper functions and classes for Orange Canvas
-concurrent programming
-
 """
-
+General helper functions and classes for PyQt concurrent programming
+"""
+# TODO: Rename the module to something that does not conflict with stdlib
+# concurrent
+from typing import Callable, Any
+import os
 import threading
 import atexit
 import logging
-
+import warnings
+from functools import partial
+import concurrent.futures
+from concurrent.futures import Future, TimeoutError
 from contextlib import contextmanager
-
 
 from AnyQt.QtCore import (
     Qt, QObject, QMetaObject, QThreadPool, QThread, QRunnable,
-    QEventLoop, QCoreApplication, QEvent, Q_ARG
+    QEventLoop, QCoreApplication, QEvent, Q_ARG,
+    pyqtSignal as Signal, pyqtSlot as Slot
 )
 
-from AnyQt.QtCore import pyqtSignal as Signal, pyqtSlot as Slot
+from orangewidget.utils.concurrent import (
+    FutureWatcher, FutureSetWatcher, methodinvoke, PyOwned
+)
+
+__all__ = [
+    "FutureWatcher", "FutureSetWatcher", "methodinvoke",
+    "TaskState", "ConcurrentMixin", "ConcurrentWidgetMixin", "PyOwned"
+]
 
 _log = logging.getLogger(__name__)
 
@@ -51,7 +59,7 @@ class _TaskDepotThread(QThread):
         return QThread.__new__(cls)
 
     def __init__(self):
-        QThread.__init__(self)
+        super().__init__()
         self.start()
         # Need to handle queued method calls from this thread.
         self.moveToThread(self)
@@ -85,7 +93,7 @@ class _TaskDepotThread(QThread):
 
 class _TaskRunnable(QRunnable):
     """
-    A QRunnable for running a :class:`Task` by a :class:`ThreadExecuter`.
+    A QRunnable for running a :class:`Task` by a :class:`ThreadExecutor`.
     """
 
     def __init__(self, future, task, args, kwargs):
@@ -124,55 +132,115 @@ class _TaskRunnable(QRunnable):
         self.eventLoop.exec_()
 
 
-class _Runnable(QRunnable):
+class FutureRunnable(QRunnable):
     """
-    A QRunnable for running plain functions by a :class:`ThreadExecuter`.
-    """
+    A QRunnable to fulfil a `Future` in a QThreadPool managed thread.
 
+    Parameters
+    ----------
+    future : concurrent.futures.Future
+        Future whose contents will be set with the result of executing
+        `func(*args, **kwargs)` after completion
+    func : Callable
+        Function to invoke in a thread
+    args : tuple
+        Positional arguments for `func`
+    kwargs : dict
+        Keyword arguments for `func`
+
+    Example
+    -------
+    >>> f = concurrent.futures.Future()
+    >>> task = FutureRunnable(f, int, (42,), {})
+    >>> QThreadPool.globalInstance().start(task)
+    >>> f.result()
+    42
+    """
     def __init__(self, future, func, args, kwargs):
-        QRunnable.__init__(self)
+        # type: (Future, Callable, tuple, dict) -> None
+        super().__init__()
         self.future = future
-        self.func = func
-        self.args = args
-        self.kwargs = kwargs
+        self.task = (func, args, kwargs)
 
     def run(self):
         """
-        Reimplemented from QRunnable.run
+        Reimplemented from `QRunnable.run`
         """
         try:
             if not self.future.set_running_or_notify_cancel():
-                # Was cancelled
+                # future was cancelled
                 return
+            func, args, kwargs = self.task
             try:
-                result = self.func(*self.args, **self.kwargs)
-            except BaseException as ex:
+                result = func(*args, **kwargs)
+            except BaseException as ex: # pylint: disable=broad-except
                 self.future.set_exception(ex)
             else:
                 self.future.set_result(result)
-        except BaseException:
-            _log.critical("Exception in worker thread.", exc_info=True)
+        except BaseException:  # pylint: disable=broad-except
+            log = logging.getLogger(__name__)
+            log.critical("Exception in worker thread.", exc_info=True)
 
 
-class ThreadExecutor(QObject):
+class ThreadExecutor(QObject, concurrent.futures.Executor):
     """
-    ThreadExceuter object class provides an interface for running tasks
-    in a thread pool.
+    ThreadExecutor object class provides an interface for running tasks
+    in a QThreadPool.
 
-    :param QObject parent:
+    Parameters
+    ----------
+    parent : QObject
         Executor's parent instance.
 
-    :param QThreadPool threadPool:
+    threadPool :  Optional[QThreadPool]
         Thread pool to be used by the instance of the Executor. If `None`
-        then ``QThreadPool.globalInstance()`` will be used.
+        then a private global thread pool will be used.
 
+        .. versionchanged:: 3.15
+            Before 3.15 a `QThreadPool.globalPool()` was used as the default.
+
+        .. warning::
+            If you pass a custom `QThreadPool` make sure it creates threads
+            with sufficient stack size for the tasks submitted to the executor
+            (see `QThreadPool.setStackSize`).
     """
+    # A default thread pool. Replaced QThreadPool due to insufficient default
+    # stack size for created threads (QTBUG-2568). Not using even on
+    # Qt >= 5.10 just for consistency sake.
+    class __global:
+        __lock = threading.Lock()
+        __instance = None
 
-    def __init__(self, parent=None, threadPool=None):
-        QObject.__init__(self, parent)
+        @classmethod
+        def instance(cls):
+            # type: () -> concurrent.futures.ThreadPoolExecutor
+            with cls.__lock:
+                if cls.__instance is None:
+                    cls.__instance = concurrent.futures.ThreadPoolExecutor(
+                        max_workers=(os.cpu_count() or 1)
+                    )
+                return cls.__instance
+
+    def __init__(self, parent=None, threadPool=None, **kwargs):
+        super().__init__(parent, **kwargs)
+
         if threadPool is None:
-            threadPool = QThreadPool.globalInstance()
+            threadPool = self.__global.instance()
+
         self._threadPool = threadPool
+        if isinstance(threadPool, QThreadPool):
+            def start(runnable):
+                # type: (QRunnable) -> None
+                threadPool.start(runnable)
+        elif isinstance(threadPool, concurrent.futures.Executor):
+            # adapt to Executor interface
+            def start(runnable):
+                # type: (QRunnable) -> None
+                threadPool.submit(runnable.run)
+        else:
+            raise TypeError("Invalid `threadPool` type '{}'"
+                            .format(type(threadPool).__name__))
+        self.__start = start
         self._depot_thread = None
         self._futures = []
         self._shutdown = False
@@ -185,9 +253,10 @@ class ThreadExecutor(QObject):
 
     def submit(self, func, *args, **kwargs):
         """
+        Reimplemented from :class:`concurrent.futures.Executor`
+
         Schedule the `func(*args, **kwargs)` to be executed and return an
         :class:`Future` instance representing the result of the computation.
-
         """
         with self._state_lock:
             if self._shutdown:
@@ -195,17 +264,22 @@ class ThreadExecutor(QObject):
                                    "shutdown.")
 
             if isinstance(func, Task):
+                warnings.warn("Use `submit_task` to run `Task`s",
+                              DeprecationWarning, stacklevel=2)
                 f, runnable = self.__make_task_runnable(func)
             else:
                 f = Future()
-                runnable = _Runnable(f, func, args, kwargs)
+                runnable = FutureRunnable(f, func, args, kwargs)
 
             self._futures.append(f)
-            f._watchers.append(self._future_state_change)
-            self._threadPool.start(runnable)
+            f.add_done_callback(self._future_done)
+            self.__start(runnable)
             return f
 
     def submit_task(self, task):
+        # undocumented for a reason, should probably be deprecated and removed
+        warnings.warn("`submit_task` will be deprecated",
+                      PendingDeprecationWarning, stacklevel=2)
         with self._state_lock:
             if self._shutdown:
                 raise RuntimeError("Cannot schedule new futures after " +
@@ -214,8 +288,8 @@ class ThreadExecutor(QObject):
             f, runnable = self.__make_task_runnable(task)
 
             self._futures.append(f)
-            f._watchers.append(self._future_state_change)
-            self._threadPool.start(runnable)
+            f.add_done_callback(self._future_done)
+            self.__start(runnable)
             return f
 
     def __make_task_runnable(self, task):
@@ -231,13 +305,7 @@ class ThreadExecutor(QObject):
         # Use the Task's own Future object
         f = task.future()
         runnable = _TaskRunnable(f, task, (), {})
-        return (f, runnable)
-
-    def map(self, func, *iterables):
-        futures = [self.submit(func, *args) for args in zip(*iterables)]
-
-        for f in futures:
-            yield f.result()
+        return f, runnable
 
     def shutdown(self, wait=True):
         """
@@ -246,44 +314,30 @@ class ThreadExecutor(QObject):
         """
         with self._state_lock:
             self._shutdown = True
+            futures = list(self._futures)
 
         if wait:
-            # Wait until all futures have completed.
-            for future in list(self._futures):
-                try:
-                    future.exception()
-                except (TimeoutError, CancelledError):
-                    pass
+            concurrent.futures.wait(futures)
 
-    def _future_state_change(self, future, state):
+    def _future_done(self, future):
         # Remove futures when finished.
-        if state == Future.Finished:
-            self._futures.remove(future)
-
-
-class ExecuteCallEvent(QEvent):
-    """
-    Represents an function call from the event loop (used by :class:`Task`
-    to schedule the :func:`Task.run` method to be invoked)
-
-    """
-    ExecuteCall = QEvent.registerEventType()
-
-    def __init__(self):
-        QEvent.__init__(self, ExecuteCallEvent.ExecuteCall)
+        self._futures.remove(future)
 
 
 class Task(QObject):
-    """
-    """
     started = Signal()
     finished = Signal()
     cancelled = Signal()
     resultReady = Signal(object)
     exceptionReady = Signal(Exception)
 
+    __ExecuteCall = QEvent.registerEventType()
+
     def __init__(self, parent=None, function=None):
-        QObject.__init__(self, parent)
+        super().__init__(parent)
+        warnings.warn(
+            "`Task` has been deprecated", PendingDeprecationWarning,
+            stacklevel=2)
         self.function = function
 
         self._future = Future()
@@ -295,7 +349,7 @@ class Task(QObject):
             return self.function()
 
     def start(self):
-        QCoreApplication.postEvent(self, ExecuteCallEvent())
+        QCoreApplication.postEvent(self, QEvent(Task.__ExecuteCall))
 
     def future(self):
         return self._future
@@ -324,532 +378,215 @@ class Task(QObject):
             _log.critical("Exception in Task", exc_info=True)
 
     def customEvent(self, event):
-        if event.type() == ExecuteCallEvent.ExecuteCall:
+        if event.type() == Task.__ExecuteCall:
             self._execute()
         else:
-            QObject.customEvent(self, event)
+            super().customEvent(event)
 
 
-def futures_iter(futures):
-    for f in futures:
-        yield f.result()
+class TaskState(QObject, PyOwned):
+
+    status_changed = Signal(str)
+    _p_status_changed = Signal(str)
+
+    progress_changed = Signal(float)
+    _p_progress_changed = Signal(float)
+
+    partial_result_ready = Signal(object)
+    _p_partial_result_ready = Signal(object)
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.__future = None
+        self.watcher = FutureWatcher()
+        self.__interruption_requested = False
+        self.__progress = 0
+        # Helpers to route the signal emits via a this object's queue.
+        # This ensures 'atomic' disconnect from signals for targets/slots
+        # in the same thread. Requires that the event loop is running in this
+        # object's thread.
+        self._p_status_changed.connect(
+            self.status_changed, Qt.QueuedConnection)
+        self._p_progress_changed.connect(
+            self.progress_changed, Qt.QueuedConnection)
+        self._p_partial_result_ready.connect(
+            self.partial_result_ready, Qt.QueuedConnection)
+
+    @property
+    def future(self) -> Future:
+        return self.__future
+
+    def set_status(self, text: str):
+        self._p_status_changed.emit(text)
+
+    def set_progress_value(self, value: float):
+        if round(value, 1) > round(self.__progress, 1):
+            # Only emit progress when it has changed sufficiently
+            self._p_progress_changed.emit(value)
+            self.__progress = value
+
+    def set_partial_result(self, value: Any):
+        self._p_partial_result_ready.emit(value)
+
+    def is_interruption_requested(self) -> bool:
+        return self.__interruption_requested
+
+    def start(self, executor: concurrent.futures.Executor,
+              func: Callable[[], Any] = None) -> Future:
+        assert self.future is None
+        assert not self.__interruption_requested
+        self.__future = executor.submit(func)
+        self.watcher.setFuture(self.future)
+        return self.future
+
+    def cancel(self) -> bool:
+        assert not self.__interruption_requested
+        self.__interruption_requested = True
+        if self.future is not None:
+            rval = self.future.cancel()
+        else:
+            # not even scheduled yet
+            rval = True
+        return rval
 
 
-class TimeoutError(Exception):
-    pass
-
-
-class CancelledError(Exception):
-    pass
-
-
-class Future(object):
+class ConcurrentMixin:
     """
-    Represents a result of an asynchronous computation.
-    """
-    Pending, Canceled, Running, Finished = 1, 2, 4, 8
+    A base class for concurrent mixins. The class provides methods for running
+    tasks in a separate thread.
 
+    Widgets should use `ConcurrentWidgetMixin` rather than this class.
+    """
     def __init__(self):
-        self._watchers = []
-        self._state = Future.Pending
-        self._condition = threading.Condition()
-        self._result = None
-        self._exception = None
-        self._done_callbacks = []
+        self.__executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self.__task = None  # type: Optional[TaskState]
 
-    def _set_state(self, state):
-        if self._state != state:
-            self._state = state
-            for watcher in self._watchers:
-                watcher(self, state)
+    @property
+    def task(self) -> TaskState:
+        return self.__task
+
+    def on_partial_result(self, result: Any) -> None:
+        """ Invoked from runner (by state) to send the partial results
+        The method should handle partial results, i.e. show them in the plot.
+
+        :param result: any data structure to hold final result
+        """
+        raise NotImplementedError
+
+    def on_done(self, result: Any) -> None:
+        """ Invoked when task is done.
+        The method should re-set the result (to double check it) and
+        perform operations with obtained results, eg. send data to the output.
+
+        :param result: any data structure to hold temporary result
+        """
+        raise NotImplementedError
+
+    def on_exception(self, ex: Exception):
+        """ Invoked when an exception occurs during the calculation.
+        Override in order to handle exceptions, eg. show an error
+        message in the widget.
+
+        :param ex: exception
+        """
+        raise ex
+
+    def start(self, task: Callable, *args, **kwargs):
+        """ Call from derived class to start the task.
+        :param task: runner - a method to run in a thread - should accept
+        `state` parameter
+        """
+        self.__cancel_task(wait=False)
+        assert callable(task), "`task` must be callable!"
+        state = TaskState(self)
+        task = partial(task, *(args + (state,)), **kwargs)
+        self.__start_task(task, state)
 
     def cancel(self):
-        """
-        Attempt to cancel the the call. Return `False` if the call is
-        already in progress and cannot be canceled, otherwise return `True`.
+        """ Call from derived class to stop the task. """
+        self.__cancel_task(wait=False)
 
+    def shutdown(self):
+        """ Call from derived class when the widget is deleted
+         (in onDeleteWidget).
         """
-        with self._condition:
-            if self._state in [Future.Running, Future.Finished]:
-                return False
-            elif self._state == Future.Canceled:
-                return True
-            else:
-                self._set_state(Future.Canceled)
-                self._condition.notify_all()
+        self.__cancel_task(wait=True)
+        self.__executor.shutdown(True)
 
-        self._invoke_callbacks()
-        return True
+    def __start_task(self, task: Callable[[], Any], state: TaskState):
+        assert self.__task is None
+        self._connect_signals(state)
+        state.start(self.__executor, task)
+        state.setParent(self)
+        self.__task = state
 
-    def cancelled(self):
-        """
-        Return `True` if call was successfully cancelled.
-        """
-        with self._condition:
-            return self._state == Future.Canceled
+    def __cancel_task(self, wait: bool = True):
+        if self.__task is not None:
+            state, self.__task = self.__task, None
+            state.cancel()
+            self._disconnect_signals(state)
+            if wait:
+                concurrent.futures.wait([state.future])
 
-    def done(self):
-        """
-        Return `True` if the call was successfully cancelled or finished
-        running.
+    def _connect_signals(self, state: TaskState):
+        state.partial_result_ready.connect(self.on_partial_result)
+        state.watcher.done.connect(self._on_task_done)
 
-        """
-        with self._condition:
-            return self._state in [Future.Canceled, Future.Finished]
+    def _disconnect_signals(self, state: TaskState):
+        state.partial_result_ready.disconnect(self.on_partial_result)
+        state.watcher.done.disconnect(self._on_task_done)
 
-    def running(self):
-        """
-        Return True if the call is currently being executed.
-        """
-        with self._condition:
-            return self._state == Future.Running
-
-    def _get_result(self):
-        if self._exception:
-            raise self._exception
+    def _on_task_done(self, future: Future):
+        assert future.done()
+        assert self.__task is not None
+        assert self.__task.future is future
+        assert self.__task.watcher.future() is future
+        self.__task = None
+        ex = future.exception()
+        if ex is not None:
+            self.on_exception(ex)
         else:
-            return self._result
-
-    def result(self, timeout=None):
-        """
-        Return the result of the :class:`Futures` computation. If `timeout`
-        is `None` the call will block until either the computation finished
-        or is cancelled.
-        """
-        with self._condition:
-            if self._state == Future.Finished:
-                return self._get_result()
-            elif self._state == Future.Canceled:
-                raise CancelledError()
-
-            self._condition.wait(timeout)
-
-            if self._state == Future.Finished:
-                return self._get_result()
-            elif self._state == Future.Canceled:
-                raise CancelledError()
-            else:
-                raise TimeoutError()
-
-    def exception(self, timeout=None):
-        """
-        Return the exception instance (if any) resulting from the execution
-        of the :class:`Future`. Can raise a :class:`CancelledError` if the
-        computation was cancelled.
-
-        """
-        with self._condition:
-            if self._state == Future.Finished:
-                return self._exception
-            elif self._state == Future.Canceled:
-                raise CancelledError()
-
-            self._condition.wait(timeout)
-
-            if self._state == Future.Finished:
-                return self._exception
-            elif self._state == Future.Canceled:
-                raise CancelledError()
-            else:
-                raise TimeoutError()
-
-    def set_result(self, result):
-        """
-        Set the result of the computation (called by the worker thread).
-        """
-        with self._condition:
-            self._result = result
-            self._set_state(Future.Finished)
-            self._condition.notify_all()
-
-        self._invoke_callbacks()
-
-    def set_exception(self, exception):
-        """
-        Set the exception instance that was raised by the computation
-        (called by the worker thread).
-
-        """
-        with self._condition:
-            self._exception = exception
-            self._set_state(Future.Finished)
-            self._condition.notify_all()
-
-        self._invoke_callbacks()
-
-    def add_done_callback(self, fn):
-        with self._condition:
-            if self._state not in [Future.Finished, Future.Canceled]:
-                self._done_callbacks.append(fn)
-                return
-        # Already done
-        fn(self)
-
-    def set_running_or_notify_cancel(self):
-        with self._condition:
-            if self._state == Future.Canceled:
-                return False
-            elif self._state == Future.Pending:
-                self._set_state(Future.Running)
-                return True
-            else:
-                raise Exception()
-
-    def _invoke_callbacks(self):
-        for callback in self._done_callbacks:
-            try:
-                callback(self)
-            except Exception:
-                pass
-
-
-class StateChangedEvent(QEvent):
-    """
-    Represents a change in the internal state of a :class:`Future`.
-    """
-    StateChanged = QEvent.registerEventType()
-
-    def __init__(self, state):
-        QEvent.__init__(self, StateChangedEvent.StateChanged)
-        self._state = state
-
-    def state(self):
-        """
-        Return the new state (Future.Pending, Future.Cancelled, ...).
-        """
-        return self._state
-
-
-class FutureWatcher(QObject):
-    """
-    A `FutureWatcher` class provides a convenient interface to the
-    :class:`Future` instance using Qt's signals.
-
-    :param :class:`Future` future:
-        A :class:`Future` instance to watch.
-    :param :class:`QObject` parent:
-        Object's parent instance.
-
-    """
-    #: The future was cancelled.
-    cancelled = Signal()
-
-    #: The future has finished.
-    finished = Signal()
-
-    #: The future has started computation.
-    started = Signal()
-
-    def __init__(self, future, parent=None):
-        QObject.__init__(self, parent)
-        self._future = future
-
-        self._future._watchers.append(self._stateChanged)
-
-    def isCancelled(self):
-        """
-        Was the future cancelled.
-        """
-        return self._future.cancelled()
-
-    def isDone(self):
-        """
-        Is the future done (was cancelled or has finished).
-        """
-        return self._future.done()
-
-    def isRunning(self):
-        """
-        Is the future running (i.e. has started).
-        """
-        return self._future.running()
-
-    def isStarted(self):
-        """
-        Has the future computation started.
-        """
-        return self._future.running()
-
-    def result(self):
-        """
-        Return the result of the computation.
-        """
-        return self._future.result()
-
-    def exception(self):
-        """
-        Return the exception instance or `None` if no exception was raised.
-        """
-        return self._future.exception()
-
-    def customEvent(self, event):
-        """
-        Reimplemented from `QObject.customEvent`.
-        """
-        if event.type() == StateChangedEvent.StateChanged:
-            if event.state() == Future.Canceled:
-                self.cancelled.emit()
-            elif event.state() == Future.Running:
-                self.started.emit()
-            elif event.state() == Future.Finished:
-                self.finished.emit()
-            return
-
-        return QObject.customEvent(self, event)
-
-    def _stateChanged(self, future, state):
-        """
-        The `future` state has changed (called by :class:`Future`).
-        """
-        ev = StateChangedEvent(state)
-
-        if self.thread() is QThread.currentThread():
-            QCoreApplication.sendEvent(self, ev)
-        else:
-            QCoreApplication.postEvent(self, ev)
-
-
-class methodinvoke(object):
-    """
-    Create an QObject method wrapper that invokes the method asynchronously
-    in the object's own thread.
-
-    :param obj:
-        A QObject instance.
-    :param str method:
-        The method name.
-    :param tuple arg_types:
-        A tuple of positional argument types.
-
-    """
-
-    def __init__(self, obj, method, arg_types=()):
-        self.obj = obj
-        self.method = method
-        self.arg_types = tuple(arg_types)
-
-    def __call__(self, *args):
-        args = [Q_ARG(atype, arg) for atype, arg in zip(self.arg_types, args)]
-        QMetaObject.invokeMethod(
-            self.obj, self.method, Qt.QueuedConnection,
-            *args
+            self.on_done(future.result())
+        # This assert prevents user to start new task (call start) from either
+        # on_done or on_exception
+        assert self.__task is None, (
+            "Starting new task from "
+            f"{'on_done' if ex is None else 'on_exception'} is forbidden"
         )
 
 
-import unittest
-
-
-class TestFutures(unittest.TestCase):
-    def test_futures(self):
-        f = Future()
-        self.assertEqual(f.done(), False)
-        self.assertEqual(f.running(), False)
-
-        self.assertTrue(f.cancel())
-        self.assertTrue(f.cancelled())
-
-        with self.assertRaises(CancelledError):
-            f.result()
-
-        with self.assertRaises(CancelledError):
-            f.exception()
-
-        f = Future()
-        f.set_running_or_notify_cancel()
-
-        with self.assertRaises(TimeoutError):
-            f.result(0.1)
-
-        with self.assertRaises(TimeoutError):
-            f.exception(0.1)
-
-        f = Future()
-        f.set_running_or_notify_cancel()
-        f.set_result("result")
-
-        self.assertEqual(f.result(), "result")
-        self.assertEqual(f.exception(), None)
-
-        f = Future()
-        f.set_running_or_notify_cancel()
-
-        f.set_exception(Exception("foo"))
-
-        with self.assertRaises(Exception):
-            f.result()
-
-        class Ref():
-            def __init__(self, ref):
-                self.ref = ref
-
-            def set(self, ref):
-                self.ref = ref
-
-        # Test that done callbacks are called.
-        called = Ref(False)
-        f = Future()
-        f.add_done_callback(lambda f: called.set(True))
-        f.set_result(None)
-        self.assertTrue(called.ref)
-
-        # Test that callbacks are called when cancelled.
-        called = Ref(False)
-        f = Future()
-        f.add_done_callback(lambda f: called.set(True))
-        f.cancel()
-        self.assertTrue(called.ref)
-
-        # Test that callbacks are called immediately when the future is
-        # already done.
-        called = Ref(False)
-        f = Future()
-        f.set_result(None)
-        f.add_done_callback(lambda f: called.set(True))
-        self.assertTrue(called.ref)
-
-        count = Ref(0)
-        f = Future()
-        f.add_done_callback(lambda f: count.set(count.ref + 1))
-        f.add_done_callback(lambda f: count.set(count.ref + 1))
-        f.set_result(None)
-        self.assertEqual(count.ref, 2)
-
-        # Test that the callbacks are called with the future as argument.
-        done_future = Ref(None)
-        f = Future()
-        f.add_done_callback(lambda f: done_future.set(f))
-        f.set_result(None)
-        self.assertIs(f, done_future.ref)
-
-
-class TestExecutor(unittest.TestCase):
-    def setUp(self):
-        self.app = QCoreApplication([])
-
-    def test_executor(self):
-        executor = ThreadExecutor()
-        f1 = executor.submit(pow, 100, 100)
-
-        f2 = executor.submit(lambda: 1 / 0)
-
-        f3 = executor.submit(QThread.currentThread)
-
-        self.assertTrue(f1.result(), pow(100, 100))
-
-        with self.assertRaises(ZeroDivisionError):
-            f2.result()
-
-        self.assertIsInstance(f2.exception(), ZeroDivisionError)
-
-        self.assertIsNot(f3.result(), QThread.currentThread())
-
-    def test_methodinvoke(self):
-        executor = ThreadExecutor()
-        state = [None, None]
-
-        class StateSetter(QObject):
-            @Slot(object)
-            def set_state(self, value):
-                state[0] = value
-                state[1] = QThread.currentThread()
-
-        def func(callback):
-            callback(QThread.currentThread())
-
-        obj = StateSetter()
-        f1 = executor.submit(func, methodinvoke(obj, "set_state", (object,)))
-        f1.result()
-
-        # So invoked method can be called
-        QCoreApplication.processEvents()
-
-        self.assertIs(state[1], QThread.currentThread(),
-                      "set_state was called from the wrong thread")
-
-        self.assertIsNot(state[0], QThread.currentThread(),
-                         "set_state was invoked in the main thread")
-
-        executor.shutdown(wait=True)
-
-    def test_executor_map(self):
-        executor = ThreadExecutor()
-
-        r = executor.map(pow, list(range(1000)), list(range(1000)))
-
-        results = list(r)
-
-        self.assertTrue(len(results) == 1000)
-
-
-class TestFutureWatcher(unittest.TestCase):
-    def setUp(self):
-        self.app = QCoreApplication([])
-
-    def test_watcher(self):
-        executor = ThreadExecutor()
-        f = executor.submit(QThread.currentThread)
-        watcher = FutureWatcher(f)
-
-        if f.cancel():
-            self.assertTrue(watcher.isCancelled())
-
-        executor.shutdown()
-
-
-class TestTask(unittest.TestCase):
-    def setUp(self):
-        self.app = QCoreApplication([])
-
-    def test_task(self):
-        results = []
-
-        task = Task(function=QThread.currentThread)
-        task.resultReady.connect(results.append)
-
-        task.start()
-        self.app.processEvents()
-
-        self.assertSequenceEqual(results, [QThread.currentThread()])
-
-        results = []
-
-        thread = QThread()
-        thread.start()
-
-        task = Task(function=QThread.currentThread)
-
-        task.moveToThread(thread)
-
-        self.assertIsNot(task.thread(), QThread.currentThread())
-        self.assertIs(task.thread(), thread)
-
-        task.resultReady.connect(results.append, Qt.DirectConnection)
-        task.start()
-
-        f = task.future()
-
-        self.assertIsNot(f.result(3), QThread.currentThread())
-
-        self.assertIs(f.result(3), results[-1])
-
-    def test_executor(self):
-        executor = ThreadExecutor()
-
-        f = executor.submit(QThread.currentThread)
-
-        self.assertIsNot(f.result(3), QThread.currentThread())
-
-        f = executor.submit(lambda: 1 / 0)
-
-        with self.assertRaises(ZeroDivisionError):
-            f.result()
-
-        results = []
-        task = Task(function=QThread.currentThread)
-        task.resultReady.connect(results.append, Qt.DirectConnection)
-
-        f = executor.submit(task)
-
-        self.assertIsNot(f.result(3), QThread.currentThread())
-
-        executor.shutdown()
+class ConcurrentWidgetMixin(ConcurrentMixin):
+    """
+    A concurrent mixin to be used along with OWWidget.
+    """
+    def __set_state_ready(self):
+        self.progressBarFinished()
+        self.setInvalidated(False)
+        self.setStatusMessage("")
+
+    def __set_state_busy(self):
+        self.progressBarInit()
+        self.setInvalidated(True)
+
+    def start(self, task: Callable, *args, **kwargs):
+        self.__set_state_ready()
+        super().start(task, *args, **kwargs)
+        self.__set_state_busy()
+
+    def cancel(self):
+        super().cancel()
+        self.__set_state_ready()
+
+    def _connect_signals(self, state: TaskState):
+        super()._connect_signals(state)
+        state.status_changed.connect(self.setStatusMessage)
+        state.progress_changed.connect(self.progressBarSet)
+
+    def _disconnect_signals(self, state: TaskState):
+        super()._disconnect_signals(state)
+        state.status_changed.disconnect(self.setStatusMessage)
+        state.progress_changed.disconnect(self.progressBarSet)
+
+    def _on_task_done(self, future: Future):
+        super()._on_task_done(future)
+        self.__set_state_ready()

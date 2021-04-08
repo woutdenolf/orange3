@@ -1,3 +1,7 @@
+from unittest.mock import patch
+
+from AnyQt.QtCore import Qt
+
 from Orange.data import ContinuousVariable
 from Orange.widgets import gui
 from Orange.widgets.tests.base import GuiTest
@@ -17,25 +21,80 @@ class TestDoubleSpin(GuiTest):
 
 
 class TestListModel(GuiTest):
-    def test_select(self):
-        widget = OWWidget()
-        widget.foo = None
+    def setUp(self):
+        self.widget = OWWidget()
+        self.widget.foo = None
         self.attrs = VariableListModel()
-        view = gui.listView(widget.controlArea, widget, "foo", model=self.attrs)
+        self.view = gui.listView(
+            self.widget.controlArea, self.widget, "foo", model=self.attrs)
+
+    def tearDown(self) -> None:
+        self.widget.deleteLater()
+        del self.widget
+
+    def test_select_callback(self):
+        widget = self.widget
+        view = self.view
+
         self.assertIsNone(widget.foo)
+
         a, b, c = (ContinuousVariable(x) for x in "abc")
         self.attrs[:] = [a, b, c]
+
         view.setCurrentIndex(self.attrs.index(0, 0))
         self.assertIs(widget.foo, a)
         view.setCurrentIndex(self.attrs.index(2, 0))
         self.assertIs(widget.foo, c)
+
+        view.setSelectionMode(view.MultiSelection)
+        sel_model = view.selectionModel()
+        sel_model.clear()
+        view.setCurrentIndex(self.attrs.index(1, 0))
+        self.assertEqual(widget.foo, [b])
+
+    def test_select_callfront(self):
+        widget = self.widget
+        view = self.view
+
+        a, b, c = (ContinuousVariable(x) for x in "abc")
+        self.attrs[:] = [a, b, c]
 
         widget.foo = b
         selection = view.selectedIndexes()
         self.assertEqual(len(selection), 1)
         self.assertEqual(selection[0].row(), 1)
 
-class ComboBoxText(GuiTest):
+        view.setSelectionMode(view.MultiSelection)
+        widget.foo = [a, c]
+        selection = view.selectedIndexes()
+        self.assertEqual(len(selection), 2)
+        self.assertEqual({selection[0].row(), selection[1].row()}, {0, 2})
+
+        widget.foo = []
+        selection = view.selectedIndexes()
+        self.assertEqual(len(selection), 0)
+
+        widget.foo = [2, "b"]
+        selection = view.selectedIndexes()
+        self.assertEqual(len(selection), 2)
+        self.assertEqual({selection[0].row(), selection[1].row()}, {1, 2})
+
+
+class TestFloatSlider(GuiTest):
+
+    def test_set_value(self):
+        w = gui.FloatSlider(Qt.Horizontal, 0., 1., 0.5)
+        w.setValue(1)
+        # Float slider returns value divided by step
+        # 1/0.5 = 2
+        self.assertEqual(w.value(), 2)
+        w = gui.FloatSlider(Qt.Horizontal, 0., 1., 0.05)
+        w.setValue(1)
+        # 1/0.05 = 20
+        self.assertEqual(w.value(), 20)
+
+
+class ComboBoxTest(GuiTest):
     def test_set_initial_value(self):
         widget = OWWidget()
         variables = [ContinuousVariable(x) for x in "abc"]
@@ -43,3 +102,9 @@ class ComboBoxText(GuiTest):
         widget.foo = variables[1]
         combo = gui.comboBox(widget.controlArea, widget, "foo", model=model)
         self.assertEqual(combo.currentIndex(), 1)
+
+    @patch("Orange.widgets.gui.gui_comboBox")
+    def test_warn_value_type(self, gui_combobox):
+        with self.assertWarns(DeprecationWarning):
+            gui.comboBox(None, None, "foo", valueType=int, editable=True)
+        self.assertEqual(gui_combobox.call_args[1], {"editable": True})

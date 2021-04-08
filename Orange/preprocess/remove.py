@@ -1,9 +1,11 @@
 from collections import namedtuple
+
 import numpy as np
 
-from .preprocess import Preprocess
-from Orange.data import Domain, DiscreteVariable, Table
+from Orange.data import Domain, DiscreteVariable
 from Orange.preprocess.transformation import Lookup
+from Orange.statistics.util import nanunique
+from .preprocess import Preprocess
 
 __all__ = ["Remove"]
 
@@ -24,14 +26,14 @@ class Remove(Preprocess):
     attr_flags : int (default: 0)
         If SortValues, values of discrete attributes are sorted.
         If RemoveConstant, unused attributes are removed.
-        If RemoveUnusedValues, unused values are removed from descrete
+        If RemoveUnusedValues, unused values are removed from discrete
         attributes.
         It is possible to merge operations in one by summing several types.
 
     class_flags: int (default: 0)
         If SortValues, values of discrete class attributes are sorted.
         If RemoveConstant, unused class attributes are removed.
-        If RemoveUnusedValues, unused values are removed from descrete
+        If RemoveUnusedValues, unused values are removed from discrete
         class attributes.
         It is possible to merge operations in one by summing several types.
 
@@ -87,7 +89,7 @@ class Remove(Preprocess):
         meta_vars, self.meta_results = self.get_vars_and_results(metas_state)
 
         domain = Domain(att_vars, cls_vars, meta_vars)
-        return data.from_table(domain, data)
+        return data.transform(domain)
 
     def get_vars_and_results(self, state):
         removed, reduced, sorted = 0, 0, 0
@@ -167,8 +169,9 @@ def merge_transforms(exp):
             new_var = DiscreteVariable(
                 exp.var.name,
                 values=exp.var.values,
-                ordered=exp.var.ordered,
-                compute_value=merge_lookup(A, B))
+                compute_value=merge_lookup(A, B),
+                sparse=exp.var.sparse,
+            )
             assert isinstance(prev.sub, Var)
             return Transformed(prev.sub, new_var)
         else:
@@ -230,32 +233,14 @@ def remove_constant(var, data):
 
 
 def remove_unused_values(var, data):
-    column_data = Table.from_table(
-        Domain([var]),
-        data
-    )
-    array = column_data.X.ravel()
-    mask = np.isfinite(array)
-    unique = np.array(np.unique(array[mask]), dtype=int)
-
+    unique = nanunique(data.get_column_view(var)[0].astype(float)).astype(int)
     if len(unique) == len(var.values):
         return var
-
     used_values = [var.values[i] for i in unique]
     translation_table = np.array([np.NaN] * len(var.values))
     translation_table[unique] = range(len(used_values))
-
-    base_value = -1
-    if 0 >= var.base_value < len(var.values):
-        base = translation_table[var.base_value]
-        if np.isfinite(base):
-            base_value = int(base)
-
-    return DiscreteVariable("{}".format(var.name),
-                            values=used_values,
-                            base_value=base_value,
-                            compute_value=Lookup(var, translation_table)
-                            )
+    return DiscreteVariable(var.name, values=used_values, sparse=var.sparse,
+                            compute_value=Lookup(var, translation_table))
 
 
 def sort_var_values(var):
@@ -269,16 +254,8 @@ def sort_var_values(var):
     )
 
     return DiscreteVariable(var.name, values=newvalues,
-                            compute_value=Lookup(var, translation_table))
-
-
-class Lookup(Lookup):
-    def transform(self, column):
-        column = np.array(column, dtype=np.float64)
-        mask = np.isnan(column)
-        column_valid = np.where(mask, 0, column)
-        values = self.lookup_table[np.array(column_valid, dtype=int)]
-        return np.where(mask, np.nan, values)
+                            compute_value=Lookup(var, translation_table),
+                            sparse=var.sparse)
 
 
 def merge_lookup(A, B):

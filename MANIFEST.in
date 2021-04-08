@@ -1,25 +1,27 @@
 
 recursive-include Orange *.pyx *.py *.c *.cpp README* LICENSE
-recursive-include Orange/datasets *.tab *.basket *.info *.dst
+recursive-include Orange/datasets *.tab *.basket *.info *.dst *.metadata
 
-recursive-include Orange/tests *.tab *.basket *.xlsx
+recursive-include Orange/tests *.tab *.basket *.xlsx *.xls *.pkl *.pkl.gz
 
-recursive-include Orange/canvas *.qss *ico *.png *.svg *.ico *.html
-recursive-include Orange/canvas/application/workflows *.ows
+recursive-include Orange/canvas *ico *.png *.svg *.ico
+recursive-include Orange/canvas/workflows *.ows
 
-recursive-include Orange/widgets *.png *.svg
-recursive-include Orange/widgets/_highcharts *.js *.css *.html
-recursive-include Orange/widgets/utils/_webview *.js
-recursive-include Orange/widgets/utils/plot *.fs *.vs *.gs *.obj
+recursive-include Orange/widgets *.png *.svg *.js *.css *.html
+recursive-include Orange/widgets/tests *.tab
+recursive-include Orange/widgets/data/tests *.tab *.txt
+recursive-include Orange/widgets/tests/workflows *.ows
 
 recursive-include distribute *.svg *.desktop
 
 include requirements*.txt
 
 include README.md
+include README.pypi
 include CONTRIBUTING.md
 include CHANGELOG.md
 include COPYING
 include LICENSE
 include setup.py
 include setup.cfg
+include pyproject.toml

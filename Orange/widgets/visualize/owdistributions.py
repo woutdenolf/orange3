@@ -1,762 +1,1224 @@
-"""
-Distributions
--------------
-
-A widget for plotting attribute distributions.
-
-"""
-from math import sqrt
-import sys
-import collections
+from functools import partial, reduce
+from itertools import count, groupby, repeat
 from xml.sax.saxutils import escape
 
-from AnyQt.QtWidgets import QSizePolicy, QLabel, QListView,QToolTip
-from AnyQt.QtGui import QColor, QPen, QBrush, QPainter, QPicture, QPalette
-from AnyQt.QtCore import Qt, QRectF
+import numpy as np
+from scipy.stats import norm, rayleigh, beta, gamma, pareto, expon
 
-
-import numpy
+from AnyQt.QtWidgets import QGraphicsRectItem
+from AnyQt.QtGui import QColor, QPen, QBrush, QPainter, QPalette, QPolygonF
+from AnyQt.QtCore import Qt, QRectF, QPointF, pyqtSignal as Signal
+from orangewidget.utils.listview import ListViewSearch
 import pyqtgraph as pg
 
-import Orange.data
+from Orange.data import Table, DiscreteVariable, ContinuousVariable, Domain
+from Orange.preprocess.discretize import decimal_binnings, time_binnings, \
+    short_time_units
 from Orange.statistics import distribution, contingency
-from Orange.widgets import widget, gui, settings
-from Orange.widgets.utils import itemmodels
-from Orange.widgets.widget import InputSignal
-from Orange.widgets.visualize.owlinearprojection import LegendItem, ScatterPlotItem
-from Orange.widgets.io import FileFormat
+from Orange.widgets import gui, settings
+from Orange.widgets.utils.annotated_data import \
+    create_groups_table, create_annotated_table, ANNOTATED_DATA_SIGNAL_NAME
+from Orange.widgets.utils.itemmodels import DomainModel
+from Orange.widgets.utils.widgetpreview import WidgetPreview
+from Orange.widgets.utils.state_summary import format_summary_details
+from Orange.widgets.visualize.utils.plotutils import ElidedLabelsAxis
+from Orange.widgets.widget import Input, Output, OWWidget, Msg
 
-from .owscatterplotgraph import HelpEventDelegate
+from Orange.widgets.visualize.owscatterplotgraph import \
+    LegendItem as SPGLegendItem
 
-def selected_index(view):
-    """Return the selected integer `index` (row) in the view.
 
-    If no index is selected return -1
+class ScatterPlotItem(pg.ScatterPlotItem):
+    Symbols = pg.graphicsItems.ScatterPlotItem.Symbols
 
-    `view` must be in single selection mode.
-    """
-    indices = view.selectedIndexes()
-    assert len(indices) < 2, "View must be in single selection mode"
-    if indices:
-        return indices[0].row()
-    else:
-        return -1
+    # pylint: disable=arguments-differ
+    def paint(self, painter, option, widget=None):
+        if self.opts["pxMode"]:
+            painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        if self.opts["antialias"]:
+            painter.setRenderHint(QPainter.Antialiasing, True)
+        super().paint(painter, option, widget)
+
+
+class LegendItem(SPGLegendItem):
+    @staticmethod
+    def mousePressEvent(event):
+        if event.button() == Qt.LeftButton:
+            event.accept()
+        else:
+            event.ignore()
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() & Qt.LeftButton:
+            event.accept()
+            if self.parentItem() is not None:
+                self.autoAnchor(
+                    self.pos() + (event.pos() - event.lastPos()) / 2)
+        else:
+            event.ignore()
+
+    @staticmethod
+    def mouseReleaseEvent(event):
+        if event.button() == Qt.LeftButton:
+            event.accept()
+        else:
+            event.ignore()
 
 
 class DistributionBarItem(pg.GraphicsObject):
-    def __init__(self, geometry, dist, colors):
+    def __init__(self, x, width, padding, freqs, colors, stacked, expanded,
+                 tooltip, desc, hidden):
         super().__init__()
-        self.geometry = geometry
-        self.dist = dist
+        self.x = x
+        self.width = width
+        self.freqs = freqs
         self.colors = colors
+        self.padding = padding
+        self.stacked = stacked
+        self.expanded = expanded
         self.__picture = None
+        self.polygon = None
+        self.hovered = False
+        self._tooltip = tooltip
+        self.desc = desc
+        self.hidden = False
+        self.setHidden(hidden)
+        self.setAcceptHoverEvents(True)
 
-    def paint(self, painter, options, widget):
-        if self.__picture is None:
-            self.__paint()
-        painter.drawPicture(0, 0, self.__picture)
+    def hoverEnterEvent(self, event):
+        super().hoverEnterEvent(event)
+        self.hovered = True
+        self.update()
+
+    def hoverLeaveEvent(self, event):
+        super().hoverLeaveEvent(event)
+        self.hovered = False
+        self.update()
+
+    def setHidden(self, hidden):
+        self.hidden = hidden
+        if not hidden:
+            self.setToolTip(self._tooltip)
+
+    def paint(self, painter, _options, _widget):
+        if self.hidden:
+            return
+
+        if self.expanded:
+            tot = np.sum(self.freqs)
+            if tot == 0:
+                return
+            freqs = self.freqs / tot
+        else:
+            freqs = self.freqs
+
+        if not self.padding:
+            padding = self.mapRectFromDevice(QRectF(0, 0, 0.5, 0)).width()
+        else:
+            padding = min(20, self.width * self.padding)
+        sx = self.x + padding
+        padded_width = self.width - 2 * padding
+
+        if self.stacked:
+            painter.setPen(Qt.NoPen)
+            y = 0
+            for freq, color in zip(freqs, self.colors):
+                painter.setBrush(QBrush(color))
+                painter.drawRect(QRectF(sx, y, padded_width, freq))
+                y += freq
+            self.polygon = QPolygonF(QRectF(sx, 0, padded_width, y))
+        else:
+            polypoints = [QPointF(sx, 0)]
+            pen = QPen(QBrush(Qt.white), 0.5)
+            pen.setCosmetic(True)
+            painter.setPen(pen)
+            wsingle = padded_width / len(self.freqs)
+            for i, freq, color in zip(count(), freqs, self.colors):
+                painter.setBrush(QBrush(color))
+                x = sx + wsingle * i
+                painter.drawRect(
+                    QRectF(x, 0, wsingle, freq))
+                polypoints += [QPointF(x, freq),
+                               QPointF(x + wsingle, freq)]
+            polypoints += [QPointF(polypoints[-1].x(), 0), QPointF(sx, 0)]
+            self.polygon = QPolygonF(polypoints)
+
+        if self.hovered:
+            pen = QPen(QBrush(Qt.blue), 2, Qt.DashLine)
+            pen.setCosmetic(True)
+            painter.setPen(pen)
+            painter.setBrush(Qt.NoBrush)
+            painter.drawPolygon(self.polygon)
+
+    @property
+    def x0(self):
+        return self.x
+
+    @property
+    def x1(self):
+        return self.x + self.width
 
     def boundingRect(self):
-        return self.geometry
-
-    def __paint(self):
-        picture = QPicture()
-        painter = QPainter(picture)
-        pen = QPen(QBrush(Qt.white), 0.5)
-        pen.setCosmetic(True)
-        painter.setPen(pen)
-
-        geom = self.geometry
-        x, y = geom.x(), geom.y()
-        w, h = geom.width(), geom.height()
-        wsingle = w / len(self.dist)
-        for d, c in zip(self.dist, self.colors):
-            painter.setBrush(QBrush(c))
-            painter.drawRect(QRectF(x, y, wsingle, d * h))
-            x += wsingle
-        painter.end()
-
-        self.__picture = picture
+        if self.expanded:
+            height = 1
+        elif self.stacked:
+            height = sum(self.freqs)
+        else:
+            height = max(self.freqs)
+        return QRectF(self.x, 0, self.width, height)
 
 
-class OWDistributions(widget.OWWidget):
+class DistributionWidget(pg.PlotWidget):
+    item_clicked = Signal(DistributionBarItem, Qt.KeyboardModifiers, bool)
+    blank_clicked = Signal()
+    mouse_released = Signal()
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.last_item = None
+
+    def _get_bar_item(self, pos):
+        for item in self.items(pos):
+            if isinstance(item, DistributionBarItem):
+                return item
+        return None
+
+    def mousePressEvent(self, ev):
+        super().mousePressEvent(ev)
+        if ev.isAccepted():
+            return
+        if ev.button() != Qt.LeftButton:
+            ev.ignore()
+            return
+
+        ev.accept()
+        self.last_item = self._get_bar_item(ev.pos())
+        if self.last_item:
+            self.item_clicked.emit(self.last_item, ev.modifiers(), False)
+        else:
+            self.blank_clicked.emit()
+
+    def mouseReleaseEvent(self, ev):
+        self.last_item = None
+        self.mouse_released.emit()
+
+    def mouseMoveEvent(self, ev):
+        super().mouseMoveEvent(ev)
+        if self.last_item is not None:
+            item = self._get_bar_item(ev.pos())
+            if item is not None and item is not self.last_item:
+                self.item_clicked.emit(item, ev.modifiers(), True)
+                self.last_item = item
+
+
+class AshCurve:
+    @staticmethod
+    def fit(a):
+        return (a, )
+
+    @staticmethod
+    def pdf(x, a, sigma=1, weights=None):
+        hist, _ = np.histogram(a, x, weights=weights)
+        kernel_x = np.arange(len(x)) - len(hist) / 2
+        kernel = 1 / (np.sqrt(2 * np.pi)) * np.exp(-(kernel_x * sigma) ** 2 / 2)
+        ash = np.convolve(hist, kernel, mode="same")
+        ash /= ash.sum()
+        return ash
+
+
+class ElidedAxisNoUnits(ElidedLabelsAxis):
+    def __init__(self, orientation, pen=None, linkView=None, parent=None,
+                 maxTickLength=-5, showValues=True):
+        self.show_unit = False
+        self.tick_dict = {}
+        super().__init__(orientation, pen=pen, linkView=linkView, parent=parent,
+                         maxTickLength=maxTickLength, showValues=showValues)
+
+    def setShowUnit(self, show_unit):
+        self.show_unit = show_unit
+
+    def labelString(self):
+        if self.show_unit:
+            return super().labelString()
+
+        style = ';'.join(f"{k}: {v}" for k, v in self.labelStyle.items())
+        return f"<span style='{style}'>{self.labelText}</span>"
+
+
+class OWDistributions(OWWidget):
     name = "Distributions"
     description = "Display value distributions of a data feature in a graph."
     icon = "icons/Distribution.svg"
     priority = 120
-    inputs = [InputSignal("Data", Orange.data.Table, "set_data",
-                          doc="Set the input data set")]
+    keywords = ["histogram"]
 
-    settingsHandler = settings.DomainContextHandler(
-        match_values=settings.DomainContextHandler.MATCH_VALUES_ALL)
-    #: Selected variable index
-    variable_idx = settings.ContextSetting(-1)
-    #: Selected group variable
-    groupvar_idx = settings.ContextSetting(0)
+    class Inputs:
+        data = Input("Data", Table, doc="Set the input dataset")
 
-    relative_freq = settings.Setting(False)
-    disc_cont = settings.Setting(False)
+    class Outputs:
+        selected_data = Output("Selected Data", Table, default=True)
+        annotated_data = Output(ANNOTATED_DATA_SIGNAL_NAME, Table)
+        histogram_data = Output("Histogram Data", Table)
 
-    smoothing_index = settings.Setting(5)
-    show_prob = settings.ContextSetting(0)
+    class Error(OWWidget.Error):
+        no_defined_values_var = \
+            Msg("Variable '{}' does not have any defined values")
+        no_defined_values_pair = \
+            Msg("No data instances with '{}' and '{}' defined")
+
+    class Warning(OWWidget.Warning):
+        ignored_nans = Msg("Data instances with missing values are ignored")
+
+    settingsHandler = settings.DomainContextHandler()
+    var = settings.ContextSetting(None)
+    cvar = settings.ContextSetting(None)
+    selection = settings.ContextSetting(set(), schema_only=True)
+    # number_of_bins must be a context setting because selection depends on it
+    number_of_bins = settings.ContextSetting(5, schema_only=True)
+
+    fitted_distribution = settings.Setting(0)
+    hide_bars = settings.Setting(False)
+    show_probs = settings.Setting(False)
+    stacked_columns = settings.Setting(False)
+    cumulative_distr = settings.Setting(False)
+    sort_by_freq = settings.Setting(False)
+    kde_smoothing = settings.Setting(10)
+
+    auto_apply = settings.Setting(True)
 
     graph_name = "plot"
 
-    ASH_HIST = 50
+    Fitters = (
+        ("None", None, (), ()),
+        ("Normal", norm, ("loc", "scale"), ("μ", "σ")),
+        ("Beta", beta, ("a", "b", "loc", "scale"),
+         ("α", "β", "-loc", "-scale")),
+        ("Gamma", gamma, ("a", "loc", "scale"), ("α", "β", "-loc", "-scale")),
+        ("Rayleigh", rayleigh, ("loc", "scale"), ("-loc", "σ")),
+        ("Pareto", pareto, ("b", "loc", "scale"), ("α", "-loc", "-scale")),
+        ("Exponential", expon, ("loc", "scale"), ("-loc", "λ")),
+        ("Kernel density", AshCurve, ("a",), ("",))
+    )
 
-    bins = [ 2, 3, 4, 5, 8, 10, 12, 15, 20, 30, 50 ]
-    smoothing_facs = list(reversed([ 0.1, 0.2, 0.4, 0.6, 0.8, 1, 1.5, 2, 4, 6, 10 ]))
+    DragNone, DragAdd, DragRemove = range(3)
 
     def __init__(self):
         super().__init__()
         self.data = None
+        self.valid_data = self.valid_group_data = None
+        self.bar_items = []
+        self.curve_items = []
+        self.curve_descriptions = None
+        self.binnings = []
 
-        self.distributions = None
-        self.contingencies = None
-        self.var = self.cvar = None
-        varbox = gui.vBox(self.controlArea, "Variable")
+        self.last_click_idx = None
+        self.drag_operation = self.DragNone
+        self.key_operation = None
+        self._user_var_bins = {}
 
-        self.varmodel = itemmodels.VariableListModel()
-        self.groupvarmodel = []
+        varview = gui.listView(
+            self.controlArea, self, "var", box="Variable",
+            model=DomainModel(valid_types=DomainModel.PRIMITIVE,
+                              separators=False),
+            callback=self._on_var_changed,
+            viewType=ListViewSearch
+        )
+        gui.checkBox(
+            varview.box, self, "sort_by_freq", "Sort categories by frequency",
+            callback=self._on_sort_by_freq, stateWhenDisabled=False)
 
-        self.varview = QListView(
-            selectionMode=QListView.SingleSelection)
-        self.varview.setSizePolicy(
-            QSizePolicy.Minimum, QSizePolicy.Expanding)
-        self.varview.setModel(self.varmodel)
-        self.varview.setSelectionModel(
-            itemmodels.ListSingleSelectionModel(self.varmodel))
-        self.varview.selectionModel().selectionChanged.connect(
-            self._on_variable_idx_changed)
-        varbox.layout().addWidget(self.varview)
+        box = self.continuous_box = gui.vBox(self.controlArea, "Distribution")
+        gui.comboBox(
+            box, self, "fitted_distribution", label="Fitted distribution",
+            orientation=Qt.Horizontal, items=(name[0] for name in self.Fitters),
+            callback=self._on_fitted_dist_changed)
+        slider = gui.hSlider(
+            box, self, "number_of_bins",
+            label="Bin width", orientation=Qt.Horizontal,
+            minValue=0, maxValue=max(1, len(self.binnings) - 1),
+            createLabel=False, callback=self._on_bins_changed)
+        self.bin_width_label = gui.widgetLabel(slider.box)
+        self.bin_width_label.setFixedWidth(35)
+        self.bin_width_label.setAlignment(Qt.AlignRight)
+        slider.sliderReleased.connect(self._on_bin_slider_released)
+        self.smoothing_box = gui.hSlider(
+            box, self, "kde_smoothing",
+            label="Smoothing", orientation=Qt.Horizontal,
+            minValue=2, maxValue=20, callback=self.replot, disabled=True)
+        gui.checkBox(
+            box, self, "hide_bars", "Hide bars", stateWhenDisabled=False,
+            callback=self._on_hide_bars_changed,
+            disabled=not self.fitted_distribution)
 
-        box = gui.vBox(self.controlArea, "Precision")
+        box = gui.vBox(self.controlArea, "Columns")
+        gui.comboBox(
+            box, self, "cvar", label="Split by", orientation=Qt.Horizontal,
+            searchable=True,
+            model=DomainModel(placeholder="(None)",
+                              valid_types=(DiscreteVariable), ),
+            callback=self._on_cvar_changed, contentsLength=18)
+        gui.checkBox(
+            box, self, "stacked_columns", "Stack columns",
+            callback=self.replot)
+        gui.checkBox(
+            box, self, "show_probs", "Show probabilities",
+            callback=self._on_show_probabilities_changed)
+        gui.checkBox(
+            box, self, "cumulative_distr", "Show cumulative distribution",
+            callback=self._on_show_cumulative)
 
-        gui.separator(self.controlArea, 4, 4)
+        gui.auto_apply(self.buttonsArea, self, commit=self.apply)
 
-        box2 = gui.hBox(box)
-        self.l_smoothing_l = gui.widgetLabel(box2, "Smooth")
-        gui.hSlider(box2, self, "smoothing_index",
-                    minValue=0, maxValue=len(self.smoothing_facs) - 1,
-                    callback=self._on_set_smoothing, createLabel=False)
-        self.l_smoothing_r = gui.widgetLabel(box2, "Precise")
+        self.info.set_input_summary(self.info.NoInput)
+        self.info.set_output_summary(self.info.NoOutput)
 
-        self.cb_disc_cont = gui.checkBox(
-            gui.indentedBox(box, sep=4),
-            self, "disc_cont", "Bin continuous variables",
-            callback=self._on_groupvar_idx_changed,
-            tooltip="Show continuous variables as discrete.")
+        self._set_smoothing_visibility()
+        self._setup_plots()
+        self._setup_legend()
 
-        box = gui.vBox(self.controlArea, "Group by")
-        self.icons = gui.attributeIconDict
-        self.groupvarview = gui.comboBox(box, self, "groupvar_idx",
-             callback=self._on_groupvar_idx_changed, valueType=str,
-             contentsLength=12)
-        box2 = gui.indentedBox(box, sep=4)
-        self.cb_rel_freq = gui.checkBox(
-            box2, self, "relative_freq", "Show relative frequencies",
-            callback=self._on_relative_freq_changed,
-            tooltip="Normalize probabilities so that probabilities for each group-by value sum to 1.")
-        gui.separator(box2)
-        self.cb_prob = gui.comboBox(
-            box2, self, "show_prob", label="Show probabilities:",
-            orientation=Qt.Horizontal,
-            callback=self._on_relative_freq_changed,
-            tooltip="Show probabilities for a chosen group-by value (at each point probabilities for all group-by values sum to 1).")
+    def _setup_plots(self):
+        def add_new_plot(zvalue):
+            plot = pg.ViewBox(enableMouse=False, enableMenu=False)
+            self.ploti.scene().addItem(plot)
+            pg.AxisItem("right").linkToView(plot)
+            plot.setXLink(self.ploti)
+            plot.setZValue(zvalue)
+            return plot
 
-        self.plotview = pg.PlotWidget(background=None)
+        self.plotview = DistributionWidget()
+        self.plotview.item_clicked.connect(self._on_item_clicked)
+        self.plotview.blank_clicked.connect(self._on_blank_clicked)
+        self.plotview.mouse_released.connect(self._on_end_selecting)
         self.plotview.setRenderHint(QPainter.Antialiasing)
-        self.mainArea.layout().addWidget(self.plotview)
-        w = QLabel()
-        w.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.mainArea.layout().addWidget(w, Qt.AlignCenter)
-        self.ploti = pg.PlotItem()
+        box = gui.vBox(self.mainArea, box=True, margin=0)
+        box.layout().addWidget(self.plotview)
+        self.ploti = pg.PlotItem(
+            enableMenu=False, enableMouse=False,
+            axisItems={"bottom": ElidedAxisNoUnits("bottom")})
         self.plot = self.ploti.vb
+        self.plot.setMouseEnabled(False, False)
         self.ploti.hideButtons()
         self.plotview.setCentralItem(self.ploti)
 
-        self.plot_prob = pg.ViewBox()
-        self.ploti.hideAxis('right')
-        self.ploti.scene().addItem(self.plot_prob)
-        self.ploti.getAxis("right").linkToView(self.plot_prob)
-        self.ploti.getAxis("right").setLabel("Probability")
-        self.plot_prob.setZValue(10)
-        self.plot_prob.setXLink(self.ploti)
-        self.update_views()
+        self.plot_pdf = add_new_plot(10)
+        self.plot_mark = add_new_plot(-10)
+        self.plot_mark.setYRange(0, 1)
         self.ploti.vb.sigResized.connect(self.update_views)
-        self.plot_prob.setRange(yRange=[0,1])
-
-        def disable_mouse(plot):
-            plot.setMouseEnabled(False, False)
-            plot.setMenuEnabled(False)
-
-        disable_mouse(self.plot)
-        disable_mouse(self.plot_prob)
-
-        self.tooltip_items = []
-        self.plot.scene().installEventFilter(
-            HelpEventDelegate(self.help_event, self))
+        self.update_views()
 
         pen = QPen(self.palette().color(QPalette.Text))
-        for axis in ("left", "bottom"):
-            self.ploti.getAxis(axis).setPen(pen)
+        self.ploti.getAxis("bottom").setPen(pen)
+        left = self.ploti.getAxis("left")
+        left.setPen(pen)
+        left.setStyle(stopAxisAtTick=(True, True))
 
+    def _setup_legend(self):
         self._legend = LegendItem()
-        self._legend.setParentItem(self.plot)
+        self._legend.setParentItem(self.plot_pdf)
         self._legend.hide()
         self._legend.anchor((1, 0), (1, 0))
 
+    # -----------------------------
+    # Event and signal handlers
+
     def update_views(self):
-        self.plot_prob.setGeometry(self.plot.sceneBoundingRect())
-        self.plot_prob.linkedViewChanged(self.plot, self.plot_prob.XAxis)
-
-    def set_data(self, data):
-        self.closeContext()
-        self.clear()
-        self.warning()
-        self.data = data
-        if self.data is not None:
-            if not self.data:
-                self.warning("Empty input data cannot be visualized")
-                return
-            domain = self.data.domain
-            self.varmodel[:] = list(domain) + \
-                               [meta for meta in domain.metas
-                                if meta.is_continuous or meta.is_discrete]
-            self.groupvarview.clear()
-            self.groupvarmodel = \
-                ["(None)"] + [var for var in domain if var.is_discrete] + \
-                [meta for meta in domain.metas if meta.is_discrete]
-            self.groupvarview.addItem("(None)")
-            for var in self.groupvarmodel[1:]:
-                self.groupvarview.addItem(self.icons[var], var.name)
-            if domain.has_discrete_class:
-                self.groupvar_idx = \
-                    self.groupvarmodel[1:].index(domain.class_var) + 1
-            self.openContext(domain)
-            self.variable_idx = min(max(self.variable_idx, 0),
-                                    len(self.varmodel) - 1)
-            self.groupvar_idx = min(max(self.groupvar_idx, 0),
-                                    len(self.groupvarmodel) - 1)
-            itemmodels.select_row(self.varview, self.variable_idx)
-            self._setup()
-
-    def clear(self):
-        self.plot.clear()
-        self.plot_prob.clear()
-        self.varmodel[:] = []
-        self.groupvarmodel = []
-        self.variable_idx = -1
-        self.groupvar_idx = 0
-        self._legend.clear()
-        self._legend.hide()
-
-    def _setup_smoothing(self):
-        if not self.disc_cont and self.var and self.var.is_continuous:
-            self.cb_disc_cont.setText("Bin continuous variables")
-            self.l_smoothing_l.setText("Smooth")
-            self.l_smoothing_r.setText("Precise")
-        else:
-            self.cb_disc_cont.setText("Bin continuous variables into {} bins".
-                                      format(self.bins[self.smoothing_index]))
-            self.l_smoothing_l.setText(" " + str(self.bins[0]))
-            self.l_smoothing_r.setText(" " + str(self.bins[-1]))
-
-    def _setup(self):
-        self.plot.clear()
-        self.plot_prob.clear()
-        self._legend.clear()
-        self._legend.hide()
-
-        varidx = self.variable_idx
-        self.var = self.cvar = None
-        if varidx >= 0:
-            self.var = self.varmodel[varidx]
-        if self.groupvar_idx > 0:
-            self.cvar = self.groupvarmodel[self.groupvar_idx]
-            self.cb_prob.clear()
-            self.cb_prob.addItem("(None)")
-            self.cb_prob.addItems(self.cvar.values)
-            self.cb_prob.addItem("(All)")
-            self.show_prob = min(max(self.show_prob, 0),
-                    len(self.cvar.values) + 1)
-        data = self.data
-        self._setup_smoothing()
-        if self.var is None:
-            return
-        if self.disc_cont:
-            data = self.data[:, (self.var, self.cvar) if self.cvar else self.var ]
-            disc = Orange.preprocess.discretize.EqualWidth(n=self.bins[self.smoothing_index])
-            data = Orange.preprocess.Discretize(data, method=disc,
-                                                remove_const=False)
-            self.var = (list(data.domain) + list(data.domain.metas))[0]
-        self.set_left_axis_name()
-        self.enable_disable_rel_freq()
-        if self.cvar:
-            self.contingencies = \
-                contingency.get_contingency(data, self.var, self.cvar)
-            self.display_contingency()
-        else:
-            self.distributions = \
-                distribution.get_distribution(data, self.var)
-            self.display_distribution()
-        self.plot.autoRange()
-
-    def help_event(self, ev):
-        in_graph_coor = self.plot.mapSceneToView(ev.scenePos())
-        ctooltip = []
-        for vb, item in self.tooltip_items:
-            if isinstance(item, pg.PlotCurveItem) and item.mouseShape().contains(vb.mapSceneToView(ev.scenePos())):
-                ctooltip.append(item.tooltip)
-            elif isinstance(item, DistributionBarItem) and item.boundingRect().contains(vb.mapSceneToView(ev.scenePos())):
-                ctooltip.append(item.tooltip)
-        if ctooltip:
-            QToolTip.showText(ev.screenPos(), "\n\n".join(ctooltip), widget=self.plotview)
-            return True
-        return False
-
-    def display_distribution(self):
-        dist = self.distributions
-        var = self.var
-        assert len(dist) > 0
-        self.plot.clear()
-        self.plot_prob.clear()
-        self.ploti.hideAxis('right')
-        self.tooltip_items = []
-
-        bottomaxis = self.ploti.getAxis("bottom")
-        bottomaxis.setLabel(var.name)
-        bottomaxis.resizeEvent()
-
-        self.set_left_axis_name()
-        if var and var.is_continuous:
-            bottomaxis.setTicks(None)
-            if not len(dist[0]):
-                return
-            edges, curve = ash_curve(dist, None, m=OWDistributions.ASH_HIST,
-                smoothing_factor=self.smoothing_facs[self.smoothing_index])
-            edges = edges + (edges[1] - edges[0])/2
-            edges = edges[:-1]
-            item = pg.PlotCurveItem()
-            pen = QPen(QBrush(Qt.white), 3)
-            pen.setCosmetic(True)
-            item.setData(edges, curve, antialias=True, stepMode=False,
-                         fillLevel=0, brush=QBrush(Qt.gray), pen=pen)
-            self.plot.addItem(item)
-            item.tooltip = "Density"
-            self.tooltip_items.append((self.plot, item))
-        else:
-            bottomaxis.setTicks([list(enumerate(var.values))])
-            for i, w in enumerate(dist):
-                geom = QRectF(i - 0.33, 0, 0.66, w)
-                item = DistributionBarItem(geom, [1.0],
-                                           [QColor(128, 128, 128)])
-                self.plot.addItem(item)
-                item.tooltip = "Frequency for %s: %r" % (var.values[i], w)
-                self.tooltip_items.append((self.plot, item))
-
-    def _on_relative_freq_changed(self):
-        self.set_left_axis_name()
-        if self.cvar and self.cvar.is_discrete:
-            self.display_contingency()
-        else:
-            self.display_distribution()
-        self.plot.autoRange()
-
-    def display_contingency(self):
-        """
-        Set the contingency to display.
-        """
-        cont = self.contingencies
-        var, cvar = self.var, self.cvar
-        assert len(cont) > 0
-        self.plot.clear()
-        self.plot_prob.clear()
-        self._legend.clear()
-        self.tooltip_items = []
-
-        if self.show_prob:
-            self.ploti.showAxis('right')
-        else:
-            self.ploti.hideAxis('right')
-
-        bottomaxis = self.ploti.getAxis("bottom")
-        bottomaxis.setLabel(var.name)
-        bottomaxis.resizeEvent()
-
-        cvar_values = cvar.values
-        colors = [QColor(*col) for col in cvar.colors]
-
-        if var and var.is_continuous:
-            bottomaxis.setTicks(None)
-
-            weights, cols, cvar_values, curves = [], [], [], []
-            for i, dist in enumerate(cont):
-                v, W = dist
-                if len(v):
-                    weights.append(numpy.sum(W))
-                    cols.append(colors[i])
-                    cvar_values.append(cvar.values[i])
-                    curves.append(ash_curve(dist, cont,  m=OWDistributions.ASH_HIST,
-                        smoothing_factor=self.smoothing_facs[self.smoothing_index]))
-            weights = numpy.array(weights)
-            sumw = numpy.sum(weights)
-            weights /= sumw
-            colors = cols
-            curves = [(X, Y * w) for (X, Y), w in zip(curves, weights)]
-            ncval = len(cvar_values)
-
-            curvesline = [] #from histograms to lines
-            for (X,Y) in curves:
-                X = X + (X[1] - X[0])/2
-                X = X[:-1]
-                X = numpy.array(X)
-                Y = numpy.array(Y)
-                curvesline.append((X,Y))
-
-            for t in [ "fill", "line" ]:
-                for (X, Y), color, w, cval in reversed(list(zip(curvesline, colors, weights, cvar_values))):
-                    item = pg.PlotCurveItem()
-                    pen = QPen(QBrush(color), 3)
-                    pen.setCosmetic(True)
-                    color = QColor(color)
-                    color.setAlphaF(0.2)
-                    item.setData(X, Y/(w if self.relative_freq else 1), antialias=True, stepMode=False,
-                         fillLevel=0 if t == "fill" else None,
-                         brush=QBrush(color), pen=pen)
-                    self.plot.addItem(item)
-                    if t == "line":
-                        item.tooltip = ("Normalized density " if self.relative_freq else "Density ") \
-                            + "\n"+ cvar.name + "=" + cval
-                        self.tooltip_items.append((self.plot, item))
-
-            if self.show_prob:
-                M_EST = 5 #for M estimate
-                all_X = numpy.array(numpy.unique(numpy.hstack([X for X,_ in curvesline])))
-                inter_X = numpy.array(numpy.linspace(all_X[0], all_X[-1], len(all_X)*2))
-                curvesinterp = [ numpy.interp(inter_X, X, Y) for (X,Y) in curvesline ]
-                sumprob = numpy.sum(curvesinterp, axis=0)
-                # allcorrection = M_EST/sumw*numpy.sum(sumprob)/len(inter_X)
-                legal = sumprob > 0.05 * numpy.max(sumprob)
-
-                i = len(curvesinterp) + 1
-                show_all = self.show_prob == i
-                for Y, color, cval in reversed(list(zip(curvesinterp, colors, cvar_values))):
-                    i -= 1
-                    if show_all or self.show_prob == i:
-                        item = pg.PlotCurveItem()
-                        pen = QPen(QBrush(color), 3, style=Qt.DotLine)
-                        pen.setCosmetic(True)
-                        #prob = (Y+allcorrection/ncval)/(sumprob+allcorrection)
-                        prob = Y[legal] / sumprob[legal]
-                        item.setData(inter_X[legal], prob, antialias=True, stepMode=False,
-                             fillLevel=None, brush=None, pen=pen)
-                        self.plot_prob.addItem(item)
-                        item.tooltip = "Probability that \n" + cvar.name + "=" + cval
-                        self.tooltip_items.append((self.plot_prob, item))
-
-        elif var and var.is_discrete:
-            bottomaxis.setTicks([list(enumerate(var.values))])
-
-            cont = numpy.array(cont)
-            ncval = len(cvar_values)
-
-            maxh = 0 #maximal column height
-            maxrh = 0 #maximal relative column height
-            scvar = cont.sum(axis=1)
-            #a cvar with sum=0 with allways have distribution counts 0,
-            #therefore we can divide it by anything
-            scvar[scvar==0] = 1
-            for i, (value, dist) in enumerate(zip(var.values, cont.T)):
-                maxh = max(maxh, max(dist))
-                maxrh = max(maxrh, max(dist/scvar))
-
-            for i, (value, dist) in enumerate(zip(var.values, cont.T)):
-                dsum = sum(dist)
-                geom = QRectF(i - 0.333, 0, 0.666, maxrh
-                                     if self.relative_freq else maxh)
-                if self.show_prob:
-                    prob = dist / dsum
-                    ci = 1.96 * numpy.sqrt(prob * (1 - prob) / dsum)
-                else:
-                    ci = None
-                item = DistributionBarItem(geom, dist/scvar/maxrh
-                                           if self.relative_freq
-                                           else dist/maxh, colors)
-                self.plot.addItem(item)
-                tooltip = "\n".join("%s: %.*f" % (n, 3 if self.relative_freq else 1,  v)
-                    for n,v in zip(cvar_values, dist/scvar if self.relative_freq else dist ))
-                item.tooltip = ("Normalized frequency " if self.relative_freq else "Frequency ") \
-                    + "(" + cvar.name + "=" + value + "):" \
-                    + "\n" + tooltip
-                self.tooltip_items.append((self.plot, item))
-
-                if self.show_prob:
-                    item.tooltip += "\n\nProbabilities:"
-                    for ic, a in enumerate(dist):
-                        if self.show_prob - 1 != ic and \
-                                self.show_prob - 1 != len(dist):
-                            continue
-                        position = -0.333 + ((ic+0.5)*0.666/len(dist))
-                        if dsum < 1e-6:
-                            continue
-                        prob = a / dsum
-                        if not 1e-6 < prob < 1 - 1e-6:
-                            continue
-                        ci = 1.96 * sqrt(prob * (1 - prob) / dsum)
-                        item.tooltip += "\n%s: %.3f ± %.3f" % (cvar_values[ic], prob, ci)
-                        mark = pg.ScatterPlotItem()
-                        bar = pg.ErrorBarItem()
-                        pen = QPen(QBrush(QColor(0)), 1)
-                        pen.setCosmetic(True)
-                        bar.setData(x=[i+position], y=[prob],
-                                    bottom=min(numpy.array([ci]), prob),
-                                    top=min(numpy.array([ci]), 1 - prob),
-                                     beam=numpy.array([0.05]),
-                                     brush=QColor(1), pen=pen)
-                        mark.setData([i+position], [prob], antialias=True, symbol="o",
-                                 fillLevel=None, pxMode=True, size=10,
-                                 brush=QColor(colors[ic]), pen=pen)
-                        self.plot_prob.addItem(bar)
-                        self.plot_prob.addItem(mark)
-
-        for color, name in zip(colors, cvar_values):
-            self._legend.addItem(
-                ScatterPlotItem(pen=color, brush=color, size=10, shape="s"),
-                escape(name)
-            )
-        self._legend.show()
-
-    def set_left_axis_name(self):
-        leftaxis = self.ploti.getAxis("left")
-        set_label = leftaxis.setLabel
-        if self.var and self.var.is_continuous:
-            set_label(["Density", "Relative density"]
-                      [self.cvar is not None and self.relative_freq])
-        else:
-            set_label(["Frequency", "Relative frequency"]
-                      [self.cvar is not None and self.relative_freq])
-        leftaxis.resizeEvent()
-
-    def enable_disable_rel_freq(self):
-        self.cb_prob.setDisabled(self.var is None or self.cvar is None)
-        self.cb_rel_freq.setDisabled(
-            self.var is None or self.cvar is None)
-
-    def _on_variable_idx_changed(self):
-        self.variable_idx = selected_index(self.varview)
-        self._setup()
-
-    def _on_groupvar_idx_changed(self):
-        self._setup()
-
-    def _on_set_smoothing(self):
-        self._setup()
+        for plot in (self.plot_pdf, self.plot_mark):
+            plot.setGeometry(self.plot.sceneBoundingRect())
+            plot.linkedViewChanged(self.plot, plot.XAxis)
 
     def onDeleteWidget(self):
         self.plot.clear()
+        self.plot_pdf.clear()
+        self.plot_mark.clear()
         super().onDeleteWidget()
 
+    @Inputs.data
+    def set_data(self, data):
+        self.closeContext()
+        self.var = self.cvar = None
+        self.data = data
+        summary = len(data) if data else self.info.NoInput
+        details = format_summary_details(data) if data else ""
+        self.info.set_input_summary(summary, details)
+        domain = self.data.domain if self.data else None
+        varmodel = self.controls.var.model()
+        cvarmodel = self.controls.cvar.model()
+        varmodel.set_domain(domain)
+        cvarmodel.set_domain(domain)
+        if varmodel:
+            self.var = varmodel[min(len(domain.class_vars), len(varmodel) - 1)]
+        if domain is not None and domain.has_discrete_class:
+            self.cvar = domain.class_var
+        self.reset_select()
+        self._user_var_bins.clear()
+        self.openContext(domain)
+        self.set_valid_data()
+        self.recompute_binnings()
+        self.replot()
+        self.apply()
+
+    def _on_var_changed(self):
+        self.reset_select()
+        self.set_valid_data()
+        self.recompute_binnings()
+        self.replot()
+        self.apply()
+
+    def _on_cvar_changed(self):
+        self.set_valid_data()
+        self.replot()
+        self.apply()
+
+    def _on_show_cumulative(self):
+        self.replot()
+        self.apply()
+
+    def _on_sort_by_freq(self):
+        self.replot()
+        self.apply()
+
+    def _on_bins_changed(self):
+        self.reset_select()
+        self._set_bin_width_slider_label()
+        self.replot()
+        # this is triggered when dragging, so don't call apply here;
+        # apply is called on sliderReleased
+
+    def _on_bin_slider_released(self):
+        self._user_var_bins[self.var] = self.number_of_bins
+        self.apply()
+
+    def _on_fitted_dist_changed(self):
+        self.controls.hide_bars.setDisabled(not self.fitted_distribution)
+        self._set_smoothing_visibility()
+        self.replot()
+
+    def _on_hide_bars_changed(self):
+        for bar in self.bar_items:  # pylint: disable=blacklisted-name
+            bar.setHidden(self.hide_bars)
+        self._set_curve_brushes()
+        self.plot.update()
+
+    def _set_smoothing_visibility(self):
+        self.smoothing_box.setDisabled(
+            self.Fitters[self.fitted_distribution][1] is not AshCurve)
+
+    def _set_bin_width_slider_label(self):
+        if self.number_of_bins < len(self.binnings):
+            text = reduce(
+                lambda s, rep: s.replace(*rep),
+                short_time_units.items(),
+                self.binnings[self.number_of_bins].width_label)
+        else:
+            text = ""
+        self.bin_width_label.setText(text)
+
+    def _on_show_probabilities_changed(self):
+        label = self.controls.fitted_distribution.label
+        if self.show_probs:
+            label.setText("Fitted probability")
+            label.setToolTip(
+                "Chosen distribution is used to compute Bayesian probabilities")
+        else:
+            label.setText("Fitted distribution")
+            label.setToolTip("")
+        self.replot()
+
+    @property
+    def is_valid(self):
+        return self.valid_data is not None
+
+    def set_valid_data(self):
+        err_def_var = self.Error.no_defined_values_var
+        err_def_pair = self.Error.no_defined_values_pair
+        err_def_var.clear()
+        err_def_pair.clear()
+        self.Warning.ignored_nans.clear()
+
+        self.valid_data = self.valid_group_data = None
+        if self.var is None:
+            return
+
+        column = self.data.get_column_view(self.var)[0].astype(float)
+        valid_mask = np.isfinite(column)
+        if not np.any(valid_mask):
+            self.Error.no_defined_values_var(self.var.name)
+            return
+        if self.cvar:
+            ccolumn = self.data.get_column_view(self.cvar)[0].astype(float)
+            valid_mask *= np.isfinite(ccolumn)
+            if not np.any(valid_mask):
+                self.Error.no_defined_values_pair(self.var.name, self.cvar.name)
+                return
+            self.valid_group_data = ccolumn[valid_mask]
+        if not np.all(valid_mask):
+            self.Warning.ignored_nans()
+        self.valid_data = column[valid_mask]
+
+    # -----------------------------
+    # Plotting
+
+    def replot(self):
+        self._clear_plot()
+        if self.is_valid:
+            self._set_axis_names()
+            self._update_controls_state()
+            self._call_plotting()
+            self._display_legend()
+        self.show_selection()
+
+    def _clear_plot(self):
+        self.plot.clear()
+        self.plot_pdf.clear()
+        self.plot_mark.clear()
+        self.bar_items = []
+        self.curve_items = []
+        self._legend.clear()
+        self._legend.hide()
+
+    def _set_axis_names(self):
+        assert self.is_valid  # called only from replot, so assumes data is OK
+        bottomaxis = self.ploti.getAxis("bottom")
+        bottomaxis.setLabel(self.var and self.var.name)
+        bottomaxis.setShowUnit(not (self.var and self.var.is_time))
+
+        leftaxis = self.ploti.getAxis("left")
+        if self.show_probs and self.cvar:
+            leftaxis.setLabel(
+                f"Probability of '{self.cvar.name}' at given '{self.var.name}'")
+        else:
+            leftaxis.setLabel("Frequency")
+        leftaxis.resizeEvent()
+
+    def _update_controls_state(self):
+        assert self.is_valid  # called only from replot, so assumes data is OK
+        self.controls.sort_by_freq.setDisabled(self.var.is_continuous)
+        self.continuous_box.setDisabled(self.var.is_discrete)
+        self.controls.show_probs.setDisabled(self.cvar is None)
+        self.controls.stacked_columns.setDisabled(self.cvar is None)
+
+    def _call_plotting(self):
+        assert self.is_valid  # called only from replot, so assumes data is OK
+        self.curve_descriptions = None
+        if self.var.is_discrete:
+            if self.cvar:
+                self._disc_split_plot()
+            else:
+                self._disc_plot()
+        else:
+            if self.cvar:
+                self._cont_split_plot()
+            else:
+                self._cont_plot()
+        self.plot.autoRange()
+
+    def _add_bar(self, x, width, padding, freqs, colors, stacked, expanded,
+                 tooltip, desc, hidden=False):
+        item = DistributionBarItem(
+            x, width, padding, freqs, colors, stacked, expanded, tooltip,
+            desc, hidden)
+        self.plot.addItem(item)
+        self.bar_items.append(item)
+
+    def _disc_plot(self):
+        var = self.var
+        dist = distribution.get_distribution(self.data, self.var)
+        dist = np.array(dist)  # Distribution misbehaves in further operations
+        if self.sort_by_freq:
+            order = np.argsort(dist)[::-1]
+        else:
+            order = np.arange(len(dist))
+
+        ordered_values = np.array(var.values)[order]
+        self.ploti.getAxis("bottom").setTicks([list(enumerate(ordered_values))])
+
+        colors = [QColor(0, 128, 255)]
+        for i, freq, desc in zip(count(), dist[order], ordered_values):
+            tooltip = \
+                "<p style='white-space:pre;'>" \
+                f"<b>{escape(desc)}</b>: {int(freq)} " \
+                f"({100 * freq / len(self.valid_data):.2f} %) "
+            self._add_bar(
+                i - 0.5, 1, 0.1, [freq], colors,
+                stacked=False, expanded=False, tooltip=tooltip, desc=desc)
+
+    def _disc_split_plot(self):
+        var = self.var
+        conts = contingency.get_contingency(self.data, self.cvar, self.var)
+        conts = np.array(conts)  # Contingency misbehaves in further operations
+        if self.sort_by_freq:
+            order = np.argsort(conts.sum(axis=1))[::-1]
+        else:
+            order = np.arange(len(conts))
+
+        ordered_values = np.array(var.values)[order]
+        self.ploti.getAxis("bottom").setTicks([list(enumerate(ordered_values))])
+
+        gcolors = [QColor(*col) for col in self.cvar.colors]
+        gvalues = self.cvar.values
+        total = len(self.data)
+        for i, freqs, desc in zip(count(), conts[order], ordered_values):
+            self._add_bar(
+                i - 0.5, 1, 0.1, freqs, gcolors,
+                stacked=self.stacked_columns, expanded=self.show_probs,
+                tooltip=self._split_tooltip(
+                    desc, np.sum(freqs), total, gvalues, freqs),
+                desc=desc)
+
+    def _cont_plot(self):
+        self._set_cont_ticks()
+        data = self.valid_data
+        binning = self.binnings[self.number_of_bins]
+        y, x = np.histogram(data, bins=binning.thresholds)
+        total = len(data)
+        colors = [QColor(0, 128, 255)]
+        if self.fitted_distribution:
+            colors[0] = colors[0].lighter(130)
+
+        tot_freq = 0
+        lasti = len(y) - 1
+        width = np.min(x[1:] - x[:-1])
+        unique = self.number_of_bins == 0 and binning.width is None
+        xoff = -width / 2 if unique else 0
+        for i, (x0, x1), freq in zip(count(), zip(x, x[1:]), y):
+            tot_freq += freq
+            desc = self.str_int(x0, x1, not i, i == lasti, unique)
+            tooltip = \
+                "<p style='white-space:pre;'>" \
+                f"<b>{escape(desc)}</b>: " \
+                f"{freq} ({100 * freq / total:.2f} %)</p>"
+            bar_width = width if unique else x1 - x0
+            self._add_bar(
+                x0 + xoff, bar_width, 0,
+                [tot_freq if self.cumulative_distr else freq],
+                colors, stacked=False, expanded=False, tooltip=tooltip,
+                desc=desc, hidden=self.hide_bars)
+
+        if self.fitted_distribution:
+            self._plot_approximations(
+                x[0], x[-1], [self._fit_approximation(data)],
+                [QColor(0, 0, 0)], (1,))
+
+    def _cont_split_plot(self):
+        self._set_cont_ticks()
+        data = self.valid_data
+        binning = self.binnings[self.number_of_bins]
+        _, bins = np.histogram(data, bins=binning.thresholds)
+        gvalues = self.cvar.values
+        varcolors = [QColor(*col) for col in self.cvar.colors]
+        if self.fitted_distribution:
+            gcolors = [c.lighter(130) for c in varcolors]
+        else:
+            gcolors = varcolors
+        nvalues = len(gvalues)
+        ys = []
+        fitters = []
+        prior_sizes = []
+        for val_idx in range(nvalues):
+            group_data = data[self.valid_group_data == val_idx]
+            prior_sizes.append(len(group_data))
+            ys.append(np.histogram(group_data, bins)[0])
+            if self.fitted_distribution:
+                fitters.append(self._fit_approximation(group_data))
+        total = len(data)
+        prior_sizes = np.array(prior_sizes)
+        tot_freqs = np.zeros(len(ys))
+
+        lasti = len(ys[0]) - 1
+        width = np.min(bins[1:] - bins[:-1])
+        unique = self.number_of_bins == 0 and binning.width is None
+        xoff = -width / 2 if unique else 0
+        for i, x0, x1, freqs in zip(count(), bins, bins[1:], zip(*ys)):
+            tot_freqs += freqs
+            plotfreqs = tot_freqs.copy() if self.cumulative_distr else freqs
+            desc = self.str_int(x0, x1, not i, i == lasti, unique)
+            bar_width = width if unique else x1 - x0
+            self._add_bar(
+                x0 + xoff, bar_width, 0 if self.stacked_columns else 0.1,
+                plotfreqs,
+                gcolors, stacked=self.stacked_columns, expanded=self.show_probs,
+                hidden=self.hide_bars,
+                tooltip=self._split_tooltip(
+                    desc, np.sum(plotfreqs), total, gvalues, plotfreqs),
+                desc=desc)
+
+        if fitters:
+            self._plot_approximations(bins[0], bins[-1], fitters, varcolors,
+                                      prior_sizes / len(data))
+
+    def _set_cont_ticks(self):
+        axis = self.ploti.getAxis("bottom")
+        if self.var and self.var.is_time:
+            binning = self.binnings[self.number_of_bins]
+            labels = np.array(binning.short_labels)
+            thresholds = np.array(binning.thresholds)
+            lengths = np.array([len(lab) for lab in labels])
+            slengths = set(lengths)
+            if len(slengths) == 1:
+                ticks = [list(zip(thresholds[::2], labels[::2])),
+                         list(zip(thresholds[1::2], labels[1::2]))]
+            else:
+                ticks = []
+                for length in sorted(slengths, reverse=True):
+                    idxs = lengths == length
+                    ticks.append(list(zip(thresholds[idxs], labels[idxs])))
+            axis.setTicks(ticks)
+        else:
+            axis.setTicks(None)
+
+    def _fit_approximation(self, y):
+        def join_pars(pairs):
+            strv = self.var.str_val
+            return ", ".join(f"{sname}={strv(val)}" for sname, val in pairs)
+
+        def str_params():
+            s = join_pars(
+                (sname, val) for sname, val in zip(str_names, fitted)
+                if sname and sname[0] != "-")
+            par = join_pars(
+                (sname[1:], val) for sname, val in zip(str_names, fitted)
+                if sname and sname[0] == "-")
+            if par:
+                s += f" ({par})"
+            return s
+
+        if not y.size:
+            return None, None
+        _, dist, names, str_names = self.Fitters[self.fitted_distribution]
+        fitted = dist.fit(y)
+        params = dict(zip(names, fitted))
+        return partial(dist.pdf, **params), str_params()
+
+    def _plot_approximations(self, x0, x1, fitters, colors, prior_probs):
+        x = np.linspace(x0, x1, 100)
+        ys = np.zeros((len(fitters), 100))
+        self.curve_descriptions = [s for _, s in fitters]
+        for y, (fitter, _) in zip(ys, fitters):
+            if fitter is None:
+                continue
+            if self.Fitters[self.fitted_distribution][1] is AshCurve:
+                y[:] = fitter(x, sigma=(22 - self.kde_smoothing) / 40)
+            else:
+                y[:] = fitter(x)
+            if self.cumulative_distr:
+                y[:] = np.cumsum(y)
+        tots = np.sum(ys, axis=0)
+
+        show_probs = self.show_probs and self.cvar is not None
+        plot = self.ploti if show_probs else self.plot_pdf
+
+        for y, prior_prob, color in zip(ys, prior_probs, colors):
+            if not prior_prob:
+                continue
+            if show_probs:
+                y_p = y * prior_prob
+                tot = (y_p + (tots - y) * (1 - prior_prob))
+                tot[tot == 0] = 1
+                y = y_p / tot
+            curve = pg.PlotCurveItem(
+                x=x, y=y, fillLevel=0,
+                pen=pg.mkPen(width=5, color=color),
+                shadowPen=pg.mkPen(width=8, color=color.darker(120)))
+            plot.addItem(curve)
+            self.curve_items.append(curve)
+        if not show_probs:
+            self.plot_pdf.autoRange()
+        self._set_curve_brushes()
+
+    def _set_curve_brushes(self):
+        for curve in self.curve_items:
+            if self.hide_bars:
+                color = curve.opts['pen'].color().lighter(160)
+                color.setAlpha(128)
+                curve.setBrush(pg.mkBrush(color))
+            else:
+                curve.setBrush(None)
+
+    @staticmethod
+    def _split_tooltip(valname, tot_group, total, gvalues, freqs):
+        div_group = tot_group or 1
+        cs = "white-space:pre; text-align: right;"
+        s = f"style='{cs} padding-left: 1em'"
+        snp = f"style='{cs}'"
+        return f"<table style='border-collapse: collapse'>" \
+               f"<tr><th {s}>{escape(valname)}:</th>" \
+               f"<td {snp}><b>{int(tot_group)}</b></td>" \
+               "<td/>" \
+               f"<td {s}><b>{100 * tot_group / total:.2f} %</b></td></tr>" + \
+               f"<tr><td/><td/><td {s}>(in group)</td><td {s}>(overall)</td>" \
+               "</tr>" + \
+               "".join(
+                   "<tr>"
+                   f"<th {s}>{value}:</th>"
+                   f"<td {snp}><b>{int(freq)}</b></td>"
+                   f"<td {s}>{100 * freq / div_group:.2f} %</td>"
+                   f"<td {s}>{100 * freq / total:.2f} %</td>"
+                   "</tr>"
+                   for value, freq in zip(gvalues, freqs)) + \
+               "</table>"
+
+    def _display_legend(self):
+        assert self.is_valid  # called only from replot, so assumes data is OK
+        if self.cvar is None:
+            if not self.curve_descriptions or not self.curve_descriptions[0]:
+                self._legend.hide()
+                return
+            self._legend.addItem(
+                pg.PlotCurveItem(pen=pg.mkPen(width=5, color=0.0)),
+                self.curve_descriptions[0])
+        else:
+            cvar_values = self.cvar.values
+            colors = [QColor(*col) for col in self.cvar.colors]
+            descriptions = self.curve_descriptions or repeat(None)
+            for color, name, desc in zip(colors, cvar_values, descriptions):
+                self._legend.addItem(
+                    ScatterPlotItem(pen=color, brush=color, size=10, shape="s"),
+                    escape(name + (f" ({desc})" if desc else "")))
+        self._legend.show()
+
+    # -----------------------------
+    # Bins
+
+    def recompute_binnings(self):
+        if self.is_valid and self.var.is_continuous:
+            # binning is computed on valid var data, ignoring any cvar nans
+            column = self.data.get_column_view(self.var)[0].astype(float)
+            if np.any(np.isfinite(column)):
+                if self.var.is_time:
+                    self.binnings = time_binnings(column, min_unique=5)
+                    self.bin_width_label.setFixedWidth(45)
+                else:
+                    self.binnings = decimal_binnings(
+                        column, min_width=self.min_var_resolution(self.var),
+                        add_unique=10, min_unique=5)
+                    self.bin_width_label.setFixedWidth(35)
+                max_bins = len(self.binnings) - 1
+        else:
+            self.binnings = []
+            max_bins = 0
+
+        self.controls.number_of_bins.setMaximum(max_bins)
+        self.number_of_bins = min(
+            max_bins, self._user_var_bins.get(self.var, self.number_of_bins))
+        self._set_bin_width_slider_label()
+
+    @staticmethod
+    def min_var_resolution(var):
+        # pylint: disable=unidiomatic-typecheck
+        if type(var) is not ContinuousVariable:
+            return 0
+        return 10 ** -var.number_of_decimals
+
+    def str_int(self, x0, x1, first, last, unique=False):
+        var = self.var
+        sx0, sx1 = var.repr_val(x0), var.repr_val(x1)
+        if self.cumulative_distr:
+            return f"{var.name} < {sx1}"
+        elif first and last or unique:
+            return f"{var.name} = {sx0}"
+        elif first:
+            return f"{var.name} < {sx1}"
+        elif last:
+            return f"{var.name} ≥ {sx0}"
+        elif sx0 == sx1 or x1 - x0 <= self.min_var_resolution(var):
+            return f"{var.name} = {sx0}"
+        else:
+            return f"{sx0} ≤ {var.name} < {sx1}"
+
+    # -----------------------------
+    # Selection
+
+    def _on_item_clicked(self, item, modifiers, drag):
+        def add_or_remove(idx, add):
+            self.drag_operation = [self.DragRemove, self.DragAdd][add]
+            if add:
+                self.selection.add(idx)
+            else:
+                if idx in self.selection:
+                    # This can be False when removing with dragging and the
+                    # mouse crosses unselected items
+                    self.selection.remove(idx)
+
+        def add_range(add):
+            if self.last_click_idx is None:
+                add = True
+                idx_range = {idx}
+            else:
+                from_idx, to_idx = sorted((self.last_click_idx, idx))
+                idx_range = set(range(from_idx, to_idx + 1))
+            self.drag_operation = [self.DragRemove, self.DragAdd][add]
+            if add:
+                self.selection |= idx_range
+            else:
+                self.selection -= idx_range
+
+        self.key_operation = None
+        if item is None:
+            self.reset_select()
+            return
+
+        idx = self.bar_items.index(item)
+        if drag:
+            # Dragging has to add a range, otherwise fast dragging skips bars
+            add_range(self.drag_operation == self.DragAdd)
+        else:
+            if modifiers & Qt.ShiftModifier:
+                add_range(self.drag_operation == self.DragAdd)
+            elif modifiers & Qt.ControlModifier:
+                add_or_remove(idx, add=idx not in self.selection)
+            else:
+                if self.selection == {idx}:
+                    # Clicking on a single selected bar  deselects it,
+                    # but dragging from here will select
+                    add_or_remove(idx, add=False)
+                    self.drag_operation = self.DragAdd
+                else:
+                    self.selection.clear()
+                    add_or_remove(idx, add=True)
+        self.last_click_idx = idx
+
+        self.show_selection()
+
+    def _on_blank_clicked(self):
+        self.reset_select()
+
+    def reset_select(self):
+        self.selection.clear()
+        self.last_click_idx = None
+        self.drag_operation = None
+        self.key_operation = None
+        self.show_selection()
+
+    def _on_end_selecting(self):
+        self.apply()
+
+    def show_selection(self):
+        self.plot_mark.clear()
+        if not self.is_valid:  # though if it's not, selection is empty anyway
+            return
+
+        blue = QColor(Qt.blue)
+        pen = QPen(QBrush(blue), 3)
+        pen.setCosmetic(True)
+        brush = QBrush(blue.lighter(190))
+
+        for group in self.grouped_selection():
+            group = list(group)
+            left_idx, right_idx = group[0], group[-1]
+            left_pad, right_pad = self._determine_padding(left_idx, right_idx)
+            x0 = self.bar_items[left_idx].x0 - left_pad
+            x1 = self.bar_items[right_idx].x1 + right_pad
+            item = QGraphicsRectItem(x0, 0, x1 - x0, 1)
+            item.setPen(pen)
+            item.setBrush(brush)
+            if self.var.is_continuous:
+                valname = self.str_int(
+                    x0, x1, not left_idx, right_idx == len(self.bar_items) - 1)
+                inside = sum(np.sum(self.bar_items[i].freqs) for i in group)
+                total = len(self.valid_data)
+                item.setToolTip(
+                    "<p style='white-space:pre;'>"
+                    f"<b>{escape(valname)}</b>: "
+                    f"{inside} ({100 * inside / total:.2f} %)")
+            self.plot_mark.addItem(item)
+
+    def _determine_padding(self, left_idx, right_idx):
+        def _padding(i):
+            return (self.bar_items[i + 1].x0 - self.bar_items[i].x1) / 2
+
+        if len(self.bar_items) == 1:
+            return 6, 6
+        if left_idx == 0 and right_idx == len(self.bar_items) - 1:
+            return (_padding(0), ) * 2
+
+        if left_idx > 0:
+            left_pad = _padding(left_idx - 1)
+        if right_idx < len(self.bar_items) - 1:
+            right_pad = _padding(right_idx)
+        else:
+            right_pad = left_pad
+        if left_idx == 0:
+            left_pad = right_pad
+        return left_pad, right_pad
+
+    def grouped_selection(self):
+        return [[g[1] for g in group]
+                for _, group in groupby(enumerate(sorted(self.selection)),
+                                        key=lambda x: x[1] - x[0])]
+
+    def keyPressEvent(self, e):
+        def on_nothing_selected():
+            if e.key() == Qt.Key_Left:
+                self.last_click_idx = len(self.bar_items) - 1
+            else:
+                self.last_click_idx = 0
+            self.selection.add(self.last_click_idx)
+
+        def on_key_left():
+            if e.modifiers() & Qt.ShiftModifier:
+                if self.key_operation == Qt.Key_Right and first != last:
+                    self.selection.remove(last)
+                    self.last_click_idx = last - 1
+                elif first:
+                    self.key_operation = Qt.Key_Left
+                    self.selection.add(first - 1)
+                    self.last_click_idx = first - 1
+            else:
+                self.selection.clear()
+                self.last_click_idx = max(first - 1, 0)
+                self.selection.add(self.last_click_idx)
+
+        def on_key_right():
+            if e.modifiers() & Qt.ShiftModifier:
+                if self.key_operation == Qt.Key_Left and first != last:
+                    self.selection.remove(first)
+                    self.last_click_idx = first + 1
+                elif not self._is_last_bar(last):
+                    self.key_operation = Qt.Key_Right
+                    self.selection.add(last + 1)
+                    self.last_click_idx = last + 1
+            else:
+                self.selection.clear()
+                self.last_click_idx = min(last + 1, len(self.bar_items) - 1)
+                self.selection.add(self.last_click_idx)
+
+        if not self.is_valid or not self.bar_items \
+                or e.key() not in (Qt.Key_Left, Qt.Key_Right):
+            super().keyPressEvent(e)
+            return
+
+        prev_selection = self.selection.copy()
+        if not self.selection:
+            on_nothing_selected()
+        else:
+            first, last = min(self.selection), max(self.selection)
+            if e.key() == Qt.Key_Left:
+                on_key_left()
+            else:
+                on_key_right()
+
+        if self.selection != prev_selection:
+            self.drag_operation = self.DragAdd
+            self.show_selection()
+            self.apply()
+
+    def keyReleaseEvent(self, ev):
+        if ev.key() == Qt.Key_Shift:
+            self.key_operation = None
+        super().keyReleaseEvent(ev)
+
+
+    # -----------------------------
+    # Output
+
+    def apply(self):
+        data = self.data
+        selected_data = annotated_data = histogram_data = None
+        if self.is_valid:
+            if self.var.is_discrete:
+                group_indices, values = self._get_output_indices_disc()
+            else:
+                group_indices, values = self._get_output_indices_cont()
+            selected = np.nonzero(group_indices)[0]
+            if selected.size:
+                selected_data = create_groups_table(
+                    data, group_indices,
+                    include_unselected=False, values=values)
+            annotated_data = create_annotated_table(data, selected)
+            if self.var.is_continuous:  # annotate with bins
+                hist_indices, hist_values = self._get_histogram_indices()
+                annotated_data = create_groups_table(
+                    annotated_data, hist_indices, var_name="Bin", values=hist_values)
+            histogram_data = self._get_histogram_table()
+
+        summary = len(selected_data) if selected_data else self.info.NoOutput
+        details = format_summary_details(selected_data) if selected_data else ""
+        self.info.set_output_summary(summary, details)
+
+        self.Outputs.selected_data.send(selected_data)
+        self.Outputs.annotated_data.send(annotated_data)
+        self.Outputs.histogram_data.send(histogram_data)
+
+    def _get_output_indices_disc(self):
+        group_indices = np.zeros(len(self.data), dtype=np.int32)
+        col = self.data.get_column_view(self.var)[0].astype(float)
+        for group_idx, val_idx in enumerate(self.selection, start=1):
+            group_indices[col == val_idx] = group_idx
+        values = [self.var.values[i] for i in self.selection]
+        return group_indices, values
+
+    def _get_output_indices_cont(self):
+        group_indices = np.zeros(len(self.data), dtype=np.int32)
+        col = self.data.get_column_view(self.var)[0].astype(float)
+        values = []
+        for group_idx, group in enumerate(self.grouped_selection(), start=1):
+            x0 = x1 = None
+            for bar_idx in group:
+                minx, maxx, mask = self._get_cont_baritem_indices(col, bar_idx)
+                if x0 is None:
+                    x0 = minx
+                x1 = maxx
+                group_indices[mask] = group_idx
+            # pylint: disable=undefined-loop-variable
+            values.append(
+                self.str_int(x0, x1, not bar_idx, self._is_last_bar(bar_idx)))
+        return group_indices, values
+
+    def _get_histogram_table(self):
+        var_bin = DiscreteVariable("Bin", [bar.desc for bar in self.bar_items])
+        var_freq = ContinuousVariable("Count")
+        X = []
+        if self.cvar:
+            domain = Domain([var_bin, self.cvar, var_freq])
+            for i, bar in enumerate(self.bar_items):
+                for j, freq in enumerate(bar.freqs):
+                    X.append([i, j, freq])
+        else:
+            domain = Domain([var_bin, var_freq])
+            for i, bar in enumerate(self.bar_items):
+                X.append([i, bar.freqs[0]])
+        return Table.from_numpy(domain, X)
+
+    def _get_histogram_indices(self):
+        group_indices = np.zeros(len(self.data), dtype=np.int32)
+        col = self.data.get_column_view(self.var)[0].astype(float)
+        values = []
+        for bar_idx in range(len(self.bar_items)):
+            x0, x1, mask = self._get_cont_baritem_indices(col, bar_idx)
+            group_indices[mask] = bar_idx + 1
+            values.append(
+                self.str_int(x0, x1, not bar_idx, self._is_last_bar(bar_idx)))
+        return group_indices, values
+
+    def _get_cont_baritem_indices(self, col, bar_idx):
+        bar_item = self.bar_items[bar_idx]
+        minx = bar_item.x0
+        maxx = bar_item.x1 + (bar_idx == len(self.bar_items) - 1)
+        with np.errstate(invalid="ignore"):
+            return minx, maxx, (col >= minx) * (col < maxx)
+
+    def _is_last_bar(self, idx):
+        return idx == len(self.bar_items) - 1
+
+    # -----------------------------
+    # Report
+
     def get_widget_name_extension(self):
-        if self.variable_idx >= 0:
-            return self.varmodel[self.variable_idx]
+        return self.var
 
     def send_report(self):
-        if self.variable_idx < 0:
+        self.plotview.scene().setSceneRect(self.plotview.sceneRect())
+        if not self.is_valid:
             return
         self.report_plot()
-        text = "Distribution of '{}'".format(
-            self.varmodel[self.variable_idx])
-        if self.groupvar_idx:
-            group_var = self.groupvarmodel[self.groupvar_idx]
-            prob = self.cb_prob
-            indiv_probs = 0 < prob.currentIndex() < prob.count() - 1
-            if not indiv_probs or self.relative_freq:
-                text += " grouped by '{}'".format(group_var)
-                if self.relative_freq:
-                    text += " (relative frequencies)"
-            if indiv_probs:
-                text += "; probabilites for '{}={}'".format(
-                    group_var, prob.currentText())
+        if self.cumulative_distr:
+            text = f"Cummulative distribution of '{self.var.name}'"
+        else:
+            text = f"Distribution of '{self.var.name}'"
+        if self.cvar:
+            text += f" with columns split by '{self.cvar.name}'"
         self.report_caption(text)
 
 
-def dist_sum(D1, D2):
-    """
-    A sum of two continuous distributions.
-    """
-    X1, W1 = D1
-    X2, W2 = D2
-    X = numpy.r_[X1, X2]
-    W = numpy.r_[W1, W2]
-    sort_ind = numpy.argsort(X)
-    X, W = X[sort_ind], W[sort_ind]
-
-    unique, uniq_index = numpy.unique(X, return_index=True)
-    spans = numpy.diff(numpy.r_[uniq_index, len(X)])
-    W = [numpy.sum(W[start:start + span])
-         for start, span in zip(uniq_index, spans)]
-    W = numpy.array(W)
-    assert W.shape[0] == unique.shape[0]
-    return unique, W
-
-
-def ash_curve(dist, cont=None, bandwidth=None, m=3, smoothing_factor=1):
-    dist = numpy.asarray(dist)
-    X, W = dist
-    if bandwidth is None:
-        std = weighted_std(X, weights=W)
-        size = X.size
-        # if only one sample in the class
-        if std == 0 and cont is not None:
-            std = weighted_std(cont.values, weights=numpy.sum(cont.counts, axis=0))
-            size = cont.values.size
-        # if attr is constant or contingencies is None (no class variable)
-        if std == 0:
-            std = 0.1
-            size = X.size
-        bandwidth = 3.5 * std * (size ** (-1 / 3))
-
-    hist, edges = average_shifted_histogram(X, bandwidth, m, weights=W,
-                                            smoothing=smoothing_factor)
-    return edges, hist
-
-
-def average_shifted_histogram(a, h, m=3, weights=None, smoothing=1):
-    """
-    Compute the average shifted histogram.
-
-    Parameters
-    ----------
-    a : array-like
-        Input data.
-    h : float
-        Base bin width.
-    m : int
-        Number of shifted histograms.
-    weights : array-like
-        An array of weights of the same shape as `a`
-    """
-    a = numpy.asarray(a)
-
-    if weights is not None:
-        weights = numpy.asarray(weights)
-        if weights.shape != a.shape:
-            raise ValueError("weights should have the same shape as a")
-        weights = weights.ravel()
-
-    a = a.ravel()
-
-    amin, amax = a.min(), a.max()
-    h = h * 0.5 * smoothing
-    delta = h / m
-    wfac = 4 #extended windows for gaussian smoothing
-    offset = (wfac * m - 1) * delta
-    nbins = max(numpy.ceil((amax - amin + 2 * offset) / delta), 2 * m * wfac - 1)
-
-    bins = numpy.linspace(amin - offset, amax + offset, nbins + 1,
-                          endpoint=True)
-    hist, edges = numpy.histogram(a, bins, weights=weights, density=True)
-
-    kernel = gaussian_kernel((numpy.arange(2 * wfac * m - 1) - (wfac * m - 1)) / (wfac * m), wfac)
-    kernel = kernel / numpy.sum(kernel)
-    ash = numpy.convolve(hist, kernel, mode="same")
-
-    ash = ash / numpy.diff(edges) / ash.sum()
-#     assert abs((numpy.diff(edges) * ash).sum()) <= 1e-6
-    return ash, edges
-
-
-def triangular_kernel(x):
-    return numpy.clip(1, 0, 1 - numpy.abs(x))
-
-
-def gaussian_kernel(x, k):
-    #fit k standard deviations into available space from [-1 .. 1]
-    return 1/(numpy.sqrt(2 * numpy.pi)) * numpy.exp( - (x*k)**2 / (2))
-
-
-def weighted_std(a, axis=None, weights=None, ddof=0):
-    mean = numpy.average(a, axis=axis, weights=weights)
-
-    if axis is not None:
-        shape = shape_reduce_keep_dims(a.shape, axis)
-        mean = mean.reshape(shape)
-
-    sq_diff = numpy.power(a - mean, 2)
-    mean_sq_diff, wsum = numpy.average(
-        sq_diff, axis=axis, weights=weights, returned=True
-    )
-
-    if ddof != 0:
-        mean_sq_diff *= wsum / (wsum - ddof)
-
-    return numpy.sqrt(mean_sq_diff)
-
-
-def weighted_quantiles(a, prob=[0.25, 0.5, 0.75], alphap=0.4, betap=0.4,
-                       axis=None, weights=None):
-    a = numpy.asarray(a)
-    prob = numpy.asarray(prob)
-
-    sort_ind = numpy.argsort(a, axis)
-    a = a[sort_ind]
-
-    if weights is None:
-        weights = numpy.ones_like(a)
-    else:
-        weights = numpy.asarray(weights)
-        weights = weights[sort_ind]
-
-    n = numpy.sum(weights)
-    k = numpy.cumsum(weights, axis)
-
-    # plotting positions for the known n knots
-    pk = (k - alphap * weights) / (n + 1 - alphap * weights - betap * weights)
-
-#     m = alphap + prob * (1 - alphap - betap)
-
-    return numpy.interp(prob, pk, a, left=a[0], right=a[-1])
-
-
-def shape_reduce_keep_dims(shape, axis):
-    if shape is None:
-        return ()
-
-    shape = list(shape)
-    if isinstance(axis, collections.Sequence):
-        for ax in axis:
-            shape[ax] = 1
-    else:
-        shape[axis] = 1
-    return tuple(shape)
-
-
-def main(argv=None):
-    from AnyQt.QtWidgets import QApplication
-    import gc
-    if argv is None:
-        argv = sys.argv
-    argv = list(argv)
-    app = QApplication(argv)
-    w = OWDistributions()
-    w.show()
-    if len(argv) > 1:
-        filename = argv[1]
-    else:
-        filename = "heart_disease"
-    data = Orange.data.Table(filename)
-    w.set_data(data)
-    w.handleNewSignals()
-    rval = app.exec_()
-    w.set_data(None)
-    w.handleNewSignals()
-    w.deleteLater()
-    del w
-    app.processEvents()
-    gc.collect()
-    return rval
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+if __name__ == "__main__":  # pragma: no cover
+    WidgetPreview(OWDistributions).run(Table("heart_disease.tab"))

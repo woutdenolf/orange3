@@ -2,6 +2,7 @@
 # pylint: disable=missing-docstring
 
 import unittest
+
 import numpy as np
 import sklearn
 
@@ -14,12 +15,13 @@ class TestLogisticRegressionLearner(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.iris = Table('iris')
-        cls.voting = Table('voting')
+        cls.heart_disease = Table('heart_disease.tab')
         cls.zoo = Table('zoo')
 
     def test_LogisticRegression(self):
         learn = LogisticRegressionLearner()
-        results = CrossValidation(self.voting, [learn], k=2)
+        cv = CrossValidation(k=2)
+        results = cv(self.heart_disease, [learn])
         ca = CA(results)
         self.assertGreater(ca, 0.8)
         self.assertLess(ca, 1.0)
@@ -39,7 +41,8 @@ class TestLogisticRegressionLearner(unittest.TestCase):
         lr_norm = LogisticRegressionLearner(normalize=True)
 
         # check that normalization produces better results
-        results = CrossValidation(table, [lr_norm, lr], k=3)
+        cv = CrossValidation(k=3)
+        results = cv(table, [lr_norm, lr])
         ca = CA(results)
         self.assertGreater(ca[0], ca[1])
 
@@ -62,29 +65,37 @@ class TestLogisticRegressionLearner(unittest.TestCase):
 
     def test_learner_scorer(self):
         learner = LogisticRegressionLearner()
-        scores = learner.score_data(self.voting)
-        self.assertEqual('physician-fee-freeze',
-                         self.voting.domain.attributes[np.argmax(scores)].name)
-        self.assertEqual(scores.shape, (1, len(self.voting.domain.attributes)))
+        scores = learner.score_data(self.heart_disease)
+        self.assertEqual('chest pain',
+                         self.heart_disease.domain.attributes[np.argmax(scores)].name)
+        self.assertEqual(scores.shape, (1, len(self.heart_disease.domain.attributes)))
 
     def test_learner_scorer_feature(self):
         learner = LogisticRegressionLearner()
-        scores = learner.score_data(self.voting)
-        for i, attr in enumerate(self.voting.domain.attributes):
-            score = learner.score_data(self.voting, attr)
+        scores = learner.score_data(self.heart_disease)
+        for i, attr in enumerate(self.heart_disease.domain.attributes):
+            score = learner.score_data(self.heart_disease, attr)
             np.testing.assert_array_almost_equal(score, scores[:, i])
+
+    def test_learner_scorer_previous_transformation(self):
+        learner = LogisticRegressionLearner()
+        from Orange.preprocess import Discretize
+        data = Discretize()(self.iris)
+        scores = learner.score_data(data)
+        # scores should be defined and positive
+        self.assertTrue(np.all(scores > 0))
 
     def test_learner_scorer_multiclass(self):
         attr = self.zoo.domain.attributes
         learner = LogisticRegressionLearner()
         scores = learner.score_data(self.zoo)
-        self.assertEqual('aquatic', attr[np.argmax(scores[0])].name)
-        self.assertEqual('feathers', attr[np.argmax(scores[1])].name)
-        self.assertEqual('fins', attr[np.argmax(scores[2])].name)
-        self.assertEqual('backbone', attr[np.argmax(scores[3])].name)
-        self.assertEqual('backbone', attr[np.argmax(scores[4])].name)
-        self.assertEqual('milk', attr[np.argmax(scores[5])].name)
-        self.assertEqual('hair', attr[np.argmax(scores[6])].name)
+        self.assertEqual('legs', attr[np.argmax(scores[0])].name)  # amphibian
+        self.assertEqual('feathers', attr[np.argmax(scores[1])].name)  # bird
+        self.assertEqual('fins', attr[np.argmax(scores[2])].name)  # fish
+        self.assertEqual('legs', attr[np.argmax(scores[3])].name)  # insect
+        self.assertEqual('backbone', attr[np.argmax(scores[4])].name)  # invertebrate
+        self.assertEqual('milk', attr[np.argmax(scores[5])].name)  # mammal
+        self.assertEqual('aquatic', attr[np.argmax(scores[6])].name)  # reptile
         self.assertEqual(scores.shape,
                          (len(self.zoo.domain.class_var.values), len(attr)))
 
@@ -97,7 +108,7 @@ class TestLogisticRegressionLearner(unittest.TestCase):
 
     def test_coefficients(self):
         learn = LogisticRegressionLearner()
-        model = learn(self.voting)
+        model = learn(self.heart_disease)
         coef = model.coefficients
         self.assertEqual(len(coef[0]), len(model.domain.attributes))
 
@@ -106,19 +117,37 @@ class TestLogisticRegressionLearner(unittest.TestCase):
         m = lr(self.zoo)
         probs = m(self.zoo[50], m.Probs)
         probs2 = m(self.zoo[50, :], m.Probs)
-        np.testing.assert_almost_equal(probs, probs2)
+        np.testing.assert_almost_equal(probs, probs2[0])
 
     def test_single_class(self):
         t = self.iris[60:90]
         self.assertEqual(len(np.unique(t.Y)), 1)
         learn = LogisticRegressionLearner()
-        model = learn(t)
-        self.assertEqual(model(t[0]), 1)
-        self.assertTrue(np.all(model(t[0], ret=Model.Probs) == [0, 1, 0]))
-        self.assertTrue(np.all(model(t) == 1))
+        with self.assertRaises(ValueError):
+            learn(t)
 
     def test_sklearn_single_class(self):
         t = self.iris[60:90]
         self.assertEqual(len(np.unique(t.Y)), 1)
         lr = sklearn.linear_model.LogisticRegression()
         self.assertRaises(ValueError, lr.fit, t.X, t.Y)
+
+    def test_auto_solver(self):
+        # These defaults are valid as of sklearn v0.23.0
+        # lbfgs is default for l2 penalty
+        lr = LogisticRegressionLearner(penalty="l2", solver="auto")
+        skl_clf = lr._initialize_wrapped()
+        self.assertEqual(skl_clf.solver, "lbfgs")
+        self.assertEqual(skl_clf.penalty, "l2")
+
+        # lbfgs is default for no penalty
+        lr = LogisticRegressionLearner(penalty=None, solver="auto")
+        skl_clf = lr._initialize_wrapped()
+        self.assertEqual(skl_clf.solver, "lbfgs")
+        self.assertEqual(skl_clf.penalty, None)
+
+        # liblinear is default for l2 penalty
+        lr = LogisticRegressionLearner(penalty="l1", solver="auto")
+        skl_clf = lr._initialize_wrapped()
+        self.assertEqual(skl_clf.solver, "liblinear")
+        self.assertEqual(skl_clf.penalty, "l1")

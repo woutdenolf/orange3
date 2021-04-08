@@ -4,6 +4,7 @@ import numpy as np
 import scipy.sparse.linalg as sla
 
 import Orange.data
+import Orange.projection
 from Orange.projection import Projector, Projection
 
 __all__ = ["CUR"]
@@ -95,7 +96,14 @@ class CUR(Projector):
             self.U_ = np.dot(np.dot(pinvC, X), pinvR)
         else:
             self.U_ = None
-        return CURModel(self)
+
+        # TODO: FIX - do not retain state and ref for this instance
+        # The only use pattern admissble by this implementation is
+        # `model = CUR(**param)(data)`
+        # i.e. CUR instance cannot be used after calling fit once.
+        m = CURModel(self)
+        m.domain = self.domain
+        return m
 
     def transform(self, X, axis):
         if axis == 0:
@@ -122,7 +130,7 @@ class CURModel(Projection):
 
     def __call__(self, data, axis=0):
         if data.domain is not self.domain:
-            data = Orange.data.Table(self.domain, data)
+            data = data.transform(self.domain)
         Xt = self.proj.transform(data.X, axis)
 
         if axis == 0:
@@ -152,9 +160,12 @@ class Projector:
         self.transformed = None
 
     def __call__(self, data):
-        if data is not self.transformed:
-            self.transformed = self.projection.transform(data.X)
-        return self.transformed[:, self.feature]
+        transformed = self.transformed
+        # ?? This does not seem right ? Is 'cached' by result ?
+        if data is not transformed:
+            transformed = self.projection.transform(data.X)
+            self.transformed = transformed
+        return transformed[:, self.feature]
 
     def __getstate__(self):
         d = dict(self.__dict__)
@@ -163,12 +174,6 @@ class Projector:
 
 
 if __name__ == '__main__':
-    import numpy as np
-    import scipy.sparse.linalg as sla
-
-    import Orange.data
-    import Orange.projection
-
     np.random.seed(42)
     X = np.random.rand(60, 100)
     rank = 5

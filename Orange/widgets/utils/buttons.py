@@ -1,61 +1,50 @@
-from AnyQt.QtWidgets import QPushButton, QStyle, QStyleOptionButton
-from AnyQt.QtCore import Qt, QSize
+from AnyQt.QtCore import Qt, QSize, QEvent
+from AnyQt.QtGui import QKeySequence
+from AnyQt.QtWidgets import QToolButton, QSizePolicy, QStyle, QToolTip
+
+from orangewidget.utils.buttons import (
+    VariableTextPushButton, SimpleButton,
+)
+__all__ = [
+    "VariableTextPushButton", "SimpleButton", "FixedSizeButton",
+]
 
 
-class VariableTextPushButton(QPushButton):
-    """
-    QPushButton subclass with an sizeHint method to better support settable
-    variable width button text.
+class FixedSizeButton(QToolButton):
 
-    Use this class instead of the QPushButton when the button will
-    switch the text dynamically while displayed.
-    """
-    def __init__(self, *args, textChoiceList=[], **kwargs):
+    def __init__(self, *args, defaultAction=None, **kwargs):
         super().__init__(*args, **kwargs)
-        self.__textChoiceList = list(textChoiceList)
+        sh = self.sizePolicy()
+        sh.setHorizontalPolicy(QSizePolicy.Fixed)
+        sh.setVerticalPolicy(QSizePolicy.Fixed)
+        self.setSizePolicy(sh)
+        self.setAttribute(Qt.WA_WState_OwnSizePolicy, True)
 
-    def setTextChoiceList(self, textList):
-        """
-        Set the list of all `text` string to use for size hinting.
-
-        Parameters
-        ----------
-        textList : List[str]
-            A list of all different `text` properties that will/can be set on
-            the push button. This list is used to derive a suitable sizeHint
-            for the widget.
-        """
-        self.__textChoiceList = textList
-        self.updateGeometry()
+        if defaultAction is not None:
+            self.setDefaultAction(defaultAction)
 
     def sizeHint(self):
-        """
-        Reimplemented from `QPushButton.sizeHint`.
-
-        Returns
-        -------
-        sh : QSize
-        """
-        sh = super().sizeHint()
-        option = QStyleOptionButton()
-        self.initStyleOption(option)
         style = self.style()
-        fm = option.fontMetrics
-        if option.iconSize.isValid():
-            icsize = option.iconSize
-            icsize.setWidth(icsize.width() + 4)
-        else:
-            icsize = QSize()
+        size = (style.pixelMetric(QStyle.PM_SmallIconSize) +
+                style.pixelMetric(QStyle.PM_ButtonMargin))
+        return QSize(size, size)
 
-        for text in self.__textChoiceList:
-            option.text = text
-            size = fm.size(Qt.TextShowMnemonic, text)
+    def event(self, event: QEvent) -> bool:
+        if event.type() == QEvent.ToolTip and self.toolTip():
+            action = self.defaultAction()
+            if action is not None and action.toolTip():
+                text = tooltip_with_shortcut(action.toolTip(),
+                                             action.shortcut())
+                QToolTip.showText(event.globalPos(), text)
+                return True
+        return super().event(event)
 
-            if not icsize.isNull():
-                size.setWidth(size.width() + icsize.width())
-                size.setHeight(max(size.height(), icsize.height()))
 
-            sh = sh.expandedTo(
-                style.sizeFromContents(QStyle.CT_PushButton, option,
-                                       size, self))
-        return sh
+def tooltip_with_shortcut(tool_tip, shortcut: QKeySequence) -> str:
+    text = []
+    if tool_tip:
+        text.append("<span>{}</span>".format(tool_tip))
+    if not shortcut.isEmpty():
+        text.append("<kbd>{}</kbd>"
+                    .format(shortcut.toString(QKeySequence.NativeText)))
+    return "&nbsp;&nbsp;".join(text)

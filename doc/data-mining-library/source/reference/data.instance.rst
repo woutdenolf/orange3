@@ -14,7 +14,7 @@ data storages, therefore changing them actually changes the data.
 Like data tables, every data instance is associated with a domain and its
 data is split into attributes, classes, meta attributes and the weight. Its
 constructor thus requires a domain and, optionally, data. For the following
-example, we borrow the domain from the Iris data set. ::
+example, we borrow the domain from the Iris dataset. ::
 
     >>> from Orange.data import Table, Instance
     >>> iris = Table("iris")
@@ -57,8 +57,9 @@ Other utility functions provide for easier access to the instances data. ::
 
     When the instance is not from the given domain, Orange converts it.
 
-        >>> from Orange.data import discretization
-        >>> d_iris = discretization.DomainDiscretizer(iris)
+        >>> from Orange.preprocess import DomainDiscretizer
+        >>> discretizer = DomainDiscretizer()
+        >>> d_iris = discretizer(iris)
         >>> d_inst = Instance(d_iris, inst)
 
 

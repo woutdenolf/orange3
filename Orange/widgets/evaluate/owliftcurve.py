@@ -1,55 +1,46 @@
-"""
-Lift Curve Widget
------------------
+from enum import IntEnum
+from typing import NamedTuple, Dict, Tuple
 
-"""
-from collections import namedtuple
+import numpy as np
 
-import numpy
-import sklearn.metrics as skl_metrics
-
-from AnyQt import QtWidgets
+from AnyQt.QtWidgets import QListView, QFrame
 from AnyQt.QtGui import QColor, QPen, QPalette, QFont
 from AnyQt.QtCore import Qt
 
 import pyqtgraph as pg
 
+from orangewidget.widget import Msg
+
 import Orange
 from Orange.widgets import widget, gui, settings
+from Orange.widgets.evaluate.contexthandlers import \
+    EvaluationResultsContextHandler
 from Orange.widgets.evaluate.utils import check_results_adequacy
-from Orange.widgets.utils import colorpalette, colorbrewer
+from Orange.widgets.utils import colorpalettes
 from Orange.widgets.evaluate.owrocanalysis import convex_hull
-from Orange.widgets.io import FileFormat
-from Orange.canvas import report
+from Orange.widgets.utils.widgetpreview import WidgetPreview
+from Orange.widgets.widget import Input
+from Orange.widgets import report
 
 
-CurvePoints = namedtuple(
-    "CurvePoints",
-    ["cases", "tpr", "thresholds"]
+CurveData = NamedTuple(
+    "CurveData",
+    [("contacted", np.ndarray),    # classified as positive
+     ("respondents", np.ndarray),  # true positive rate
+     ("thresholds", np.ndarray)]
 )
-CurvePoints.is_valid = property(lambda self: self.cases.size > 0)
+CurveData.is_valid = property(lambda self: self.contacted.size > 0)
 
-LiftCurve = namedtuple(
-    "LiftCurve",
-    ["points", "hull"]
+
+PointsAndHull = NamedTuple(
+    "PointsAndHull",
+    [("points", CurveData),
+     ("hull", CurveData)]
 )
-LiftCurve.is_valid = property(lambda self: self.points.is_valid)
 
 
-def LiftCurve_from_results(results, clf_index, target):
-    x, y, thresholds = lift_curve_from_results(results, target, clf_index)
-
-    points = CurvePoints(x, y, thresholds)
-    hull = CurvePoints(*convex_hull([(x, y, thresholds)]))
-    return LiftCurve(points, hull)
-
-
-PlotCurve = namedtuple(
-    "PlotCurve",
-    ["curve",
-     "curve_item",
-     "hull_item"]
-)
+class CurveTypes(IntEnum):
+    LiftCurve, CumulativeGains = range(2)
 
 
 class OWLiftCurve(widget.OWWidget):
@@ -58,19 +49,32 @@ class OWLiftCurve(widget.OWWidget):
                   "from the evaluation of classifiers."
     icon = "icons/LiftCurve.svg"
     priority = 1020
-    inputs = [("Evaluation Results", Orange.evaluation.Results, "set_results")]
+    keywords = ["lift", "cumulative gain"]
 
-    target_index = settings.Setting(0)
-    selected_classifiers = settings.Setting([])
+    class Inputs:
+        evaluation_results = Input(
+            "Evaluation Results", Orange.evaluation.Results)
 
-    display_convex_hull = settings.Setting(False)
-    display_cost_func = settings.Setting(True)
+    class Warning(widget.OWWidget.Warning):
+        undefined_curves = Msg(
+            "Some curves are undefined; check models and data")
 
-    fp_cost = settings.Setting(500)
-    fn_cost = settings.Setting(500)
-    target_prior = settings.Setting(50.0)
+    class Error(widget.OWWidget.Error):
+        undefined_curves = Msg(
+            "No defined curves; check models and data")
+
+    buttons_area_orientation = None
+
+    settingsHandler = EvaluationResultsContextHandler()
+    target_index = settings.ContextSetting(0)
+    selected_classifiers = settings.ContextSetting([])
+
+    display_convex_hull = settings.Setting(True)
+    curve_type = settings.Setting(CurveTypes.LiftCurve)
 
     graph_name = "plot"
+
+    YLabels = ("Lift", "TP Rate")
 
     def __init__(self):
         super().__init__()
@@ -78,138 +82,160 @@ class OWLiftCurve(widget.OWWidget):
         self.results = None
         self.classifier_names = []
         self.colors = []
-        self._curve_data = {}
+        self._points_hull: Dict[Tuple[int, int], PointsAndHull] = {}
 
-        box = gui.vBox(self.controlArea, "Plot")
-        tbox = gui.vBox(box, "Target Class")
-        tbox.setFlat(True)
-
+        box = gui.vBox(self.controlArea, box="Curve")
         self.target_cb = gui.comboBox(
-            tbox, self, "target_index", callback=self._on_target_changed,
-            contentsLength=8)
+            box, self, "target_index",
+            label="Target: ", orientation=Qt.Horizontal,
+            callback=self._on_target_changed,
+            contentsLength=8, searchable=True
+        )
+        gui.radioButtons(
+            box, self, "curve_type", ("Lift Curve", "Cumulative Gains"),
+            callback=self._on_curve_type_changed
+        )
 
-        cbox = gui.vBox(box, "Classifiers")
-        cbox.setFlat(True)
         self.classifiers_list_box = gui.listBox(
-            cbox, self, "selected_classifiers", "classifier_names",
-            selectionMode=QtWidgets.QListView.MultiSelection,
-            callback=self._on_classifiers_changed)
+            self.controlArea, self, "selected_classifiers", "classifier_names",
+            box="Models",
+            selectionMode=QListView.MultiSelection,
+            callback=self._on_classifiers_changed
+        )
+        self.classifiers_list_box.setMaximumHeight(100)
 
-        gui.checkBox(box, self, "display_convex_hull",
-                     "Show lift convex hull", callback=self._replot)
+        gui.checkBox(self.controlArea, self, "display_convex_hull",
+                     "Show convex hull", box="Settings", callback=self._replot)
+
+        gui.rubber(self.controlArea)
 
         self.plotview = pg.GraphicsView(background="w")
-        self.plotview.setFrameStyle(QtWidgets.QFrame.StyledPanel)
+        self.plotview.setFrameStyle(QFrame.StyledPanel)
 
-        self.plot = pg.PlotItem()
-        self.plot.getViewBox().setMenuEnabled(False)
+        self.plot = pg.PlotItem(enableMenu=False)
+        self.plot.setMouseEnabled(False, False)
+        self.plot.hideButtons()
 
         pen = QPen(self.palette().color(QPalette.Text))
 
         tickfont = QFont(self.font())
         tickfont.setPixelSize(max(int(tickfont.pixelSize() * 2 // 3), 11))
 
-        axis = self.plot.getAxis("bottom")
-        axis.setTickFont(tickfont)
-        axis.setPen(pen)
-        axis.setLabel("P Rate")
-
-        axis = self.plot.getAxis("left")
-        axis.setTickFont(tickfont)
-        axis.setPen(pen)
-        axis.setLabel("TP Rate")
+        for pos, label in (("bottom", "P Rate"), ("left", "")):
+            axis = self.plot.getAxis(pos)
+            axis.setTickFont(tickfont)
+            axis.setPen(pen)
+            axis.setLabel(label)
+        self._set_left_label()
 
         self.plot.showGrid(True, True, alpha=0.1)
-        self.plot.setRange(xRange=(0.0, 1.0), yRange=(0.0, 1.0))
 
         self.plotview.setCentralItem(self.plot)
         self.mainArea.layout().addWidget(self.plotview)
 
+    @Inputs.evaluation_results
     def set_results(self, results):
-        """Set the input evaluation results."""
+        self.closeContext()
         self.clear()
         self.results = check_results_adequacy(results, self.Error)
         if self.results is not None:
             self._initialize(results)
+            self.openContext(self.results.domain.class_var,
+                             self.classifier_names)
             self._setup_plot()
 
     def clear(self):
-        """Clear the widget state."""
         self.plot.clear()
+        self.Warning.clear()
+        self.Error.clear()
         self.results = None
         self.target_cb.clear()
-        self.target_index = 0
         self.classifier_names = []
         self.colors = []
-        self._curve_data = {}
+        self._points_hull = {}
 
     def _initialize(self, results):
-        N = len(results.predicted)
+        n_models = len(results.predicted)
 
-        names = getattr(results, "learner_names", None)
-        if names is None:
-            names = ["#{}".format(i + 1) for i in range(N)]
+        self.classifier_names = getattr(results, "learner_names", None) \
+                                or [f"#{i}" for i in range(n_models)]
+        self.selected_classifiers = list(range(n_models))
 
-        self.colors = colorpalette.ColorPaletteGenerator(
-            N, colorbrewer.colorSchemes["qualitative"]["Dark2"])
-
-        self.classifier_names = names
-        self.selected_classifiers = list(range(N))
-        for i in range(N):
+        self.colors = colorpalettes.get_default_curve_colors(n_models)
+        for i, color in enumerate(self.colors):
             item = self.classifiers_list_box.item(i)
-            item.setIcon(colorpalette.ColorPixmap(self.colors[i]))
+            item.setIcon(colorpalettes.ColorIcon(color))
 
-        self.target_cb.addItems(results.data.domain.class_var.values)
-
-    def plot_curves(self, target, clf_idx):
-        if (target, clf_idx) not in self._curve_data:
-            curve = LiftCurve_from_results(self.results, clf_idx, target)
-            color = self.colors[clf_idx]
-            pen = QPen(color, 1)
-            pen.setCosmetic(True)
-            shadow_pen = QPen(pen.color().lighter(160), 2.5)
-            shadow_pen.setCosmetic(True)
-            item = pg.PlotDataItem(
-                curve.points[0], curve.points[1],
-                pen=pen, shadowPen=shadow_pen,
-                symbol="+", symbolSize=3, symbolPen=shadow_pen,
-                antialias=True
-            )
-            hull_item = pg.PlotDataItem(
-                curve.hull[0], curve.hull[1],
-                pen=pen,  antialias=True
-            )
-            self._curve_data[target, clf_idx] = \
-                PlotCurve(curve, item, hull_item)
-
-        return self._curve_data[target, clf_idx]
-
-    def _setup_plot(self):
-        target = self.target_index
-        selected = self.selected_classifiers
-        curves = [self.plot_curves(target, clf_idx) for clf_idx in selected]
-
-        for curve in curves:
-            self.plot.addItem(curve.curve_item)
-
-        if self.display_convex_hull:
-            hull = convex_hull([c.curve.hull for c in curves])
-            self.plot.plot(hull[0], hull[1], pen="y", antialias=True)
-
-        pen = QPen(QColor(100, 100, 100, 100), 1, Qt.DashLine)
-        pen.setCosmetic(True)
-        self.plot.plot([0, 1], [0, 1], pen=pen, antialias=True)
+        class_values = results.data.domain.class_var.values
+        self.target_cb.addItems(class_values)
+        if class_values:
+            self.target_index = 0
 
     def _replot(self):
         self.plot.clear()
         if self.results is not None:
             self._setup_plot()
 
-    def _on_target_changed(self):
+    _on_target_changed = _replot
+    _on_classifiers_changed = _replot
+
+    def _on_curve_type_changed(self):
+        self._set_left_label()
         self._replot()
 
-    def _on_classifiers_changed(self):
-        self._replot()
+    def _set_left_label(self):
+        self.plot.getAxis("left").setLabel(self.YLabels[self.curve_type])
+
+    def _setup_plot(self):
+        self._plot_default_line()
+        is_valid = [
+            self._plot_curve(self.target_index, clf_idx)
+            for clf_idx in self.selected_classifiers
+        ]
+        self.plot.autoRange()
+        self._set_undefined_curves_err_warn(is_valid)
+
+    def _plot_curve(self, target, clf_idx):
+        key = (target, clf_idx)
+        if key not in self._points_hull:
+            self._points_hull[key] = \
+                points_from_results(self.results, target, clf_idx)
+        points, hull = self._points_hull[key]
+
+        if not points.is_valid:
+            return False
+
+        color = self.colors[clf_idx]
+        pen = QPen(color, 1)
+        pen.setCosmetic(True)
+        wide_pen = QPen(color, 3)
+        wide_pen.setCosmetic(True)
+
+        def _plot(points, pen):
+            contacted, respondents, _ = points
+            if self.curve_type == CurveTypes.LiftCurve:
+                respondents = respondents / contacted
+            self.plot.plot(contacted, respondents, pen=pen, antialias=True)
+
+        _plot(points, wide_pen if not self.display_convex_hull else pen)
+        if self.display_convex_hull:
+            _plot(hull, wide_pen)
+        return True
+
+    def _plot_default_line(self):
+        pen = QPen(QColor(20, 20, 20), 1, Qt.DashLine)
+        pen.setCosmetic(True)
+        y0 = 1 if self.curve_type == CurveTypes.LiftCurve else 0
+        self.plot.plot([0, 1], [y0, 1], pen=pen, antialias=True)
+
+    def _set_undefined_curves_err_warn(self, is_valid):
+        self.Error.undefined_curves.clear()
+        self.Warning.undefined_curves.clear()
+        if not all(is_valid):
+            if any(is_valid):
+                self.Warning.undefined_curves()
+            else:
+                self.Error.undefined_curves()
 
     def send_report(self):
         if self.results is None:
@@ -221,52 +247,42 @@ class OWLiftCurve(widget.OWWidget):
         self.report_caption(caption)
 
 
-def lift_curve_from_results(results, target, clf_idx, subset=slice(0, -1)):
-    actual = results.actual[subset]
-    scores = results.probabilities[clf_idx][subset][:, target]
-    yrate, tpr, thresholds = lift_curve(actual, scores, target)
+def points_from_results(results, target, clf_index):
+    x, y, thresholds = cumulative_gains_from_results(results, target, clf_index)
+    points = CurveData(x, y, thresholds)
+    hull = CurveData(*convex_hull([(x, y, thresholds)]))
+    return PointsAndHull(points, hull)
+
+
+def cumulative_gains_from_results(results, target, clf_idx):
+    y_true = results.actual
+    scores = results.probabilities[clf_idx][:, target]
+    yrate, tpr, thresholds = cumulative_gains(y_true, scores, target)
     return yrate, tpr, thresholds
 
 
-def lift_curve(ytrue, ypred, target=1):
-    P = numpy.sum(ytrue == target)
-    N = ytrue.size - P
-    fpr, tpr, thresholds = skl_metrics.roc_curve(ytrue, ypred, target)
-    rpp = fpr * (N / (P + N)) + tpr * (P / (P + N))
-    return rpp, tpr, thresholds
+def cumulative_gains(y_true, y_score, target=1):
+    if len(y_true) != len(y_score):
+        raise ValueError("array dimensions don't match")
+
+    if not y_true.size:
+        return np.array([], dtype=int), np.array([], dtype=int), np.array([])
+
+    y_true = (y_true == target)
+
+    desc_score_indices = np.argsort(y_score, kind="mergesort")[::-1]
+    y_score = y_score[desc_score_indices]
+    y_true = y_true[desc_score_indices]
+
+    distinct_value_indices = np.where(np.diff(y_score))[0]
+    threshold_idxs = np.r_[distinct_value_indices, y_true.size - 1]
+
+    respondents = np.cumsum(y_true)[threshold_idxs]
+    respondents = respondents / respondents[-1]
+    contacted = (1 + threshold_idxs) / (1 + threshold_idxs[-1])
+    return contacted, respondents, y_score[threshold_idxs]
 
 
-def main():
-    import sip
-    from AnyQt.QtWidgets import QApplication
-    from Orange.classification import (LogisticRegressionLearner, SVMLearner,
-                                       NuSVMLearner)
-
-    app = QApplication([])
-    w = OWLiftCurve()
-    w.show()
-    w.raise_()
-
-    data = Orange.data.Table("ionosphere")
-    results = Orange.evaluation.CrossValidation(
-        data,
-        [LogisticRegressionLearner(penalty="l2"),
-         LogisticRegressionLearner(penalty="l1"),
-         SVMLearner(probability=True),
-         NuSVMLearner(probability=True)
-         ],
-        store_data=True
-    )
-    results.learner_names = ["LR l2", "LR l1", "SVM", "Nu SVM"]
-    w.set_results(results)
-    rval = app.exec_()
-
-    sip.delete(w)
-    del w
-    app.processEvents()
-    del app
-    return rval
-
-
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__":  # pragma: no cover
+    from Orange.widgets.evaluate.utils import results_for_preview
+    WidgetPreview(OWLiftCurve).run(results_for_preview())

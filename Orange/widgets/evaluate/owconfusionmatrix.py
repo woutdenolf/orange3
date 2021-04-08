@@ -1,25 +1,27 @@
 """Confusion matrix widget"""
 
 from math import isnan, isinf
+from itertools import chain
 import unicodedata
 
-from AnyQt.QtWidgets import (
-    QGridLayout, QTableView,QHeaderView, QStyledItemDelegate
-)
-from AnyQt.QtGui import (
-    QFont, QBrush, QColor, QStandardItemModel, QStandardItem
-)
-from AnyQt.QtCore import (
-    Qt, QSize, QItemSelectionModel, QItemSelection, QT_VERSION
-)
-import numpy
+from AnyQt.QtWidgets import QTableView, QHeaderView, QStyledItemDelegate, \
+    QSizePolicy
+from AnyQt.QtGui import QFont, QBrush, QColor, QStandardItemModel, QStandardItem
+from AnyQt.QtCore import Qt, QSize, QItemSelectionModel, QItemSelection
+import numpy as np
 import sklearn.metrics as skl_metrics
 
 import Orange
-from Orange.widgets import widget, settings, gui
+from Orange.data.util import get_unique_names
+import Orange.evaluation
+from Orange.widgets import widget, gui
+from Orange.widgets.settings import \
+    Setting, ContextSetting, ClassValuesContextHandler
 from Orange.widgets.utils.annotated_data import (create_annotated_table,
                                                  ANNOTATED_DATA_SIGNAL_NAME)
-from Orange.widgets.widget import Msg
+from Orange.widgets.utils.widgetpreview import WidgetPreview
+from Orange.widgets.utils.state_summary import format_summary_details
+from Orange.widgets.widget import Msg, Input, Output
 
 
 def confusion_matrix(res, index):
@@ -32,8 +34,13 @@ def confusion_matrix(res, index):
 
     Returns: Confusion matrix
     """
-    return skl_metrics.confusion_matrix(
-        res.actual, res.predicted[index])
+    labels = np.arange(len(res.domain.class_var.values))
+    if not res.actual.size:
+        # scikit-learn will not return an zero matrix
+        return np.zeros((len(labels), len(labels)))
+    else:
+        return skl_metrics.confusion_matrix(
+            res.actual, res.predicted[index], labels=labels)
 
 
 BorderRole = next(gui.OrangeUserRole)
@@ -82,24 +89,28 @@ class OWConfusionMatrix(widget.OWWidget):
                   "the results of classifier evaluations."
     icon = "icons/ConfusionMatrix.svg"
     priority = 1001
+    keywords = []
 
-    inputs = [("Evaluation Results", Orange.evaluation.Results, "set_results")]
-    outputs = [("Selected Data", Orange.data.Table, widget.Default),
-               (ANNOTATED_DATA_SIGNAL_NAME, Orange.data.Table)]
+    class Inputs:
+        evaluation_results = Input("Evaluation Results", Orange.evaluation.Results)
+
+    class Outputs:
+        selected_data = Output("Selected Data", Orange.data.Table, default=True)
+        annotated_data = Output(ANNOTATED_DATA_SIGNAL_NAME, Orange.data.Table)
 
     quantities = ["Number of instances",
                   "Proportion of predicted",
                   "Proportion of actual"]
 
     settings_version = 1
-    settingsHandler = settings.ClassValuesContextHandler()
+    settingsHandler = ClassValuesContextHandler()
 
-    selected_learner = settings.Setting([0], schema_only=True)
-    selection = settings.ContextSetting(set())
-    selected_quantity = settings.Setting(0)
-    append_predictions = settings.Setting(True)
-    append_probabilities = settings.Setting(False)
-    autocommit = settings.Setting(True)
+    selected_learner = Setting([0], schema_only=True)
+    selection = ContextSetting(set())
+    selected_quantity = Setting(0)
+    append_predictions = Setting(True)
+    append_probabilities = Setting(False)
+    autocommit = Setting(True)
 
     UserAdviceMessages = [
         widget.Message(
@@ -109,6 +120,8 @@ class OWConfusionMatrix(widget.OWWidget):
 
     class Error(widget.OWWidget.Error):
         no_regression = Msg("Confusion Matrix cannot show regression results.")
+        invalid_values = Msg("Evaluation Results input contains invalid values")
+        empty_input = widget.Msg("Empty result on input. Nothing to display.")
 
     def __init__(self):
         super().__init__()
@@ -118,37 +131,30 @@ class OWConfusionMatrix(widget.OWWidget):
         self.learners = []
         self.headers = []
 
-        box = gui.vBox(self.controlArea, "Learners")
-
         self.learners_box = gui.listBox(
-            box, self, "selected_learner", "learners",
+            self.controlArea, self, "selected_learner", "learners", box='Learners',
             callback=self._learner_changed
         )
-        box = gui.vBox(self.controlArea, "Show")
 
-        gui.comboBox(box, self, "selected_quantity", items=self.quantities,
-                     callback=self._update)
-
-        box = gui.vBox(self.controlArea, "Select")
-
-        gui.button(box, self, "Select Correct",
-                   callback=self.select_correct, autoDefault=False)
-        gui.button(box, self, "Select Misclassified",
-                   callback=self.select_wrong, autoDefault=False)
-        gui.button(box, self, "Clear Selection",
-                   callback=self.select_none, autoDefault=False)
-
-        self.outputbox = box = gui.vBox(self.controlArea, "Output")
+        self.outputbox = gui.vBox(self.buttonsArea)
+        box = gui.hBox(self.outputbox)
         gui.checkBox(box, self, "append_predictions",
                      "Predictions", callback=self._invalidate)
         gui.checkBox(box, self, "append_probabilities",
                      "Probabilities",
                      callback=self._invalidate)
 
-        gui.auto_commit(self.controlArea, self, "autocommit",
-                        "Send Selected", "Send Automatically")
+        gui.auto_apply(self.outputbox, self, "autocommit", box=False)
 
-        grid = QGridLayout()
+        self.info.set_output_summary(self.info.NoOutput)
+
+        box = gui.vBox(self.mainArea, box=True)
+
+        sbox = gui.hBox(box)
+        gui.rubber(sbox)
+        gui.comboBox(sbox, self, "selected_quantity",
+                     items=self.quantities, label="Show: ",
+                     orientation=Qt.Horizontal, callback=self._update)
 
         self.tablemodel = QStandardItemModel(self)
         view = self.tableview = QTableView(
@@ -160,13 +166,23 @@ class OWConfusionMatrix(widget.OWWidget):
         view.selectionModel().selectionChanged.connect(self._invalidate)
         view.setShowGrid(False)
         view.setItemDelegate(BorderedItemDelegate(Qt.white))
+        view.setSizePolicy(QSizePolicy.MinimumExpanding,
+                           QSizePolicy.MinimumExpanding)
         view.clicked.connect(self.cell_clicked)
-        grid.addWidget(view, 0, 0)
-        self.mainArea.layout().addLayout(grid)
+        box.layout().addWidget(view)
 
-    def sizeHint(self):
+        selbox = gui.hBox(box)
+        gui.button(selbox, self, "Select Correct",
+                   callback=self.select_correct, autoDefault=False)
+        gui.button(selbox, self, "Select Misclassified",
+                   callback=self.select_wrong, autoDefault=False)
+        gui.button(selbox, self, "Clear Selection",
+                   callback=self.select_none, autoDefault=False)
+
+    @staticmethod
+    def sizeHint():
         """Initial size"""
-        return QSize(750, 490)
+        return QSize(750, 340)
 
     def _item(self, i, j):
         return self.tablemodel.item(i, j) or QStandardItem()
@@ -220,9 +236,10 @@ class OWConfusionMatrix(widget.OWWidget):
         self.tablemodel.setRowCount(nclasses + 3)
         self.tablemodel.setColumnCount(nclasses + 3)
 
+    @Inputs.evaluation_results
     def set_results(self, results):
         """Set the input results."""
-
+        # false positive, pylint: disable=no-member
         prev_sel_learner = self.selected_learner.copy()
         self.clear()
         self.warning()
@@ -232,11 +249,26 @@ class OWConfusionMatrix(widget.OWWidget):
         if results is not None and results.data is not None:
             data = results.data[results.row_indices]
 
+        self.Error.no_regression.clear()
+        self.Error.empty_input.clear()
         if data is not None and not data.domain.has_discrete_class:
             self.Error.no_regression()
             data = results = None
-        else:
-            self.Error.no_regression.clear()
+        elif results is not None and not results.actual.size:
+            self.Error.empty_input()
+            data = results = None
+
+        nan_values = False
+        if results is not None:
+            assert isinstance(results, Orange.evaluation.Results)
+            if np.any(np.isnan(results.actual)) or \
+                    np.any(np.isnan(results.predicted)):
+                # Error out here (could filter them out with a warning
+                # instead).
+                nan_values = True
+                results = data = None
+
+        self.Error.invalid_values(shown=nan_values)
 
         self.results = results
         self.data = data
@@ -248,30 +280,29 @@ class OWConfusionMatrix(widget.OWWidget):
 
         if results is None:
             self.report_button.setDisabled(True)
+            return
+
+        self.report_button.setDisabled(False)
+
+        nmodels = results.predicted.shape[0]
+        self.headers = class_values + \
+                       (unicodedata.lookup("N-ARY SUMMATION"), )
+
+        # NOTE: The 'learner_names' is set in 'Test Learners' widget.
+        self.learners = getattr(
+            results, "learner_names",
+            [f"Learner #{i + 1}" for i in range(nmodels)])
+
+        self._init_table(len(class_values))
+        self.openContext(data.domain.class_var)
+        if not prev_sel_learner or prev_sel_learner[0] >= len(self.learners):
+            if self.learners:
+                self.selected_learner[:] = [0]
         else:
-            self.report_button.setDisabled(False)
-
-            nmodels = results.predicted.shape[0]
-            self.headers = class_values + \
-                           [unicodedata.lookup("N-ARY SUMMATION")]
-
-            # NOTE: The 'learner_names' is set in 'Test Learners' widget.
-            if hasattr(results, "learner_names"):
-                self.learners = results.learner_names
-            else:
-                self.learners = ["Learner #{}".format(i + 1)
-                                 for i in range(nmodels)]
-
-            self._init_table(len(class_values))
-            self.openContext(data.domain.class_var)
-            if not prev_sel_learner or prev_sel_learner[0] >= len(self.learners):
-                if self.learners:
-                    self.selected_learner[:] = [0]
-            else:
-                self.selected_learner[:] = prev_sel_learner
-            self._update()
-            self._set_selection()
-            self.unconditional_commit()
+            self.selected_learner[:] = prev_sel_learner
+        self._update()
+        self._set_selection()
+        self.unconditional_commit()
 
     def clear(self):
         """Reset the widget, clear controls"""
@@ -328,66 +359,71 @@ class OWConfusionMatrix(widget.OWWidget):
             self.tableview.selectionModel().select(
                 selection, QItemSelectionModel.ClearAndSelect)
 
+    def _prepare_data(self):
+        indices = self.tableview.selectedIndexes()
+        indices = {(ind.row() - 2, ind.column() - 2) for ind in indices}
+        actual = self.results.actual
+        learner_name = self.learners[self.selected_learner[0]]
+        predicted = self.results.predicted[self.selected_learner[0]]
+        selected = [i for i, t in enumerate(zip(actual, predicted))
+                    if t in indices]
+
+        extra = []
+        class_var = self.data.domain.class_var
+        metas = self.data.domain.metas
+        attrs = self.data.domain.attributes
+        names = [var.name for var in chain(metas, [class_var], attrs)]
+
+        if self.append_predictions:
+            extra.append(predicted.reshape(-1, 1))
+            proposed = "{}({})".format(class_var.name, learner_name)
+            name = get_unique_names(names, proposed)
+            var = Orange.data.DiscreteVariable(
+                                               name,
+                                               class_var.values)
+            metas = metas + (var,)
+
+        if self.append_probabilities and \
+                        self.results.probabilities is not None:
+            probs = self.results.probabilities[self.selected_learner[0]]
+            extra.append(np.array(probs, dtype=object))
+            pvars = [Orange.data.ContinuousVariable("p({})".format(value))
+                     for value in class_var.values]
+            metas = metas + tuple(pvars)
+
+        domain = Orange.data.Domain(self.data.domain.attributes,
+                                    self.data.domain.class_vars,
+                                    metas)
+        data = self.data.transform(domain)
+        if extra:
+            data.metas[:, len(self.data.domain.metas):] = \
+                np.hstack(tuple(extra))
+        data.name = learner_name
+
+        if selected:
+            annotated_data = create_annotated_table(data, selected)
+            data = data[selected]
+        else:
+            annotated_data = create_annotated_table(data, [])
+            data = None
+
+        return data, annotated_data
+
     def commit(self):
         """Output data instances corresponding to selected cells"""
         if self.results is not None and self.data is not None \
                 and self.selected_learner:
-            indices = self.tableview.selectedIndexes()
-            indices = {(ind.row() - 2, ind.column() - 2) for ind in indices}
-            actual = self.results.actual
-            learner_name = self.learners[self.selected_learner[0]]
-            predicted = self.results.predicted[self.selected_learner[0]]
-            selected = [i for i, t in enumerate(zip(actual, predicted))
-                        if t in indices]
-
-            extra = []
-            class_var = self.data.domain.class_var
-            metas = self.data.domain.metas
-
-            if self.append_predictions:
-                extra.append(predicted.reshape(-1, 1))
-                var = Orange.data.DiscreteVariable(
-                    "{}({})".format(class_var.name, learner_name),
-                    class_var.values
-                )
-                metas = metas + (var,)
-
-            if self.append_probabilities and \
-                    self.results.probabilities is not None:
-                probs = self.results.probabilities[self.selected_learner[0]]
-                extra.append(numpy.array(probs, dtype=object))
-                pvars = [Orange.data.ContinuousVariable("p({})".format(value))
-                         for value in class_var.values]
-                metas = metas + tuple(pvars)
-
-            X = self.data.X
-            Y = self.data.Y
-            M = self.data.metas
-            row_ids = self.data.ids
-
-            M = numpy.hstack((M,) + tuple(extra))
-            domain = Orange.data.Domain(
-                self.data.domain.attributes,
-                self.data.domain.class_vars,
-                metas
-            )
-            data = Orange.data.Table.from_numpy(domain, X, Y, M)
-            data.ids = row_ids
-            data.name = learner_name
-
-            if selected:
-                annotated_data = create_annotated_table(data, selected)
-                data = data[selected]
-            else:
-                annotated_data = create_annotated_table(data, [])
-                data = None
-
+            data, annotated_data = self._prepare_data()
         else:
             data = None
             annotated_data = None
 
-        self.send("Selected Data", data)
-        self.send(ANNOTATED_DATA_SIGNAL_NAME, annotated_data)
+        summary = len(data) if data else self.info.NoOutput
+        details = format_summary_details(data) if data else ""
+        self.info.set_output_summary(summary, details)
+
+        self.Outputs.selected_data.send(data)
+        self.Outputs.annotated_data.send(annotated_data)
 
     def _invalidate(self):
         indices = self.tableview.selectedIndexes()
@@ -418,25 +454,27 @@ class OWConfusionMatrix(widget.OWWidget):
             colsum = cmatrix.sum(axis=0)
             rowsum = cmatrix.sum(axis=1)
             n = len(cmatrix)
-            diag = numpy.diag_indices(n)
+            diag = np.diag_indices(n)
 
-            colors = cmatrix.astype(numpy.double)
+            colors = cmatrix.astype(np.double)
             colors[diag] = 0
             if self.selected_quantity == 0:
-                normalized = cmatrix.astype(numpy.int)
+                normalized = cmatrix.astype(np.int)
                 formatstr = "{}"
-                div = numpy.array([colors.max()])
+                div = np.array([colors.max()])
             else:
                 if self.selected_quantity == 1:
                     normalized = 100 * cmatrix / colsum
                     div = colors.max(axis=0)
                 else:
-                    normalized = 100 * cmatrix / rowsum[:, numpy.newaxis]
-                    div = colors.max(axis=1)[:, numpy.newaxis]
+                    normalized = 100 * cmatrix / rowsum[:, np.newaxis]
+                    div = colors.max(axis=1)[:, np.newaxis]
                 formatstr = "{:2.1f} %"
             div[div == 0] = 1
             colors /= div
-            colors[diag] = normalized[diag] / normalized[diag].max()
+            maxval = normalized[diag].max()
+            if maxval > 0:
+                colors[diag] = normalized[diag] / maxval
 
             for i in range(n):
                 for j in range(n):
@@ -486,7 +524,6 @@ class OWConfusionMatrix(widget.OWWidget):
 
     @classmethod
     def migrate_settings(cls, settings, version):
-        super().migrate_settings(settings, version)
         if not version:
             # For some period of time the 'selected_learner' property was
             # changed from List[int] -> int
@@ -497,16 +534,6 @@ class OWConfusionMatrix(widget.OWWidget):
                 settings["selected_learner"] = [settings["selected_learner"]]
 
 
-if __name__ == "__main__":
-    from AnyQt.QtWidgets import QApplication
-
-    APP = QApplication([])
-    w = OWConfusionMatrix()
-    w.show()
-    IRIS = Orange.data.Table("iris")
-    RES_CV = Orange.evaluation.CrossValidation(
-        IRIS, [Orange.classification.TreeLearner(),
-               Orange.classification.MajorityLearner()],
-        store_data=True)
-    w.set_results(RES_CV)
-    APP.exec_()
+if __name__ == "__main__":  # pragma: no cover
+    from Orange.widgets.evaluate.utils import results_for_preview
+    WidgetPreview(OWConfusionMatrix).run(results_for_preview("iris"))

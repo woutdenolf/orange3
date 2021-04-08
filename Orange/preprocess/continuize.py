@@ -1,21 +1,20 @@
 from Orange.data import ContinuousVariable, Domain
 from Orange.statistics import distribution
-from .transformation import Identity, Indicator, Indicator1, Normalizer
-from .preprocess import Continuize
+from Orange.util import Reprable
+from Orange.preprocess.transformation import \
+    Identity, Indicator, Indicator1, Normalizer
+from Orange.preprocess.preprocess import Continuize
 
-__all__ = ["DomainContinuizer", "MultinomialTreatment"]
+__all__ = ["DomainContinuizer"]
 
 
-class DomainContinuizer:
-    def __new__(cls, data=None, zero_based=True,
-                multinomial_treatment=Continuize.Indicators,
-                transform_class=False):
-        self = super().__new__(cls)
+class DomainContinuizer(Reprable):
+    def __init__(self, zero_based=True,
+                 multinomial_treatment=Continuize.Indicators,
+                 transform_class=False):
         self.zero_based = zero_based
         self.multinomial_treatment = multinomial_treatment
         self.transform_class = transform_class
-
-        return self if data is None else self(data)
 
     def __call__(self, data):
         def transform_discrete(var):
@@ -25,22 +24,29 @@ class DomainContinuizer:
                     len(var.values) > 2):
                 return []
             if treat == Continuize.AsOrdinal:
-                new_var = ContinuousVariable(var.name,
-                                             compute_value=Identity(var))
+                new_var = ContinuousVariable(
+                    var.name, compute_value=Identity(var), sparse=var.sparse)
                 return [new_var]
             if treat == Continuize.AsNormalizedOrdinal:
                 n_values = max(1, len(var.values))
                 if self.zero_based:
-                    return [ContinuousVariable(var.name, compute_value=Normalizer(var, 0, 1 / (n_values - 1)))]
+                    return [ContinuousVariable(
+                        var.name,
+                        compute_value=Normalizer(var, 0, 1 / (n_values - 1)),
+                        sparse=var.sparse)]
                 else:
-                    return [ContinuousVariable(var.name, compute_value=Normalizer(var, (n_values - 1) / 2, 2 / (n_values - 1)))]
+                    return [ContinuousVariable(
+                        var.name,
+                        compute_value=Normalizer(var, (n_values - 1) / 2,
+                                                 2 / (n_values - 1)),
+                        sparse=var.sparse)]
 
             new_vars = []
             if treat == Continuize.Indicators:
                 base = -1
             elif treat in (Continuize.FirstAsBase,
                            Continuize.RemoveMultinomial):
-                base = max(var.base_value, 0)
+                base = 0
             else:
                 base = dists[var_ptr].modus()
             ind_class = [Indicator1, Indicator][self.zero_based]
@@ -49,7 +55,8 @@ class DomainContinuizer:
                     continue
                 new_var = ContinuousVariable(
                     "{}={}".format(var.name, val),
-                    compute_value=ind_class(var, i))
+                    compute_value=ind_class(var, i),
+                    sparse=var.sparse)
                 new_vars.append(new_var)
             return new_vars
 
@@ -74,7 +81,7 @@ class DomainContinuizer:
 
         domain = data if isinstance(data, Domain) else data.domain
         if (treat == Continuize.ReportError and
-                any(var.is_discrete and len(var.values) > 2 for var in domain)):
+                any(var.is_discrete and len(var.values) > 2 for var in domain.variables)):
             raise ValueError("data has multinomial attributes")
         needs_discrete = (treat == Continuize.FrequentAsBase and
                           domain.has_discrete_attributes(transform_class))
@@ -91,6 +98,3 @@ class DomainContinuizer:
         else:
             new_classes = domain.class_vars
         return Domain(new_attrs, new_classes, domain.metas)
-
-
-MultinomialTreatment = Continuize.MultinomialTreatment

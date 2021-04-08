@@ -62,8 +62,8 @@ Naive Bayes
 .. autoclass:: NaiveBayesLearner
    :members:
 
-The following code loads lenses data set (four discrete attributes and discrete
-class), constructs naive Bayesian learner, uses it on the entire data set
+The following code loads lenses dataset (four discrete attributes and discrete
+class), constructs naive Bayesian learner, uses it on the entire dataset
 to construct a classifier, and then applies classifier to the first three
 data instances:
 
@@ -76,20 +76,8 @@ data instances:
            [ 0.17428279,  0.20342097,  0.62229625],
            [ 0.18633359,  0.79518516,  0.01848125]])
 
-For data sets that include continuous attributes,
-
 .. _`Naive Bayes`: http://en.wikipedia.org/wiki/Naive_Bayes_classifier
 .. _`scikit-learn`: http://scikit-learn.org
-
-
-.. index:: multilayer perceptron
-   pair: classification; multilayer perceptron
-
-Multilayer perceptron (feed-forward neural network)
----------------------------------------------------
-.. autoclass:: MLPLearner
-   :members:
-
 
 .. index:: SVM
    pair: classification; SVM
@@ -119,18 +107,6 @@ Nu-Support Vector Machines
    :members:
 
 
-
-.. index:: one class SVM
-   pair: classification; one class SVM
-
-One Class Support Vector Machines
----------------------------------
-
-.. autoclass:: OneClassSVMLearner
-   :members:
-
-
-
 .. index:: classification tree
    pair: classification; tree
 
@@ -140,7 +116,29 @@ Classification Tree
 Orange includes three implemenations of classification trees. `TreeLearner`
 is home-grown and properly handles multinominal and missing values.
 The one from scikit-learn, `SklTreeLearner`, is faster. Another home-grown,
-`SimpleTreeLearner`, is simpler and stil faster.
+`SimpleTreeLearner`, is simpler and still faster.
+
+The following code loads iris dataset (four numeric attributes and discrete
+class), constructs a decision tree learner, uses it on the entire dataset
+to construct a classifier, and then prints the tree:
+
+    >>> import Orange
+    >>> iris = Orange.data.Table('iris')
+    >>> tr = Orange.classification.TreeLearner()
+    >>> classifier = tr(data)
+    >>> printed_tree = classifier.print_tree()
+    >>> for i in printed_tree.split('\n'):
+    >>>     print(i)
+    [50.  0.  0.] petal length ≤ 1.9
+    [ 0. 50. 50.] petal length > 1.9
+    [ 0. 49.  5.]     petal width ≤ 1.7
+    [ 0. 47.  1.]         petal length ≤ 4.9
+       [0. 2. 4.]         petal length > 4.9
+       [0. 0. 3.]             petal width ≤ 1.5
+       [0. 2. 1.]             petal width > 1.5
+       [0. 2. 0.]                 sepal length ≤ 6.7
+       [0. 0. 1.]                 sepal length > 6.7
+    [ 0.  1. 45.]     petal width > 1.7
 
 .. autoclass:: TreeLearner
    :members:
@@ -168,13 +166,12 @@ Majority Classifier
    :members:
 
 
-.. index:: elliptic envelope
-   pair: classification; elliptic envelope
+.. index:: neural network
+   pair: classification; neural network
 
-Elliptic Envelope
------------------
-
-.. autoclass:: EllipticEnvelopeLearner
+Neural Network
+--------------
+.. autoclass:: NNClassificationLearner
    :members:
 
 
@@ -196,4 +193,44 @@ CN2 Rule Induction
    :members:
 
 .. autoclass:: CN2SDUnorderedLearner
+   :members:
+
+
+Calibration and threshold optimization
+--------------------------------------
+
+.. automodule:: Orange.classification.calibration
+
+.. autoclass:: ThresholdClassifier
+   :members:
+
+.. autoclass:: ThresholdLearner
+   :members:
+
+.. autoclass:: CalibratedClassifier
+   :members:
+
+.. autoclass:: CalibratedLearner
+   :members:
+
+
+Gradient Boosted Trees
+----------------------
+
+.. automodule:: Orange.classification.gb
+
+.. autoclass:: GBClassifier
+   :members:
+
+.. automodule:: Orange.classification.catgb
+
+.. autoclass:: CatGBClassifier
+   :members:
+
+.. automodule:: Orange.classification.xgb
+
+.. autoclass:: XGBClassifier
+   :members:
+
+.. autoclass:: XGBRFClassifier
    :members:

@@ -1,4 +1,4 @@
-import os, sys
+import os
 
 from AnyQt.QtWidgets import QSizePolicy, QStyle, QMessageBox, QFileDialog
 from AnyQt.QtCore import QTimer
@@ -7,6 +7,8 @@ from Orange.misc import DistMatrix
 from Orange.widgets import widget, gui
 from Orange.data import get_sample_datasets_dir
 from Orange.widgets.utils.filedialogs import RecentPathsWComboMixin
+from Orange.widgets.utils.widgetpreview import WidgetPreview
+from Orange.widgets.widget import Output
 
 
 class OWDistanceFile(widget.OWWidget, RecentPathsWComboMixin):
@@ -16,8 +18,10 @@ class OWDistanceFile(widget.OWWidget, RecentPathsWComboMixin):
     icon = "icons/DistanceFile.svg"
     priority = 10
     category = "Data"
-    keywords = ["data", "distances", "load", "read"]
-    outputs = [("Distances", DistMatrix)]
+    keywords = ["load", "read", "open"]
+
+    class Outputs:
+        distances = Output("Distances", DistMatrix, dynamic=False)
 
     want_main_area = False
     resizing_enabled = False
@@ -27,7 +31,7 @@ class OWDistanceFile(widget.OWWidget, RecentPathsWComboMixin):
         RecentPathsWComboMixin.__init__(self)
         self.loaded_file = ""
 
-        vbox = gui.vBox(self.controlArea, "Distance File", addSpace=True)
+        vbox = gui.vBox(self.controlArea, "Distance File")
         box = gui.hBox(vbox)
         self.file_combo.setMinimumWidth(300)
         box.layout().addWidget(self.file_combo)
@@ -43,7 +47,7 @@ class OWDistanceFile(widget.OWWidget, RecentPathsWComboMixin):
         button.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
         button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
-        box = gui.vBox(self.controlArea, "Info", addSpace=True)
+        box = gui.vBox(self.controlArea, "Info")
         self.infoa = gui.widgetLabel(box, 'No data loaded.')
         self.warnings = gui.widgetLabel(box, ' ')
         #Set word wrap, so long warnings won't expand the widget
@@ -51,13 +55,11 @@ class OWDistanceFile(widget.OWWidget, RecentPathsWComboMixin):
         self.warnings.setSizePolicy(
             QSizePolicy.Ignored, QSizePolicy.MinimumExpanding)
 
-        box = gui.hBox(self.controlArea)
+        gui.rubber(self.buttonsArea)
         gui.button(
-            box, self, "Browse documentation data sets",
+            self.buttonsArea, self, "Browse documentation datasets",
             callback=lambda: self.browse_file(True), autoDefault=False)
-        gui.rubber(box)
-        box.layout().addWidget(self.report_button)
-        self.report_button.setFixedWidth(170)
+        gui.rubber(self.buttonsArea)
 
         self.set_file_list()
         QTimer.singleShot(0, self.open_file)
@@ -79,7 +81,7 @@ class OWDistanceFile(widget.OWWidget, RecentPathsWComboMixin):
             if not os.path.exists(start_file):
                 QMessageBox.information(
                     None, "File",
-                    "Cannot find the directory with documentation data sets")
+                    "Cannot find the directory with documentation datasets")
                 return
         else:
             start_file = self.last_path() or os.path.expanduser("~/")
@@ -104,7 +106,7 @@ class OWDistanceFile(widget.OWWidget, RecentPathsWComboMixin):
                 self.information("Loading '{}' from the current directory."
                                  .format(basename))
         if fn == "(none)":
-            self.send("Distances", None)
+            self.Outputs.distances.send(None)
             self.infoa.setText("No data loaded")
             self.infob.setText("")
             self.warnings.setText("")
@@ -133,7 +135,7 @@ class OWDistanceFile(widget.OWWidget, RecentPathsWComboMixin):
             else:
                 distances.name = file_name
 
-        self.send("Distances", distances)
+        self.Outputs.distances.send(distances)
 
     def send_report(self):
         if not self.loaded_file:
@@ -141,10 +143,6 @@ class OWDistanceFile(widget.OWWidget, RecentPathsWComboMixin):
         else:
             self.report_items([("File name", self.loaded_file)])
 
-if __name__ == "__main__":
-    from AnyQt.QtWidgets import QApplication
-    a = QApplication(sys.argv)
-    ow = OWDistanceFile()
-    ow.show()
-    a.exec_()
-    ow.saveSettings()
+
+if __name__ == "__main__":  # pragma: no cover
+    WidgetPreview(OWDistanceFile).run()

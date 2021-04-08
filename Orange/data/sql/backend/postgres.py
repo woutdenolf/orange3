@@ -4,8 +4,8 @@ import warnings
 from contextlib import contextmanager
 from time import time
 
-from psycopg2 import Error, OperationalError
-from psycopg2.pool import ThreadedConnectionPool
+from psycopg2 import Error, ProgrammingError  # pylint: disable=import-error
+from psycopg2.pool import ThreadedConnectionPool  # pylint: disable=import-error
 
 from Orange.data import ContinuousVariable, DiscreteVariable, StringVariable, TimeVariable
 from Orange.data.sql.backend.base import Backend, ToSql, BackendError
@@ -29,6 +29,7 @@ class Psycopg2Backend(Backend):
         if self.connection_pool is None:
             self._create_connection_pool()
 
+        self.missing_extension = []
         if self.auto_create_extensions:
             self._create_extensions()
 
@@ -45,8 +46,9 @@ class Psycopg2Backend(Backend):
                 query = "CREATE EXTENSION IF NOT EXISTS {}".format(ext)
                 with self.execute_sql_query(query):
                     pass
-            except OperationalError:
+            except BackendError:
                 warnings.warn("Database is missing extension {}".format(ext))
+                self.missing_extension.append(ext)
 
     def create_sql_query(self, table_name, fields, filters=(),
                          group_by=None, order_by=None,
@@ -79,7 +81,7 @@ class Psycopg2Backend(Backend):
             cur.execute(query, params)
             yield cur
             log.info("%.2f ms: %s", 1000 * (time() - t), utfquery)
-        except Error as ex:
+        except (Error, ProgrammingError) as ex:
             raise BackendError(str(ex)) from ex
         finally:
             connection.commit()
@@ -144,10 +146,10 @@ class Psycopg2Backend(Backend):
         TIME_TYPES = (1083, 1114, 1184, 1266,)
 
         if type_code in FLOATISH_TYPES:
-            return ContinuousVariable(field_name)
+            return ContinuousVariable.make(field_name)
 
         if type_code in TIME_TYPES + DATE_TYPES:
-            tv = TimeVariable(field_name)
+            tv = TimeVariable.make(field_name)
             tv.have_date |= type_code in DATE_TYPES
             tv.have_time |= type_code in TIME_TYPES
             return tv
@@ -156,25 +158,33 @@ class Psycopg2Backend(Backend):
             if inspect_table:
                 values = self.get_distinct_values(field_name, inspect_table)
                 if values:
-                    return DiscreteVariable(field_name, values)
-            return ContinuousVariable(field_name)
+                    return DiscreteVariable.make(field_name, values)
+            return ContinuousVariable.make(field_name)
 
         if type_code in BOOLEAN_TYPES:
-            return DiscreteVariable(field_name, ['false', 'true'])
+            return DiscreteVariable.make(field_name, ['false', 'true'])
 
         if type_code in CHAR_TYPES:
             if inspect_table:
                 values = self.get_distinct_values(field_name, inspect_table)
+                # remove trailing spaces
+                values = [v.rstrip() for v in values]
                 if values:
-                    return DiscreteVariable(field_name, values)
+                    return DiscreteVariable.make(field_name, values)
 
-        return StringVariable(field_name)
+        return StringVariable.make(field_name)
 
     def count_approx(self, query):
         sql = "EXPLAIN " + query
         with self.execute_sql_query(sql) as cur:
             s = ''.join(row[0] for row in cur.fetchall())
         return int(re.findall(r'rows=(\d*)', s)[0])
+
+    def distinct_values_query(self, field_name: str, table_name: str) -> str:
+        fields = [self.quote_identifier(field_name)]
+        return self.create_sql_query(
+            table_name, fields, group_by=fields, order_by=fields, limit=21
+        )
 
     def __getstate__(self):
         # Drop connection_pool from state as it cannot be pickled

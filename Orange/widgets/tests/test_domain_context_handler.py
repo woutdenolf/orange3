@@ -1,12 +1,15 @@
+import warnings
 from unittest import TestCase
 from unittest.mock import Mock
+
 from Orange.data import Domain, DiscreteVariable
 from Orange.data import ContinuousVariable
+from Orange.util import OrangeDeprecationWarning
 from Orange.widgets.settings import DomainContextHandler, ContextSetting
 from Orange.widgets.utils import vartype
 
-Continuous = vartype(ContinuousVariable())
-Discrete = vartype(DiscreteVariable())
+Continuous = 100 + vartype(ContinuousVariable("x"))
+Discrete = 100 + vartype(DiscreteVariable("x"))
 
 
 class TestDomainContextHandler(TestCase):
@@ -20,73 +23,48 @@ class TestDomainContextHandler(TestCase):
                    DiscreteVariable('d4', values='jkl')]
         )
         self.args = (self.domain,
-                     {'c1': Continuous, 'd1': Discrete,
-                      'd2': Discrete, 'd3': Discrete},
-                     {'c2': Continuous, 'd4': Discrete, })
-        self.handler = DomainContextHandler(metas_in_res=True)
+                     {'c1': Continuous - 100, 'd1': Discrete - 100,
+                      'd2': Discrete - 100, 'd3': Discrete - 100},
+                     {'c2': Continuous - 100, 'd4': Discrete - 100, })
+        self.handler = DomainContextHandler()
         self.handler.read_defaults = lambda: None
 
     def test_encode_domain_with_match_none(self):
         handler = DomainContextHandler(
-            match_values=DomainContextHandler.MATCH_VALUES_NONE,
-            metas_in_res=True)
+            match_values=DomainContextHandler.MATCH_VALUES_NONE)
 
         encoded_attributes, encoded_metas = handler.encode_domain(self.domain)
 
         self.assertEqual(encoded_attributes,
-                         {'c1': Continuous, 'd1': Discrete,
-                          'd2': Discrete, 'd3': Discrete})
-        self.assertEqual(encoded_metas, {'c2': Continuous, 'd4': Discrete, })
+                         {'c1': Continuous - 100, 'd1': Discrete - 100,
+                          'd2': Discrete - 100, 'd3': Discrete - 100})
+        self.assertEqual(encoded_metas,
+                         {'c2': Continuous - 100, 'd4': Discrete - 100, })
 
     def test_encode_domain_with_match_class(self):
         handler = DomainContextHandler(
-            match_values=DomainContextHandler.MATCH_VALUES_CLASS,
-            metas_in_res=True)
+            match_values=DomainContextHandler.MATCH_VALUES_CLASS)
 
         encoded_attributes, encoded_metas = handler.encode_domain(self.domain)
 
         self.assertEqual(encoded_attributes,
-                         {'c1': Continuous, 'd1': Discrete, 'd2': Discrete,
-                          'd3': list('ghi')})
-        self.assertEqual(encoded_metas, {'c2': Continuous, 'd4': Discrete})
+                         {'c1': Continuous - 100, 'd1': Discrete - 100,
+                          'd2': Discrete - 100,
+                          'd3': tuple('ghi')})
+        self.assertEqual(encoded_metas,
+                         {'c2': Continuous - 100, 'd4': Discrete - 100})
 
     def test_encode_domain_with_match_all(self):
         handler = DomainContextHandler(
-            match_values=DomainContextHandler.MATCH_VALUES_ALL,
-            metas_in_res=True)
+            match_values=DomainContextHandler.MATCH_VALUES_ALL)
 
         encoded_attributes, encoded_metas = handler.encode_domain(self.domain)
 
         self.assertEqual(encoded_attributes,
-                         {'c1': Continuous, 'd1': list('abc'),
-                          'd2': list('def'), 'd3': list('ghi')})
+                         {'c1': Continuous - 100, 'd1': tuple('abc'),
+                          'd2': tuple('def'), 'd3': tuple('ghi')})
         self.assertEqual(encoded_metas,
-                         {'c2': Continuous, 'd4': list('jkl')})
-
-    def test_encode_domain_with_false_attributes_in_res(self):
-        handler = DomainContextHandler(attributes_in_res=False,
-                                       metas_in_res=True)
-
-        encoded_attributes, encoded_metas = handler.encode_domain(self.domain)
-
-        self.assertEqual(encoded_attributes, {})
-        self.assertEqual(encoded_metas, {'c2': Continuous, 'd4': Discrete})
-
-    def test_encode_domain_with_false_metas_in_res(self):
-        handler = DomainContextHandler(attributes_in_res=True,
-                                       metas_in_res=False)
-
-        encoded_attributes, encoded_metas = handler.encode_domain(self.domain)
-
-        self.assertEqual(encoded_attributes,
-                         {'c1': Continuous, 'd1': Discrete,
-                          'd2': Discrete, 'd3': Discrete})
-        self.assertEqual(encoded_metas, {})
-
-    def test_match_returns_2_on_perfect_match(self):
-        context = Mock(
-            attributes=self.args[1], metas=self.args[2], values={})
-        self.assertEqual(2., self.handler.match(context, *self.args))
+                         {'c2': Continuous - 100, 'd4': tuple('jkl')})
 
     def test_match_returns_1_if_everything_matches(self):
         self.handler.bind(SimpleWidget)
@@ -115,7 +93,7 @@ class TestDomainContextHandler(TestCase):
         ))
         self.assertEqual(1., self.handler.match(context, *self.args))
 
-    def test_match_returns_point_1_when_nothing_to_match(self):
+    def test_match_when_nothing_to_match(self):
         self.handler.bind(SimpleWidget)
 
         context = Mock(values={})
@@ -128,20 +106,6 @@ class TestDomainContextHandler(TestCase):
         context = Mock(values=dict(required=('u', Discrete),
                                    with_metas=('d1', Discrete)))
         self.assertEqual(0, self.handler.match(context, *self.args))
-
-        # selected if_selected
-        context = Mock(values=dict(with_metas=('d1', Discrete),
-                                   if_selected=[('u', Discrete)],
-                                   selected=[0]))
-        self.assertEqual(0, self.handler.match(context, *self.args))
-
-        # unselected if_selected
-        context = Mock(values=dict(with_metas=('d1', Discrete),
-                                   if_selected=[('u', Discrete),
-                                                ('d1', Discrete)],
-                                   selected=[1]))
-        self.assertAlmostEqual(0.667, self.handler.match(context, *self.args),
-                               places=2)
 
     def test_clone_context(self):
         self.handler.bind(SimpleWidget)
@@ -166,19 +130,17 @@ class TestDomainContextHandler(TestCase):
             with_metas=[('d1', Discrete), ('d2', Discrete)]
         ))
         self.handler.global_contexts = \
-            [Mock(values={}), context, Mock(values={})]
+            [context, Mock(values={})]
 
         widget = SimpleWidget()
         self.handler.initialize(widget)
+        old_metas_list = widget.with_metas
         self.handler.open_context(widget, self.args[0])
 
         context = widget.current_context
         self.assertEqual(context.attributes, self.args[1])
         self.assertEqual(context.metas, self.args[2])
-        self.assertSequenceEqual(context.ordered_domain,
-                                 (('c1', Continuous), ('d1', Discrete),
-                                  ('d2', Discrete), ('d3', Discrete),
-                                  ('c2', Continuous), ('d4', Discrete)))
+        self.assertIs(old_metas_list, widget.with_metas)
 
         self.assertEqual(widget.text, 'u')
         self.assertEqual(widget.with_metas, [('d1', Discrete),
@@ -189,13 +151,10 @@ class TestDomainContextHandler(TestCase):
         context = self.create_context(None, dict(
             text=('u', -2),
             with_metas=[('d1', Discrete), ('d1', Continuous),
-                        ('c1', Continuous), ('c1', Discrete)],
-            if_selected=[('c1', Discrete), ('c1', Continuous),
-                         ('d1', Discrete), ('d1', Continuous)],
-            selected=[2],
+                        ('c1', Continuous), ('c1', Discrete)]
         ))
         self.handler.global_contexts = \
-            [Mock(values={}), context, Mock(values={})]
+            [context, Mock(values={})]
 
         widget = SimpleWidget()
         self.handler.initialize(widget)
@@ -204,17 +163,33 @@ class TestDomainContextHandler(TestCase):
         context = widget.current_context
         self.assertEqual(context.attributes, self.args[1])
         self.assertEqual(context.metas, self.args[2])
-        self.assertSequenceEqual(context.ordered_domain,
-                                 (('c1', Continuous), ('d1', Discrete),
-                                  ('d2', Discrete), ('d3', Discrete),
-                                  ('c2', Continuous), ('d4', Discrete)))
 
         self.assertEqual(widget.text, 'u')
         self.assertEqual(widget.with_metas, [('d1', Discrete),
                                              ('c1', Continuous)])
-        self.assertEqual(widget.if_selected, [('c1', Continuous),
-                                              ('d1', Discrete)])
-        self.assertEqual(widget.selected, [1])
+
+    def test_open_context_not_first_match(self):
+        self.handler.bind(SimpleWidget)
+        context = self.create_context(None, dict(
+            text=('u', -2),
+            with_metas=[('d1', Discrete), ('d1', Continuous),
+                        ('c1', Continuous), ('c1', Discrete)]
+        ))
+        self.handler.global_contexts = \
+            [Mock(values={}), context, Mock(values={})]
+        self.handler.first_match = False
+
+        widget = SimpleWidget()
+        self.handler.initialize(widget)
+        self.handler.open_context(widget, self.args[0])
+
+        context = widget.current_context
+        self.assertEqual(context.attributes, self.args[1])
+        self.assertEqual(context.metas, self.args[2])
+
+        self.assertEqual(widget.text, 'u')
+        self.assertEqual(widget.with_metas, [('d1', Discrete),
+                                             ('c1', Continuous)])
 
     def test_open_context_with_no_match(self):
         self.handler.bind(SimpleWidget)
@@ -229,10 +204,6 @@ class TestDomainContextHandler(TestCase):
         context = widget.current_context
         self.assertEqual(context.attributes, self.args[1])
         self.assertEqual(context.metas, self.args[2])
-        self.assertSequenceEqual(context.ordered_domain,
-                                 (('c1', Continuous), ('d1', Discrete),
-                                  ('d2', Discrete), ('d3', Discrete),
-                                  ('c2', Continuous), ('d4', Discrete)))
         self.assertEqual(context.values['text'], ('u', -2))
 
     def test_filter_value(self):
@@ -254,6 +225,25 @@ class TestDomainContextHandler(TestCase):
         # All other values in list should remain
         test_filter([0, [1, 2, 3], "abcd", 5.4], [0, [1, 2, 3], "abcd", 5.4])
 
+    def test_filter_value_dict(self):
+        setting = ContextSetting({})
+        setting.name = "value"
+
+        def test_filter(before_value, after_value):
+            data = dict(value=before_value)
+            self.handler.filter_value(setting, data, *self.args)
+            self.assertEqual(data.get("value", None), after_value)
+
+        # filter list values
+        test_filter({}, {})
+        # When list contains attributes asa tuple of (name, type),
+        # Attributes not present in domain should be filtered out
+        test_filter({("d1", Discrete): 1, ("d1", Continuous): 2,
+                     ("c1", Continuous): 3, ("c1", Discrete): 4},
+                    {("d1", Discrete): 1, ("c1", Continuous): 3})
+        # All other values in list should remain
+        test_filter([0, [1, 2, 3], "abcd", 5.4], [0, [1, 2, 3], "abcd", 5.4])
+
     def test_encode_setting(self):
         setting = ContextSetting(None)
 
@@ -261,15 +251,136 @@ class TestDomainContextHandler(TestCase):
         val = self.handler.encode_setting(None, setting, var)
         self.assertEqual(val, (var.name, 100 + vartype(var)))
 
+        # Should not crash on anonymous variables
+        with self.assertWarns(OrangeDeprecationWarning):
+            var = ContinuousVariable()
+        val = self.handler.encode_setting(None, setting, var)
+        self.assertEqual(val, (var.name, 100 + vartype(var)))
+
+    def test_encode_list_settings(self):
+        setting = ContextSetting(None)
+
+        var1, var2 = self.domain[:2]
+        val = self.handler.encode_setting(None, setting, [None, var1, var2])
+        self.assertEqual(
+            val,
+            ([None,
+              (var1.name, 100 + vartype(var1)),
+              (var2.name, 100 + vartype(var2))], -3))
+
+        a_list = [1, 2, 3]
+        val = self.handler.encode_setting(None, setting, a_list)
+        self.assertEqual(val, [1, 2, 3])
+        self.assertIsNot(val, a_list)
+
+        a_list = []
+        val = self.handler.encode_setting(None, setting, a_list)
+        self.assertEqual(val, [])
+        self.assertIsNot(val, a_list)
+
+        a_list = [None, None]
+        val = self.handler.encode_setting(None, setting, a_list)
+        self.assertEqual(val, [None, None])
+        self.assertIsNot(val, a_list)
+
+    def test_encode_dict_settings(self):
+        setting = ContextSetting(None)
+
+        var1, var2 = self.domain[:2]
+        val = self.handler.encode_setting(None, setting, {var1: 1, var2: 2})
+        self.assertEqual(
+            val,
+            ({(var1.name, 100 + vartype(var1)): 1,
+              (var2.name, 100 + vartype(var2)): 2}, -4))
+
+        a_dict = {1: 2, 2: 3, 3: 4}
+        val = self.handler.encode_setting(None, setting, a_dict)
+        self.assertEqual(val, ({1: 2, 2: 3, 3: 4}, -2))
+        self.assertIsNot(val, a_dict)
+
+        a_dict = {}
+        val = self.handler.encode_setting(None, setting, a_dict)
+        self.assertEqual(val, ({}, -4))
+        self.assertIsNot(val, a_dict)
+
     def test_decode_setting(self):
         setting = ContextSetting(None)
 
         var = self.domain[0]
-        val = self.handler.decode_setting(setting, (var.name, 100 + vartype(var)), self.domain)
+        val = self.handler.decode_setting(setting, (var.name, 100 + vartype(var)),
+                                          self.domain)
         self.assertIs(val, var)
 
+        all_metas_domain = Domain([], metas=[var])
+        val = self.handler.decode_setting(setting, (var.name, 100 + vartype(var)),
+                                          all_metas_domain)
+        self.assertIs(val, var)
+
+        self.assertRaises(ValueError,
+                          self.handler.decode_setting,
+                          setting, (var.name, 100 + vartype(var)))
+        self.handler.decode_setting(setting, None, None)
+
+    def test_decode_list_setting(self):
+        setting = ContextSetting(None)
+
+        var1, var2 = self.domain[:2]
+        val = self.handler.decode_setting(
+            setting,
+            ([None,
+              (var1.name, 100 + vartype(var1)),
+              (var2.name, 100 + vartype(var2))], -3),
+            self.domain)
+        self.assertEqual(val, [None, var1, var2])
+
+        val = self.handler.decode_setting(setting, [1, 2, 3], self.domain)
+        self.assertEqual(val, [1, 2, 3])
+
+        self.assertRaises(ValueError,
+                          self.handler.decode_setting,
+                          setting,
+                          ([None,
+                            (var1.name, 100 + vartype(var1)),
+                            (var2.name, 100 + vartype(var2))], -3)
+                          )
+        val = self.handler.decode_setting(setting, ([None, None], -3), None)
+        self.assertEqual(val, [None, None])
+
+
+    def test_decode_dict_setting(self):
+        setting = ContextSetting(None)
+
+        var1, var2 = self.domain[:2]
+        val = self.handler.decode_setting(
+            setting,
+            ({(var1.name, 100 + vartype(var1)): 1,
+              (var2.name, 100 + vartype(var2)): 2}, -4),
+            self.domain)
+        self.assertEqual(val, {var1: 1, var2: 2})
+
+        val = self.handler.decode_setting(
+            setting, ({1: 2, 2: 3, 3: 4}, -2), self.domain)
+        self.assertEqual(val, {1: 2, 2: 3, 3: 4})
+
+        self.assertRaises(ValueError,
+                          self.handler.decode_setting,
+                          setting,
+                          ({(var1.name, 100 + vartype(var1)): 1,
+                            (var2.name, 100 + vartype(var2)): 2}, -4))
+
+        val = self.handler.decode_setting(setting, ({1: 2, 2: 3, 3: 4}, -2))
+        self.assertEqual(val, {1: 2, 2: 3, 3: 4})
+
+
+    def test_backward_compatible_params(self):
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            DomainContextHandler(metas_in_res=True)
+            self.assertIn(OrangeDeprecationWarning,
+                          [x.category for x in w])
+
     def create_context(self, domain, values):
-        if not domain:
+        if domain is None:
             domain = Domain([])
 
         context = self.handler.new_context(domain,
@@ -279,12 +390,9 @@ class TestDomainContextHandler(TestCase):
 
 
 class SimpleWidget:
-    text = ContextSetting("", not_attribute=True)
-    with_metas = ContextSetting([], exclude_metas=False)
+    text = ContextSetting("")
+    with_metas = ContextSetting([], required=ContextSetting.OPTIONAL)
     required = ContextSetting("", required=ContextSetting.REQUIRED)
-    if_selected = ContextSetting([], required=ContextSetting.IF_SELECTED,
-        selected='selected')
-    selected = ""
 
     def retrieveSpecificSettings(self):
         pass

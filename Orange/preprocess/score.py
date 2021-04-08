@@ -1,14 +1,16 @@
+import re
 from collections import defaultdict
 from itertools import chain
 
 import numpy as np
 from sklearn import feature_selection as skl_fss
-from Orange.misc.wrapper_meta import WrapperMeta
 
-from Orange.statistics import contingency, distribution
 from Orange.data import Domain, Variable, DiscreteVariable, ContinuousVariable
-from Orange.preprocess.preprocess import Discretize, Impute, RemoveNaNClasses
-
+from Orange.data.filter import HasClass
+from Orange.misc.wrapper_meta import WrapperMeta
+from Orange.preprocess.preprocess import Discretize, SklImpute, RemoveNaNColumns
+from Orange.statistics import contingency, distribution
+from Orange.util import Reprable
 
 __all__ = ["Chi2",
            "ANOVA",
@@ -21,42 +23,68 @@ __all__ = ["Chi2",
            "FCBF"]
 
 
-class Scorer:
+class Scorer(Reprable):
     feature_type = None
     class_type = None
     supports_sparse_data = None
-    preprocessors = [
-        RemoveNaNClasses()
-    ]
+    preprocessors = [HasClass()]
 
-    def __new__(cls, *args, **kwargs):
-        self = super().__new__(cls)
-        self.preprocessors = list(self.preprocessors)
-        if args:
-            self.__init__(**kwargs)
-            return self(*args)
-        else:
-            return self
+    @property
+    def friendly_name(self):
+        """Return type name with camel-case separated into words.
+        Derived classes can provide a better property or a class attribute.
+        """
+        return re.sub("([a-z])([A-Z])",
+                      lambda mo: mo.group(1) + " " + mo.group(2).lower(),
+                      type(self).__name__)
+
+    @staticmethod
+    def _friendly_vartype_name(vartype):
+        if vartype == DiscreteVariable:
+            return "categorical"
+        if vartype == ContinuousVariable:
+            return "numeric"
+        # Fallbacks
+        name = vartype.__name__
+        if name.endswith("Variable"):
+            return name.lower()[:-8]
+        return name
 
     def __call__(self, data, feature=None):
         if not data.domain.class_var:
-            raise ValueError("Data with class labels required.")
+            raise ValueError(
+                "{} requires data with a target variable."
+                .format(self.friendly_name))
         if not isinstance(data.domain.class_var, self.class_type):
-            raise ValueError("Scoring method %s requires a class variable of type %s." %
-                             (type(self).__name__, self.class_type.__name__))
+            raise ValueError(
+                "{} requires a {} target variable."
+                .format(self.friendly_name,
+                        self._friendly_vartype_name(self.class_type)))
 
         if feature is not None:
             f = data.domain[feature]
-            data = data.from_table(Domain([f], data.domain.class_vars), data)
+            data = data.transform(Domain([f], data.domain.class_vars))
 
+        orig_domain = data.domain
         for pp in self.preprocessors:
             data = pp(data)
 
-        if any(not isinstance(a, self.feature_type)
-               for a in data.domain.attributes):
-            raise ValueError('Only %ss are supported' % self.feature_type)
+        for var in data.domain.attributes:
+            if not isinstance(var, self.feature_type):
+                raise ValueError(
+                    "{} cannot score {} variables."
+                    .format(self.friendly_name,
+                            self._friendly_vartype_name(type(var))))
 
-        return self.score_data(data, feature)
+        if feature is not None:
+            return self.score_data(data, feature)
+
+        scores = np.full(len(orig_domain.attributes), np.nan)
+        names = [a.name for a in data.domain.attributes]
+        mask = np.array([a.name in names for a in orig_domain.attributes])
+        if len(mask):
+            scores[mask] = self.score_data(data, feature)
+        return scores
 
     def score_data(self, data, feature):
         raise NotImplementedError
@@ -66,7 +94,7 @@ class SklScorer(Scorer, metaclass=WrapperMeta):
     supports_sparse_data = True
 
     preprocessors = Scorer.preprocessors + [
-        Impute()
+        SklImpute()
     ]
 
     def score_data(self, data, feature):
@@ -91,7 +119,7 @@ class Chi2(SklScorer):
     ]
 
     def score(self, X, y):
-        f, p = skl_fss.chi2(X, y)
+        f, _ = skl_fss.chi2(X, y)
         return f
 
 
@@ -107,7 +135,7 @@ class ANOVA(SklScorer):
     class_type = DiscreteVariable
 
     def score(self, X, y):
-        f, p = skl_fss.f_classif(X, y)
+        f, _ = skl_fss.f_classif(X, y)
         return f
 
 
@@ -133,22 +161,28 @@ class LearnerScorer(Scorer):
         raise NotImplementedError
 
     def score_data(self, data, feature=None):
-        scores = self.score(data)
 
-        def average_scores(scores):
+        def join_derived_features(scores):
+            """ Obtain scores for original attributes.
+
+            If a learner preprocessed the data before building a model, current scores do not
+            directly correspond to the domain. For example, continuization creates multiple
+            features from a discrete feature. """
             scores_grouped = defaultdict(list)
-            for attr, score in zip(self.domain.attributes, scores):
-                # Go up the chain of preprocessors to obtain the original variable
-                while getattr(attr, 'compute_value', False):
+            for attr, score in zip(model_attributes, scores):
+                # Go up the chain of preprocessors to obtain the original variable, but no further
+                # than the data.domain, because the data is perhaphs already preprocessed.
+                while not (attr in data.domain) and getattr(attr, 'compute_value', False):
                     attr = getattr(attr.compute_value, 'variable', attr)
                 scores_grouped[attr].append(score)
-            return [sum(scores_grouped[attr]) / len(scores_grouped[attr])
+            return [max(scores_grouped[attr])
                     if attr in scores_grouped else 0
                     for attr in data.domain.attributes]
 
+        scores, model_attributes = self.score(data)
         scores = np.atleast_2d(scores)
-        if data.domain != self.domain:
-            scores = np.array([average_scores(row) for row in scores])
+        if data.domain.attributes != model_attributes:
+            scores = np.array([join_derived_features(row) for row in scores])
 
         return scores[:, data.domain.attributes.index(feature)] \
             if feature else scores
@@ -156,14 +190,14 @@ class LearnerScorer(Scorer):
 
 class ClassificationScorer(Scorer):
     """
-    Base class for feature scores in a class-labeled data set.
+    Base class for feature scores in a class-labeled dataset.
 
     Parameters
     ----------
     feature : int, string, Orange.data.Variable
         Feature id
     data : Orange.data.Table
-        Data set
+        Dataset
 
     Attributes
     ----------
@@ -195,27 +229,26 @@ class ClassificationScorer(Scorer):
         return scores
 
 
-def _entropy(D):
+def _entropy(dist):
     """Entropy of class-distribution matrix"""
-    P = D / np.sum(D, axis=0)
-    PC = np.clip(P, 1e-15, 1)
-    return np.sum(np.sum(- P * np.log2(PC), axis=0) * np.sum(D, axis=0) / np.sum(D))
+    p = dist / np.sum(dist, axis=0)
+    pc = np.clip(p, 1e-15, 1)
+    return np.sum(np.sum(- p * np.log2(pc), axis=0) *
+                  np.sum(dist, axis=0) / np.sum(dist))
 
 
-def _gini(D):
+def _gini(dist):
     """Gini index of class-distribution matrix"""
-    P = np.asarray(D / np.sum(D, axis=0))
-    return np.sum((1 - np.sum(P ** 2, axis=0)) *
-                  np.sum(D, axis=0) / np.sum(D))
+    p = np.asarray(dist / np.sum(dist, axis=0))
+    return np.sum((1 - np.sum(p ** 2, axis=0)) *
+                  np.sum(dist, axis=0) / np.sum(dist))
 
 
-def _symmetrical_uncertainty(X, Y):
+def _symmetrical_uncertainty(data, attr1, attr2):
     """Symmetrical uncertainty, Press et al., 1988."""
-    from Orange.preprocess._relieff import contingency_table
-    X, Y = np.around(X), np.around(Y)
-    cont = contingency_table(X, Y)
+    cont = np.asarray(contingency.Discrete(data, attr1, attr2), dtype=float)
     ig = InfoGain().from_contingency(cont, 1)
-    return 2 * ig / (_entropy(cont.sum(0)) + _entropy(cont.sum(1)))
+    return 2 * ig / (_entropy(cont) + _entropy(cont.T))
 
 
 class FCBF(ClassificationScorer):
@@ -227,29 +260,32 @@ class FCBF(ClassificationScorer):
     2003. http://www.aaai.org/Papers/ICML/2003/ICML03-111.pdf
     """
     def score_data(self, data, feature=None):
-        S = []
-        for i, a in enumerate(data.X.T):
-            S.append((_symmetrical_uncertainty(a, data.Y), i))
-        S.sort()
+        attributes = data.domain.attributes
+        s = []
+        for i, attr in enumerate(attributes):
+            s.append((_symmetrical_uncertainty(data, attr, data.domain.class_var), i))
+        s.sort()
         worst = []
 
         p = 1
         while True:
-            try: SUpc, Fp = S[-p]
-            except IndexError: break
+            try:
+                _, Fp = s[-p]
+            except IndexError:
+                break
             q = p + 1
             while True:
-                try: SUqc, Fq = S[-q]
-                except IndexError: break
-                # TODO: cache
-                if _symmetrical_uncertainty(data.X.T[Fp],
-                                            data.X.T[Fq]) >= SUqc:
-                    del S[-q]
-                    worst.append((1e-4*SUqc, Fq))
+                try:
+                    suqc, Fq = s[-q]
+                except IndexError:
+                    break
+                if _symmetrical_uncertainty(data, attributes[Fp], attributes[Fq]) >= suqc:
+                    del s[-q]
+                    worst.append((1e-4*suqc, Fq))
                 else:
                     q += 1
             p += 1
-        best = S
+        best = s
         scores = [i[0] for i in sorted(chain(best, worst), key=lambda i: i[1])]
         return np.array(scores) if not feature else scores[0]
 
@@ -307,10 +343,13 @@ class ReliefF(Scorer):
     feature_type = Variable
     class_type = DiscreteVariable
     supports_sparse_data = False
+    friendly_name = "ReliefF"
+    preprocessors = Scorer.preprocessors + [RemoveNaNColumns()]
 
-    def __init__(self, n_iterations=50, k_nearest=10):
+    def __init__(self, n_iterations=50, k_nearest=10, random_state=None):
         self.n_iterations = n_iterations
         self.k_nearest = k_nearest
+        self.random_state = random_state
 
     def score_data(self, data, feature):
         if len(data.domain.class_vars) != 1:
@@ -320,11 +359,16 @@ class ReliefF(Scorer):
                              'for regression')
         if len(data.domain.class_var.values) == 1:  # Single-class value non-problem
             return 0 if feature else np.zeros(data.X.shape[1])
+        if isinstance(self.random_state, np.random.RandomState):
+            rstate = self.random_state
+        else:
+            rstate = np.random.RandomState(self.random_state)
 
         from Orange.preprocess._relieff import relieff
         weights = np.asarray(relieff(data.X, data.Y,
                                      self.n_iterations, self.k_nearest,
-                                     np.array([a.is_discrete for a in data.domain.attributes])))
+                                     np.array([a.is_discrete for a in data.domain.attributes]),
+                                     rstate))
         if feature:
             return weights[0]
         return weights
@@ -334,10 +378,13 @@ class RReliefF(Scorer):
     feature_type = Variable
     class_type = ContinuousVariable
     supports_sparse_data = False
+    friendly_name = "RReliefF"
+    preprocessors = Scorer.preprocessors + [RemoveNaNColumns()]
 
-    def __init__(self, n_iterations=50, k_nearest=50):
+    def __init__(self, n_iterations=50, k_nearest=50, random_state=None):
         self.n_iterations = n_iterations
         self.k_nearest = k_nearest
+        self.random_state = random_state
 
     def score_data(self, data, feature):
         if len(data.domain.class_vars) != 1:
@@ -345,11 +392,15 @@ class RReliefF(Scorer):
         if not data.domain.class_var.is_continuous:
             raise ValueError('RReliefF supports regression; use ReliefF '
                              'for classification')
-
+        if isinstance(self.random_state, np.random.RandomState):
+            rstate = self.random_state
+        else:
+            rstate = np.random.RandomState(self.random_state)
         from Orange.preprocess._relieff import rrelieff
         weights = np.asarray(rrelieff(data.X, data.Y,
                                       self.n_iterations, self.k_nearest,
-                                      np.array([a.is_discrete for a in data.domain.attributes])))
+                                      np.array([a.is_discrete for a in data.domain.attributes]),
+                                      rstate))
         if feature:
             return weights[0]
         return weights

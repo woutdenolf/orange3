@@ -1,11 +1,10 @@
 import numpy as np
 
 import sklearn.linear_model as skl_linear_model
-import sklearn.pipeline as skl_pipeline
 import sklearn.preprocessing as skl_preprocessing
 
 from Orange.data import Variable, ContinuousVariable
-from Orange.preprocess import Continuize, Normalize, RemoveNaNColumns, SklImpute
+from Orange.preprocess import Normalize
 from Orange.preprocess.score import LearnerScorer
 from Orange.regression import Learner, Model, SklLearner, SklModel
 
@@ -21,27 +20,28 @@ class _FeatureScorerMixin(LearnerScorer):
     class_type = ContinuousVariable
 
     def score(self, data):
-        data = Normalize(data)
+        data = Normalize()(data)
         model = self(data)
-        return np.abs(model.coefficients)
+        return np.abs(model.coefficients), model.domain.attributes
 
 
 class LinearRegressionLearner(SklLearner, _FeatureScorerMixin):
     __wraps__ = skl_linear_model.LinearRegression
-    name = 'linreg'
 
-    def __init__(self, preprocessors=None):
+    # Arguments are needed for signatures, pylint: disable=unused-argument
+    def __init__(self, preprocessors=None, fit_intercept=True):
         super().__init__(preprocessors=preprocessors)
+        self.params = vars()
 
-    def fit(self, X, Y, W):
+    def fit(self, X, Y, W=None):
         model = super().fit(X, Y, W)
         return LinearModel(model.skl_model)
 
 
 class RidgeRegressionLearner(LinearRegressionLearner):
     __wraps__ = skl_linear_model.Ridge
-    name = 'ridge'
 
+    # Arguments are needed for signatures, pylint: disable=unused-argument
     def __init__(self, alpha=1.0, fit_intercept=True,
                  normalize=False, copy_X=True, max_iter=None,
                  tol=0.001, solver='auto', preprocessors=None):
@@ -51,8 +51,8 @@ class RidgeRegressionLearner(LinearRegressionLearner):
 
 class LassoRegressionLearner(LinearRegressionLearner):
     __wraps__ = skl_linear_model.Lasso
-    name = 'lasso'
 
+    # Arguments are needed for signatures, pylint: disable=unused-argument
     def __init__(self, alpha=1.0, fit_intercept=True, normalize=False,
                  precompute=False, copy_X=True, max_iter=1000,
                  tol=0.0001, warm_start=False, positive=False,
@@ -63,8 +63,8 @@ class LassoRegressionLearner(LinearRegressionLearner):
 
 class ElasticNetLearner(LinearRegressionLearner):
     __wraps__ = skl_linear_model.ElasticNet
-    name = 'elastic'
 
+    # Arguments are needed for signatures, pylint: disable=unused-argument
     def __init__(self, alpha=1.0, l1_ratio=0.5, fit_intercept=True,
                  normalize=False, precompute=False, max_iter=1000,
                  copy_X=True, tol=0.0001, warm_start=False, positive=False,
@@ -75,11 +75,11 @@ class ElasticNetLearner(LinearRegressionLearner):
 
 class ElasticNetCVLearner(LinearRegressionLearner):
     __wraps__ = skl_linear_model.ElasticNetCV
-    name = 'elasticCV'
 
+    # Arguments are needed for signatures, pylint: disable=unused-argument
     def __init__(self, l1_ratio=0.5, eps=0.001, n_alphas=100, alphas=None,
                  fit_intercept=True, normalize=False, precompute='auto',
-                 max_iter=1000, tol=0.0001, cv=None, copy_X=True,
+                 max_iter=1000, tol=0.0001, cv=5, copy_X=True,
                  verbose=0, n_jobs=1, positive=False, preprocessors=None):
         super().__init__(preprocessors=preprocessors)
         self.params = vars()
@@ -87,21 +87,17 @@ class ElasticNetCVLearner(LinearRegressionLearner):
 
 class SGDRegressionLearner(LinearRegressionLearner):
     __wraps__ = skl_linear_model.SGDRegressor
-    name = 'sgd'
+    preprocessors = SklLearner.preprocessors + [Normalize()]
 
-    def __init__(self, loss='squared_loss', alpha=0.0001, epsilon=0.1,
-                 eta0=0.01, l1_ratio=0.15, penalty='l2', power_t=0.25,
-                 learning_rate='invscaling', n_iter=5, fit_intercept=True,
+    # Arguments are needed for signatures, pylint: disable=unused-argument
+    def __init__(self, loss='squared_loss', penalty='l2', alpha=0.0001,
+                 l1_ratio=0.15, fit_intercept=True, max_iter=5, tol=1e-3,
+                 shuffle=True, epsilon=0.1, n_jobs=1, random_state=None,
+                 learning_rate='invscaling', eta0=0.01, power_t=0.25,
+                 class_weight=None, warm_start=False, average=False,
                  preprocessors=None):
         super().__init__(preprocessors=preprocessors)
         self.params = vars()
-
-    def fit(self, X, Y, W):
-        sk = self.__wraps__(**self.params)
-        clf = skl_pipeline.Pipeline(
-            [('scaler', skl_preprocessing.StandardScaler()), ('sgd', sk)])
-        clf.fit(X, Y.ravel())
-        return LinearModel(clf)
 
 
 class PolynomialLearner(Learner):
@@ -120,13 +116,15 @@ class PolynomialLearner(Learner):
     preprocessors = SklLearner.preprocessors
 
     def __init__(self, learner=LinearRegressionLearner(), degree=2,
-                 preprocessors=None):
+                 preprocessors=None, include_bias=True):
         super().__init__(preprocessors=preprocessors)
         self.degree = degree
         self.learner = learner
+        self.include_bias = include_bias
 
-    def fit(self, X, Y, W):
-        polyfeatures = skl_preprocessing.PolynomialFeatures(self.degree)
+    def fit(self, X, Y, W=None):
+        polyfeatures = skl_preprocessing.PolynomialFeatures(
+            self.degree, include_bias=self.include_bias)
         X = polyfeatures.fit_transform(X)
         clf = self.learner
         if W is None or not self.supports_weights:
@@ -145,22 +143,13 @@ class LinearModel(SklModel):
     def coefficients(self):
         return self.skl_model.coef_
 
-    def predict(self, X):
-        vals = self.skl_model.predict(X)
-        if len(vals.shape) == 1:
-            # Prevent IndexError for 1D array
-            return vals
-        elif vals.shape[1] == 1:
-            return vals.ravel()
-        else:
-            return vals
-
     def __str__(self):
         return 'LinearModel {}'.format(self.skl_model)
 
 
 class PolynomialModel(Model):
     def __init__(self, model, polyfeatures):
+        super().__init__()
         self.model = model
         self.polyfeatures = polyfeatures
 

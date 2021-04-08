@@ -7,10 +7,11 @@ import itertools
 
 import numpy as np
 
-from Orange.data import Table, Domain, ContinuousVariable
+from Orange.data import Table, Domain, ContinuousVariable, DiscreteVariable
 from Orange.data.filter import \
     FilterContinuous, FilterDiscrete, FilterString, Values, HasClass, \
-    IsDefined, SameValue
+    IsDefined, SameValue, Random, ValueFilter, FilterStringList, FilterRegex
+from Orange.tests import test_filename
 
 NIMOCK = MagicMock(side_effect=NotImplementedError())
 
@@ -40,7 +41,7 @@ class TestFilterValues(unittest.TestCase):
 
 class TestIsDefinedFilter(unittest.TestCase):
     def setUp(self):
-        self.table = Table('imports-85')
+        self.table = Table(test_filename('datasets/imports-85.tab'))
         self.n_missing = 46
         self.assertTrue(self.table.has_missing())
 
@@ -75,7 +76,7 @@ class TestIsDefinedFilter(unittest.TestCase):
 
 class TestHasClassFilter(unittest.TestCase):
     def setUp(self):
-        self.table = Table('imports-85')
+        self.table = Table(test_filename('datasets/imports-85.tab'))
         self.n_missing = 4
         self.assertTrue(self.table.has_missing_class())
 
@@ -90,6 +91,19 @@ class TestHasClassFilter(unittest.TestCase):
         without_class = filter_(self.table)
         self.assertEqual(len(without_class), self.n_missing)
         self.assertTrue(without_class.has_missing_class())
+
+    def test_has_class_multiclass(self):
+        domain = Domain([DiscreteVariable("x", values="01")],
+                        [DiscreteVariable("y1", values="01"),
+                         DiscreteVariable("y2", values="01")])
+        table = Table.from_list(domain, [[0, 1, np.nan],
+                                         [1, np.nan, 0],
+                                         [1, 0, 1],
+                                         [1, np.nan, np.nan]])
+        table = HasClass()(table)
+        self.assertTrue(not np.isnan(table).any())
+        self.assertEqual(table.domain, domain)
+        self.assertEqual(len(table), 1)
 
     def test_has_class_filter_instance(self):
         class_missing = self.table[9]
@@ -354,9 +368,9 @@ class TestSameValueFilter(unittest.TestCase):
     def setUp(self):
         self.table = Table('zoo')
 
-        self.attr_disc  = self.table.domain["type"]
-        self.attr_cont  = self.table.domain["legs"]
-        self.attr_meta  = self.table.domain["name"]
+        self.attr_disc = self.table.domain["type"]
+        self.attr_cont = self.table.domain["legs"]
+        self.attr_meta = self.table.domain["name"]
 
         self.value_cont = 4
         self.value_disc = self.attr_disc.to_val("mammal")
@@ -414,3 +428,35 @@ class TestSameValueFilter(unittest.TestCase):
     @patch('Orange.data.Table._filter_same_value', NIMOCK)
     def test_has_class_filter_not_implemented(self):
         self.test_same_value_filter_table()
+
+
+class TestFilterReprs(unittest.TestCase):
+    def setUp(self):
+        self.table = Table('zoo')
+        self.attr_disc = self.table.domain["type"]
+        self.value_disc = self.attr_disc.to_val("mammal")
+        self.vs = self.table.domain.variables
+
+        self.table2 = Table("zoo")
+        self.inst = self.table2[0]  # aardvark
+
+    def test_reprs(self):
+        flid = IsDefined(negate=True)
+        flhc = HasClass()
+        flr = Random()
+        fld = FilterDiscrete(self.attr_disc, None)
+        flsv = SameValue(self.attr_disc, self.value_disc, negate=True)
+        flc = FilterContinuous(self.vs[0], FilterContinuous.Less, 5)
+        flc2 = FilterContinuous(self.vs[1], FilterContinuous.Greater, 3)
+        flv = Values([flc, flc2], conjunction=False, negate=True)
+        flvf = ValueFilter(self.attr_disc)
+        fls = FilterString("name", FilterString.Equal, "Aardvark", case_sensitive=False)
+        flsl = FilterStringList("name", ["Aardvark"], case_sensitive=False)
+        flrx = FilterRegex("name", "^c...$")
+
+        filters = [flid, flhc, flr, fld, flsv, flc, flv, flvf, fls, flsl, flrx]
+
+        for f in filters:
+            repr_str = repr(f)
+            new_f = eval(repr_str)
+            self.assertEqual(repr(new_f), repr_str)

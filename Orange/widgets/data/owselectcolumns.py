@@ -1,37 +1,28 @@
-import sys
-from functools import partial, reduce
+from functools import partial
+from typing import Optional, Dict, Tuple
 
-from AnyQt.QtWidgets import (
-    QWidget, QListView, QLineEdit, QCompleter, QSizePolicy, QGridLayout)
-from AnyQt.QtGui import QDrag
+from AnyQt.QtWidgets import QWidget, QGridLayout
+from AnyQt.QtWidgets import QListView
 from AnyQt.QtCore import (
-    Qt, QObject, QEvent, QMimeData, QByteArray, QModelIndex,
-    QAbstractItemModel, QSortFilterProxyModel, QStringListModel,
-    QItemSelection, QItemSelectionModel
+    Qt, QTimer, QSortFilterProxyModel, QItemSelection, QItemSelectionModel,
+    QMimeData, QAbstractItemModel
 )
 
+from Orange.data import Domain, Variable
 from Orange.widgets import gui, widget
-from Orange.widgets.data.contexthandlers import \
-    SelectAttributesDomainContextHandler
-from Orange.widgets.settings import *
+from Orange.widgets.settings import (
+    ContextSetting, Setting, DomainContextHandler
+)
+from Orange.widgets.utils import vartype
+from Orange.widgets.utils.listfilter import (
+    VariablesListItemView, slices, variables_filter
+)
+from Orange.widgets.utils.widgetpreview import WidgetPreview
+from Orange.widgets.utils.state_summary import format_summary_details
+from Orange.widgets.widget import Input, Output, AttributeList, Msg
 from Orange.data.table import Table
-from Orange.widgets.utils import itemmodels, vartype
+from Orange.widgets.utils.itemmodels import VariableListModel
 import Orange
-
-
-def slices(indices):
-    """ Group the given integer indices into slices
-    """
-    indices = list(sorted(indices))
-    if indices:
-        first = last = indices[0]
-        for i in indices[1:]:
-            if i == last + 1:
-                last = i
-            else:
-                yield first, last + 1
-                first = last = i
-        yield first, last + 1
 
 
 def source_model(view):
@@ -54,21 +45,12 @@ def source_indexes(indexes, view):
         return indexes
 
 
-def delslice(model, start, end):
-    """ Delete the start, end slice (rows) from the model.
+class VariablesListItemModel(VariableListModel):
     """
-    if isinstance(model, itemmodels.PyListModel):
-        del model[start:end]
-    elif isinstance(model, QAbstractItemModel):
-        model.removeRows(start, end - start)
-    else:
-        raise TypeError(type(model))
-
-
-class VariablesListItemModel(itemmodels.VariableListModel):
-    """ An Qt item model for for list of orange.Variable objects.
-    Supports drag operations
+    An Variable list item model specialized for Drag and Drop.
     """
+    MIME_TYPE = "application/x-Orange-VariableListModelData"
+
     def flags(self, index):
         flags = super().flags(index)
         if index.isValid():
@@ -77,433 +59,426 @@ class VariablesListItemModel(itemmodels.VariableListModel):
             flags |= Qt.ItemIsDropEnabled
         return flags
 
-    ###########
-    # Drag/Drop
-    ###########
+    @staticmethod
+    def supportedDropActions():
+        return Qt.MoveAction  # pragma: no cover
 
-    MIME_TYPE = "application/x-Orange-VariableListModelData"
-
-    def supportedDropActions(self):
-        return Qt.MoveAction
-
-    def supportedDragActions(self):
-        return Qt.MoveAction
+    @staticmethod
+    def supportedDragActions():
+        return Qt.MoveAction  # pragma: no cover
 
     def mimeTypes(self):
         return [self.MIME_TYPE]
 
     def mimeData(self, indexlist):
-        descriptors = []
-        vars = []
-        for index in indexlist:
-            var = self[index.row()]
-            descriptors.append((var.name, vartype(var)))
-            vars.append(var)
+        """
+        Reimplemented.
+
+        For efficiency reasons only the variable instances are set on the
+        mime data (under `'_items'` property)
+        """
+        items = [self[index.row()] for index in indexlist]
         mime = QMimeData()
-        mime.setData(self.MIME_TYPE,
-                     QByteArray(str(descriptors).encode("utf-8")))
-        mime._vars = vars
+        # the encoded 'data' is empty, variables are passed by properties
+        mime.setData(self.MIME_TYPE, b'')
+        mime.setProperty("_items", items)
         return mime
 
     def dropMimeData(self, mime, action, row, column, parent):
+        """
+        Reimplemented.
+        """
         if action == Qt.IgnoreAction:
-            return True
-        vars = self.items_from_mime_data(mime)
-        if vars is None:
-            return False
-        if row == -1:
-            row = len(self)
-        self[row:row] = vars
-        return True
-
-    def items_from_mime_data(self, mime):
+            return True  # pragma: no cover
         if not mime.hasFormat(self.MIME_TYPE):
-            return None, None
-        if hasattr(mime, "_vars"):
-            vars = mime._vars
-            return vars
-        else:
-            #TODO: get vars from orange.Variable.getExisting
-            return None, None
+            return False  # pragma: no cover
+        variables = mime.property("_items")
+        if variables is None:
+            return False  # pragma: no cover
+        if row < 0:
+            row = self.rowCount()
 
-
-class ClassVarListItemModel(VariablesListItemModel):
-    def dropMimeData(self, mime, action, row, column, parent):
-        """ Ensure only one variable can be dropped onto the view.
-        """
-        vars = self.items_from_mime_data(mime)
-        if vars is None or len(self) + len(vars) > 1:
-            return False
-        if action == Qt.IgnoreAction:
-            return True
-        return VariablesListItemModel.dropMimeData(
-            self, mime, action, row, column, parent)
-
-
-class VariablesListItemView(QListView):
-    """ A Simple QListView subclass initialized for displaying
-    variables.
-    """
-    def __init__(self, parent=None, acceptedType=Orange.data.Variable):
-        super().__init__(parent)
-        self.setSelectionMode(self.ExtendedSelection)
-        self.setAcceptDrops(True)
-        self.setDragEnabled(True)
-        self.setDropIndicatorShown(True)
-        self.setDragDropMode(self.DragDrop)
-        if hasattr(self, "setDefaultDropAction"):
-            # TODO do we still need this?
-            # For compatibility with Qt version < 4.6
-            self.setDefaultDropAction(Qt.MoveAction)
-        self.setDragDropOverwriteMode(False)
-        self.viewport().setAcceptDrops(True)
-
-        #: type | Tuple[type]
-        self.__acceptedType = acceptedType
-
-    def startDrag(self, supported_actions):
-        indices = self.selectionModel().selectedIndexes()
-        indices = [i for i in indices if i.flags() & Qt.ItemIsDragEnabled]
-        if indices:
-            data = self.model().mimeData(indices)
-            if not data:
-                return
-
-            drag = QDrag(self)
-            drag.setMimeData(data)
-
-            default_action = Qt.IgnoreAction
-            if hasattr(self, "defaultDropAction") and \
-                    self.defaultDropAction() != Qt.IgnoreAction and \
-                    supported_actions & self.defaultDropAction():
-                default_action = self.defaultDropAction()
-            elif (supported_actions & Qt.CopyAction and
-                  self.dragDropMode() != self.InternalMove):
-                default_action = Qt.CopyAction
-            res = drag.exec_(supported_actions, default_action)
-            if res == Qt.MoveAction:
-                selected = self.selectionModel().selectedIndexes()
-                rows = list(map(QModelIndex.row, selected))
-                for s1, s2 in reversed(list(slices(rows))):
-                    delslice(self.model(), s1, s2)
-
-    def dragEnterEvent(self, event):
-        """
-        Reimplemented from QListView.dragEnterEvent
-        """
-        if self.acceptsDropEvent(event):
-            event.accept()
-        else:
-            event.ignore()
-
-    def acceptsDropEvent(self, event):
-        """
-        Should the drop event be accepted?
-        """
-        # disallow drag/drops between windows
-        if event.source() is not None and \
-                event.source().window() is not self.window():
-            return False
-
-        mime = event.mimeData()
-        vars = source_model(self).items_from_mime_data(mime)
-        if vars is None:
-            return False
-
-        if not all(isinstance(var, self.__acceptedType) for var in vars):
-            return False
-
-        event.accept()
+        self[row:row] = variables
         return True
 
 
-class ClassVariableItemView(VariablesListItemView):
-    def __init__(self, parent=None, acceptedType=Orange.data.Variable):
-        VariablesListItemView.__init__(self, parent, acceptedType)
-        self.setDropIndicatorShown(False)
+class SelectAttributesDomainContextHandler(DomainContextHandler):
+    def encode_setting(self, context, setting, value):
+        if setting.name == 'domain_role_hints':
+            value = {(var.name, vartype(var)): role_i
+                     for var, role_i in value.items()}
+        return super().encode_setting(context, setting, value)
 
-    def acceptsDropEvent(self, event):
-        """
-        Reimplemented
+    def decode_setting(self, setting, value, domain=None, *_args):
+        decoded = super().decode_setting(setting, value, domain)
+        if setting.name == 'domain_role_hints':
+            decoded = {domain[name]: role_i
+                       for (name, _), role_i in decoded.items()}
+        return decoded
 
-        Ensure only one variable is in the model.
-        """
-        accepts = super().acceptsDropEvent(event)
-        mime = event.mimeData()
-        vars = source_model(self).items_from_mime_data(mime)
-        if vars is None:
-            return False
+    def match(self, context, domain, attrs, metas):
+        if context.attributes == attrs and context.metas == metas:
+            return self.PERFECT_MATCH
 
-        if len(self.model()) + len(vars) > 1:
-            return False
+        if not "domain_role_hints" in context.values:
+            return self.NO_MATCH
 
-        return accepts
+        all_vars = attrs.copy()
+        all_vars.update(metas)
+        value = context.values["domain_role_hints"][0]
+        assigned = [desc for desc, (role, _) in value.items()
+                    if role != "available"]
+        if not assigned:
+            return self.NO_MATCH
+        return sum(all_vars.get(attr) == vtype for attr, vtype in assigned) \
+               / len(assigned)
 
+    def filter_value(self, setting, data, domain, attrs, metas):
+        if setting.name != "domain_role_hints":
+            return super().filter_value(setting, data, domain, attrs, metas)
 
-class VariableFilterProxyModel(QSortFilterProxyModel):
-    """ A proxy model for filtering a list of variables based on
-    their names and labels.
-
-    """
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._filter_string = ""
-
-    def set_filter_string(self, filter):
-        self._filter_string = str(filter).lower()
-        self.invalidateFilter()
-
-    def filter_accepts_variable(self, var):
-        row_str = var.name + " ".join(("%s=%s" % item)
-                                      for item in var.attributes.items())
-        row_str = row_str.lower()
-        filters = self._filter_string.split()
-
-        return all(f in row_str for f in filters)
-
-    def filterAcceptsRow(self, source_row, source_parent):
-        model = self.sourceModel()
-        if isinstance(model, itemmodels.VariableListModel):
-            var = model[source_row]
-            return self.filter_accepts_variable(var)
-        else:
-            return True
-
-
-class CompleterNavigator(QObject):
-    """ An event filter to be installed on a QLineEdit, to enable
-    Key up/ down to navigate between posible completions.
-    """
-    def eventFilter(self, obj, event):
-        if (event.type() == QEvent.KeyPress and
-                isinstance(obj, QLineEdit)):
-            if event.key() == Qt.Key_Down:
-                diff = 1
-            elif event.key() == Qt.Key_Up:
-                diff = -1
-            else:
-                return False
-            completer = obj.completer()
-            if completer is not None and completer.completionCount() > 0:
-                current = completer.currentRow()
-                current += diff
-                completer.setCurrentRow(current % completer.completionCount())
-                completer.complete()
-            return True
-        else:
-            return False
+        all_vars = attrs.copy()
+        all_vars.update(metas)
+        value = data["domain_role_hints"][0].items()
+        data["domain_role_hints"] = {desc: role_i
+                                     for desc, role_i in value
+                                     if all_vars.get(desc[0]) == desc[1]}
 
 
 class OWSelectAttributes(widget.OWWidget):
+    # pylint: disable=too-many-instance-attributes
     name = "Select Columns"
     description = "Select columns from the data table and assign them to " \
                   "data features, classes or meta variables."
     icon = "icons/SelectColumns.svg"
     priority = 100
-    inputs = [("Data", Table, "set_data")]
-    outputs = [("Data", Table), ("Features", widget.AttributeList)]
+    keywords = ["filter", "attributes", "target", "variable"]
+
+    class Inputs:
+        data = Input("Data", Table, default=True)
+        features = Input("Features", AttributeList)
+
+    class Outputs:
+        data = Output("Data", Table)
+        features = Output("Features", AttributeList, dynamic=False)
 
     want_main_area = False
     want_control_area = True
 
-    settingsHandler = SelectAttributesDomainContextHandler()
+    settingsHandler = SelectAttributesDomainContextHandler(first_match=False)
     domain_role_hints = ContextSetting({})
-    auto_commit = Setting(False)
+    use_input_features = Setting(False)
+    ignore_new_features = Setting(False)
+    auto_commit = Setting(True)
+
+    class Warning(widget.OWWidget.Warning):
+        mismatching_domain = Msg("Features and data domain do not match")
+        multiple_targets = Msg("Most widgets do not support multiple targets")
 
     def __init__(self):
         super().__init__()
-        self.controlArea = QWidget(self.controlArea)
-        self.layout().addWidget(self.controlArea)
+        self.data = None
+        self.features = None
+
+        # Schedule interface updates (enabled buttons) using a coalescing
+        # single shot timer (complex interactions on selection and filtering
+        # updates in the 'available_attrs_view')
+        self.__interface_update_timer = QTimer(self, interval=0, singleShot=True)
+        self.__interface_update_timer.timeout.connect(
+            self.__update_interface_state)
+        # The last view that has the selection for move operation's source
+        self.__last_active_view = None  # type: Optional[QListView]
+
+        def update_on_change(view):
+            # Schedule interface state update on selection change in `view`
+            self.__last_active_view = view
+            self.__interface_update_timer.start()
+
+        new_control_area = QWidget(self.controlArea)
+        self.controlArea.layout().addWidget(new_control_area)
+        self.controlArea = new_control_area
+
+        # init grid
         layout = QGridLayout()
         self.controlArea.setLayout(layout)
-        layout.setContentsMargins(4, 4, 4, 4)
-        box = gui.vBox(self.controlArea, "Available Variables",
+        layout.setContentsMargins(0, 0, 0, 0)
+        box = gui.vBox(self.controlArea, "Ignored",
                        addToLayout=False)
-        self.filter_edit = QLineEdit()
-        self.filter_edit.setToolTip("Filter the list of available variables.")
-        box.layout().addWidget(self.filter_edit)
-        if hasattr(self.filter_edit, "setPlaceholderText"):
-            self.filter_edit.setPlaceholderText("Filter")
-
-        self.completer = QCompleter()
-        self.completer.setCompletionMode(QCompleter.InlineCompletion)
-        self.completer_model = QStringListModel()
-        self.completer.setModel(self.completer_model)
-        self.completer.setModelSorting(
-            QCompleter.CaseSensitivelySortedModel)
-
-        self.filter_edit.setCompleter(self.completer)
-        self.completer_navigator = CompleterNavigator(self)
-        self.filter_edit.installEventFilter(self.completer_navigator)
 
         self.available_attrs = VariablesListItemModel()
-        self.available_attrs.rowsRemoved.connect(self.update_completer_model)
+        filter_edit, self.available_attrs_view = variables_filter(
+            parent=self, model=self.available_attrs)
+        box.layout().addWidget(filter_edit)
 
-        self.available_attrs_proxy = VariableFilterProxyModel()
-        self.available_attrs_proxy.setSourceModel(self.available_attrs)
-        self.available_attrs_view = VariablesListItemView(
-            acceptedType=Orange.data.Variable)
-        self.available_attrs_view.setModel(self.available_attrs_proxy)
-
+        def dropcompleted(action):
+            if action == Qt.MoveAction:
+                self.commit()
 
         self.available_attrs_view.selectionModel().selectionChanged.connect(
-            partial(self.update_interface_state, self.available_attrs_view))
-        self.filter_edit.textChanged.connect(self.update_completer_prefix)
-        self.filter_edit.textChanged.connect(
-            self.available_attrs_proxy.set_filter_string)
+            partial(update_on_change, self.available_attrs_view))
+        self.available_attrs_view.dragDropActionDidComplete.connect(dropcompleted)
 
         box.layout().addWidget(self.available_attrs_view)
         layout.addWidget(box, 0, 0, 3, 1)
 
+        # 3rd column
         box = gui.vBox(self.controlArea, "Features", addToLayout=False)
         self.used_attrs = VariablesListItemModel()
-        self.used_attrs.rowsRemoved.connect(self.update_completer_model)
-        self.used_attrs_view = VariablesListItemView(
-            acceptedType=(Orange.data.DiscreteVariable,
-                          Orange.data.ContinuousVariable))
-
-        self.used_attrs_view.setModel(self.used_attrs)
+        filter_edit, self.used_attrs_view = variables_filter(
+            parent=self, model=self.used_attrs,
+            accepted_type=(Orange.data.DiscreteVariable,
+                           Orange.data.ContinuousVariable))
+        self.used_attrs.rowsInserted.connect(self.__used_attrs_changed)
+        self.used_attrs.rowsRemoved.connect(self.__used_attrs_changed)
         self.used_attrs_view.selectionModel().selectionChanged.connect(
-            partial(self.update_interface_state, self.used_attrs_view))
+            partial(update_on_change, self.used_attrs_view))
+        self.used_attrs_view.dragDropActionDidComplete.connect(dropcompleted)
+        self.use_features_box = gui.auto_commit(
+            self.controlArea, self, "use_input_features",
+            "Use input features", "Always use input features",
+            box=False, commit=self.__use_features_clicked,
+            callback=self.__use_features_changed, addToLayout=False
+        )
+        self.enable_use_features_box()
+        box.layout().addWidget(self.use_features_box)
+        box.layout().addWidget(filter_edit)
         box.layout().addWidget(self.used_attrs_view)
         layout.addWidget(box, 0, 2, 1, 1)
 
-        box = gui.vBox(self.controlArea, "Target Variable", addToLayout=False)
-        self.class_attrs = ClassVarListItemModel()
-        self.class_attrs.rowsRemoved.connect(self.update_completer_model)
-        self.class_attrs_view = ClassVariableItemView(
+        box = gui.vBox(self.controlArea, "Target", addToLayout=False)
+        self.class_attrs = VariablesListItemModel()
+        self.class_attrs_view = VariablesListItemView(
             acceptedType=(Orange.data.DiscreteVariable,
-                          Orange.data.ContinuousVariable))
+                          Orange.data.ContinuousVariable)
+        )
         self.class_attrs_view.setModel(self.class_attrs)
         self.class_attrs_view.selectionModel().selectionChanged.connect(
-            partial(self.update_interface_state, self.class_attrs_view))
-        self.class_attrs_view.setMaximumHeight(24)
+            partial(update_on_change, self.class_attrs_view))
+        self.class_attrs_view.dragDropActionDidComplete.connect(dropcompleted)
+
         box.layout().addWidget(self.class_attrs_view)
         layout.addWidget(box, 1, 2, 1, 1)
 
-        box = gui.vBox(self.controlArea, "Meta Attributes", addToLayout=False)
+        box = gui.vBox(self.controlArea, "Metas", addToLayout=False)
         self.meta_attrs = VariablesListItemModel()
-        self.meta_attrs.rowsRemoved.connect(self.update_completer_model)
         self.meta_attrs_view = VariablesListItemView(
             acceptedType=Orange.data.Variable)
         self.meta_attrs_view.setModel(self.meta_attrs)
         self.meta_attrs_view.selectionModel().selectionChanged.connect(
-            partial(self.update_interface_state, self.meta_attrs_view))
+            partial(update_on_change, self.meta_attrs_view))
+        self.meta_attrs_view.dragDropActionDidComplete.connect(dropcompleted)
         box.layout().addWidget(self.meta_attrs_view)
         layout.addWidget(box, 2, 2, 1, 1)
 
+        # 2nd column
         bbox = gui.vBox(self.controlArea, addToLayout=False, margin=0)
+        self.move_attr_button = gui.button(
+            bbox, self, ">",
+            callback=partial(self.move_selected,
+                             self.used_attrs_view)
+        )
         layout.addWidget(bbox, 0, 1, 1, 1)
 
-        self.up_attr_button = gui.button(bbox, self, "Up",
-            callback=partial(self.move_up, self.used_attrs_view))
-        self.move_attr_button = gui.button(bbox, self, ">",
-            callback=partial(self.move_selected, self.used_attrs_view))
-        self.down_attr_button = gui.button(bbox, self, "Down",
-            callback=partial(self.move_down, self.used_attrs_view))
-
         bbox = gui.vBox(self.controlArea, addToLayout=False, margin=0)
-        layout.addWidget(bbox, 1, 1, 1, 1)
-        self.move_class_button = gui.button(bbox, self, ">",
+        self.move_class_button = gui.button(
+            bbox, self, ">",
             callback=partial(self.move_selected,
-                             self.class_attrs_view, exclusive=True))
+                             self.class_attrs_view)
+        )
+        layout.addWidget(bbox, 1, 1, 1, 1)
 
-        bbox = gui.vBox(self.controlArea, addToLayout=False, margin=0)
+        bbox = gui.vBox(self.controlArea, addToLayout=False)
+        self.move_meta_button = gui.button(
+            bbox, self, ">",
+            callback=partial(self.move_selected,
+                             self.meta_attrs_view)
+        )
         layout.addWidget(bbox, 2, 1, 1, 1)
-        self.up_meta_button = gui.button(bbox, self, "Up",
-            callback=partial(self.move_up, self.meta_attrs_view))
-        self.move_meta_button = gui.button(bbox, self, ">",
-            callback=partial(self.move_selected, self.meta_attrs_view))
-        self.down_meta_button = gui.button(bbox, self, "Down",
-            callback=partial(self.move_down, self.meta_attrs_view))
 
-        autobox = gui.auto_commit(None, self, "auto_commit", "Send")
-        layout.addWidget(autobox, 3, 0, 1, 3)
-        reset = gui.button(None, self, "Reset", callback=self.reset)
-        autobox.layout().insertWidget(0, self.report_button)
-        autobox.layout().insertWidget(1, reset)
-        autobox.layout().insertSpacing(2, 10)
-        reset.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        self.report_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        # footer
+        gui.button(self.buttonsArea, self, "Reset", callback=self.reset)
 
-        layout.setRowStretch(0, 4)
+        bbox = gui.vBox(self.buttonsArea)
+        gui.checkBox(
+            widget=bbox,
+            master=self,
+            value="ignore_new_features",
+            label="Ignore new variables by default",
+            tooltip="When the widget receives data with additional columns "
+                    "they are added to the available attributes column if "
+                    "<i>Ignore new variables by default</i> is checked."
+        )
+
+        gui.rubber(self.buttonsArea)
+        gui.auto_send(self.buttonsArea, self, "auto_commit")
+
+        layout.setRowStretch(0, 2)
         layout.setRowStretch(1, 0)
-        layout.setRowStretch(2, 2)
+        layout.setRowStretch(2, 1)
         layout.setHorizontalSpacing(0)
         self.controlArea.setLayout(layout)
 
-        self.data = None
         self.output_data = None
         self.original_completer_items = []
 
-        self.resize(500, 600)
+        self.info.set_input_summary(self.info.NoInput)
+        self.info.set_output_summary(self.info.NoOutput)
 
+        self.resize(600, 600)
+
+    @property
+    def features_from_data_attributes(self):
+        if self.data is None or self.features is None:
+            return []
+        domain = self.data.domain
+        return [domain[feature.name] for feature in self.features
+                if feature.name in domain and domain[feature.name]
+                in domain.attributes]
+
+    def can_use_features(self):
+        return bool(self.features_from_data_attributes) and \
+               self.features_from_data_attributes != self.used_attrs[:]
+
+    def __use_features_changed(self):  # Use input features check box
+        # Needs a check since callback is invoked before object is created
+        if not hasattr(self, "use_features_box"):
+            return
+        self.enable_used_attrs(not self.use_input_features)
+        if self.use_input_features and self.can_use_features():
+            self.use_features()
+        if not self.use_input_features:
+            self.enable_use_features_box()
+
+    def __use_features_clicked(self):  # Use input features button
+        self.use_features()
+
+    def __used_attrs_changed(self):
+        self.enable_use_features_box()
+
+    @Inputs.data
     def set_data(self, data=None):
         self.update_domain_role_hints()
         self.closeContext()
+        self.domain_role_hints = {}
+
         self.data = data
-        if data is not None:
-            self.openContext(data)
-            all_vars = data.domain.variables + data.domain.metas
-
-            var_sig = lambda attr: (attr.name, vartype(attr))
-
-            domain_hints = {var_sig(attr): ("attribute", i)
-                            for i, attr in enumerate(data.domain.attributes)}
-
-            domain_hints.update({var_sig(attr): ("meta", i)
-                                for i, attr in enumerate(data.domain.metas)})
-
-            if data.domain.class_vars:
-                domain_hints.update(
-                    {var_sig(attr): ("class", i)
-                     for i, attr in enumerate(data.domain.class_vars)})
-
-            # update the hints from context settings
-            domain_hints.update(self.domain_role_hints)
-
-            attrs_for_role = lambda role: [
-                (domain_hints[var_sig(attr)][1], attr)
-                for attr in all_vars if domain_hints[var_sig(attr)][0] == role]
-
-            attributes = [
-                attr for place, attr in sorted(attrs_for_role("attribute"),
-                                               key=lambda a: a[0])]
-            classes = [
-                attr for place, attr in sorted(attrs_for_role("class"),
-                                               key=lambda a: a[0])]
-            metas = [
-                attr for place, attr in sorted(attrs_for_role("meta"),
-                                               key=lambda a: a[0])]
-            available = [
-                attr for place, attr in sorted(attrs_for_role("available"),
-                                               key=lambda a: a[0])]
-
-            self.used_attrs[:] = attributes
-            self.class_attrs[:] = classes
-            self.meta_attrs[:] = metas
-            self.available_attrs[:] = available
-        else:
+        if data is None:
             self.used_attrs[:] = []
             self.class_attrs[:] = []
             self.meta_attrs[:] = []
             self.available_attrs[:] = []
+            self.info.set_input_summary(self.info.NoInput)
+            return
 
-        self.unconditional_commit()
+        self.openContext(data)
+        all_vars = data.domain.variables + data.domain.metas
+
+        def attrs_for_role(role):
+            selected_attrs = [
+                attr for attr in all_vars if domain_hints[attr][0] == role
+            ]
+            return sorted(selected_attrs, key=lambda attr: domain_hints[attr][1])
+
+        domain_hints = self.restore_hints(data.domain)
+        self.used_attrs[:] = attrs_for_role("attribute")
+        self.class_attrs[:] = attrs_for_role("class")
+        self.meta_attrs[:] = attrs_for_role("meta")
+        self.available_attrs[:] = attrs_for_role("available")
+        self.info.set_input_summary(len(data), format_summary_details(data))
+
+        self.update_interface_state(self.class_attrs_view)
+
+    def restore_hints(self, domain: Domain) -> Dict[Variable, Tuple[str, int]]:
+        """
+        Define hints for selected/unselected features.
+        Rules:
+        - if context available, restore new features based on checked/unchecked
+          ignore_new_features, context hint should be took into account
+        - in no context, restore features based on the domain (as selected)
+
+        Parameters
+        ----------
+        domain
+            Data domain
+
+        Returns
+        -------
+        Dictionary with hints about order and model in which each feature
+        should appear
+        """
+        domain_hints = {}
+        if not self.ignore_new_features or len(self.domain_role_hints) == 0:
+            # select_new_features selected or no context - restore based on domain
+            domain_hints.update(
+                self._hints_from_seq("attribute", domain.attributes)
+            )
+            domain_hints.update(self._hints_from_seq("meta", domain.metas))
+            domain_hints.update(
+                self._hints_from_seq("class", domain.class_vars)
+            )
+        else:
+            # if context restored and ignore_new_features selected - restore
+            # new features as available
+            d = domain.attributes + domain.metas + domain.class_vars
+            domain_hints.update(self._hints_from_seq("available", d))
+
+        domain_hints.update(self.domain_role_hints)
+        return domain_hints
 
     def update_domain_role_hints(self):
         """ Update the domain hints to be stored in the widgets settings.
         """
-        hints_from_model = lambda role, model: [
-            ((attr.name, vartype(attr)), (role, i))
-            for i, attr in enumerate(model)]
-        hints = dict(hints_from_model("available", self.available_attrs))
-        hints.update(hints_from_model("attribute", self.used_attrs))
-        hints.update(hints_from_model("class", self.class_attrs))
-        hints.update(hints_from_model("meta", self.meta_attrs))
+        hints = {}
+        hints.update(self._hints_from_seq("available", self.available_attrs))
+        hints.update(self._hints_from_seq("attribute", self.used_attrs))
+        hints.update(self._hints_from_seq("class", self.class_attrs))
+        hints.update(self._hints_from_seq("meta", self.meta_attrs))
         self.domain_role_hints = hints
 
-    def selected_rows(self, view):
+    @staticmethod
+    def _hints_from_seq(role, model):
+        return [(attr, (role, i)) for i, attr in enumerate(model)]
+
+    @Inputs.features
+    def set_features(self, features):
+        self.features = features
+
+    def handleNewSignals(self):
+        self.check_data()
+        self.enable_used_attrs()
+        self.enable_use_features_box()
+        if self.use_input_features and self.features_from_data_attributes:
+            self.enable_used_attrs(False)
+            self.use_features()
+        self.unconditional_commit()
+
+    def check_data(self):
+        self.Warning.mismatching_domain.clear()
+        if self.data is not None and self.features is not None and \
+                not self.features_from_data_attributes:
+            self.Warning.mismatching_domain()
+
+    def enable_used_attrs(self, enable=True):
+        self.move_attr_button.setEnabled(enable)
+        self.used_attrs_view.setEnabled(enable)
+        self.used_attrs_view.repaint()
+
+    def enable_use_features_box(self):
+        self.use_features_box.button.setEnabled(self.can_use_features())
+        enable_checkbox = bool(self.features_from_data_attributes)
+        self.use_features_box.setHidden(not enable_checkbox)
+        self.use_features_box.repaint()
+
+    def use_features(self):
+        attributes = self.features_from_data_attributes
+        available, used = self.available_attrs[:], self.used_attrs[:]
+        self.available_attrs[:] = [attr for attr in used + available
+                                   if attr not in attributes]
+        self.used_attrs[:] = attributes
+        self.commit()
+
+    @staticmethod
+    def selected_rows(view):
         """ Return the selected rows in the view.
         """
         rows = view.selectionModel().selectedRows()
@@ -512,12 +487,20 @@ class OWSelectAttributes(widget.OWWidget):
             rows = [model.mapToSource(r) for r in rows]
         return [r.row() for r in rows]
 
-    def move_rows(self, view, rows, offset):
-        model = view.model()
-        newrows = [min(max(0, row + offset), len(model) - 1) for row in rows]
+    def move_rows(self, view: QListView, offset: int, roles=(Qt.EditRole,)):
+        rows = [idx.row() for idx in view.selectionModel().selectedRows()]
+        model = view.model()  # type: QAbstractItemModel
+        rowcount = model.rowCount()
+        newrows = [min(max(0, row + offset), rowcount - 1) for row in rows]
+
+        def itemData(index):
+            return {role: model.data(index, role) for role in roles}
 
         for row, newrow in sorted(zip(rows, newrows), reverse=offset > 0):
-            model[row], model[newrow] = model[newrow], model[row]
+            d1 = itemData(model.index(row, 0))
+            d2 = itemData(model.index(newrow, 0))
+            model.setItemData(model.index(row, 0), d2)
+            model.setItemData(model.index(newrow, 0), d1)
 
         selection = QItemSelection()
         for nrow in newrows:
@@ -526,45 +509,46 @@ class OWSelectAttributes(widget.OWWidget):
         view.selectionModel().select(
             selection, QItemSelectionModel.ClearAndSelect)
 
-    def move_up(self, view):
-        selected = self.selected_rows(view)
-        self.move_rows(view, selected, -1)
+        self.commit()
 
-    def move_down(self, view):
-        selected = self.selected_rows(view)
-        self.move_rows(view, selected, 1)
+    def move_up(self, view: QListView):
+        self.move_rows(view, -1)
 
-    def move_selected(self, view, exclusive=False):
+    def move_down(self, view: QListView):
+        self.move_rows(view, 1)
+
+    def move_selected(self, view):
         if self.selected_rows(view):
             self.move_selected_from_to(view, self.available_attrs_view)
         elif self.selected_rows(self.available_attrs_view):
-            self.move_selected_from_to(self.available_attrs_view, view,
-                                       exclusive)
+            self.move_selected_from_to(self.available_attrs_view, view)
 
-    def move_selected_from_to(self, src, dst, exclusive=False):
-        self.move_from_to(src, dst, self.selected_rows(src), exclusive)
+    def move_selected_from_to(self, src, dst):
+        self.move_from_to(src, dst, self.selected_rows(src))
 
-    def move_from_to(self, src, dst, rows, exclusive=False):
+    def move_from_to(self, src, dst, rows):
         src_model = source_model(src)
         attrs = [src_model[r] for r in rows]
-
-        if exclusive and len(attrs) != 1:
-            return
 
         for s1, s2 in reversed(list(slices(rows))):
             del src_model[s1:s2]
 
         dst_model = source_model(dst)
-        if exclusive and len(dst_model) > 0:
-            src_model.append(dst_model[0])
-            del dst_model[0]
 
         dst_model.extend(attrs)
 
-    def update_interface_state(self, focus=None, selected=None, deselected=None):
+        self.commit()
+
+    def __update_interface_state(self):
+        last_view = self.__last_active_view
+        if last_view is not None:
+            self.update_interface_state(last_view)
+
+    def update_interface_state(self, focus=None):
         for view in [self.available_attrs_view, self.used_attrs_view,
                      self.class_attrs_view, self.meta_attrs_view]:
-            if view is not focus and not view.hasFocus() and self.selected_rows(view):
+            if view is not focus and not view.hasFocus() \
+                    and view.selectionModel().hasSelection():
                 view.selectionModel().clear()
 
         def selected_vars(view):
@@ -580,15 +564,15 @@ class OWSelectAttributes(widget.OWWidget):
         all_primitive = all(var.is_primitive()
                             for var in available_types)
 
-        move_attr_enabled = (available_selected and all_primitive) or \
-                            attrs_selected
+        move_attr_enabled = \
+            ((available_selected and all_primitive) or attrs_selected) and \
+            self.used_attrs_view.isEnabled()
 
         self.move_attr_button.setEnabled(bool(move_attr_enabled))
         if move_attr_enabled:
             self.move_attr_button.setText(">" if available_selected else "<")
 
-        move_class_enabled = (len(available_selected) == 1 and all_primitive) or \
-                             class_selected
+        move_class_enabled = bool(all_primitive and available_selected) or class_selected
 
         self.move_class_button.setEnabled(bool(move_class_enabled))
         if move_class_enabled:
@@ -599,61 +583,49 @@ class OWSelectAttributes(widget.OWWidget):
         if move_meta_enabled:
             self.move_meta_button.setText(">" if available_selected else "<")
 
-    def update_completer_model(self, *_):
-        """ This gets called when the model for available attributes changes
-        through either drag/drop or the left/right button actions.
-
-        """
-        vars = list(self.available_attrs)
-        items = [var.name for var in vars]
-        items += ["%s=%s" % item for v in vars for item in v.attributes.items()]
-        self.commit()
-
-        new = sorted(set(items))
-        if new != self.original_completer_items:
-            self.original_completer_items = new
-            self.completer_model.setStringList(self.original_completer_items)
-
-    def update_completer_prefix(self, filter):
-        """ Prefixes all items in the completer model with the current
-        already done completion to enable the completion of multiple keywords.
-        """
-        prefix = str(self.completer.completionPrefix())
-        if not prefix.endswith(" ") and " " in prefix:
-            prefix, _ = prefix.rsplit(" ", 1)
-            items = [prefix + " " + item
-                     for item in self.original_completer_items]
+        # update class_vars height
+        if self.class_attrs.rowCount() == 0:
+            height = 22
         else:
-            items = self.original_completer_items
-        old = list(map(str, self.completer_model.stringList()))
+            height = ((self.class_attrs.rowCount() or 1) *
+                      self.class_attrs_view.sizeHintForRow(0)) + 2
+        self.class_attrs_view.setFixedHeight(height)
 
-        if set(old) != set(items):
-            self.completer_model.setStringList(items)
+        self.__last_active_view = None
+        self.__interface_update_timer.stop()
 
     def commit(self):
         self.update_domain_role_hints()
+        self.Warning.multiple_targets.clear()
         if self.data is not None:
             attributes = list(self.used_attrs)
             class_var = list(self.class_attrs)
             metas = list(self.meta_attrs)
 
             domain = Orange.data.Domain(attributes, class_var, metas)
-            newdata = self.data.from_table(domain, self.data)
+            newdata = self.data.transform(domain)
             self.output_data = newdata
-            self.send("Data", newdata)
-            self.send("Features", widget.AttributeList(attributes))
+            self.Outputs.data.send(newdata)
+            self.Outputs.features.send(AttributeList(attributes))
+            self.info.set_output_summary(len(newdata),
+                                         format_summary_details(newdata))
+            self.Warning.multiple_targets(shown=len(class_var) > 1)
         else:
             self.output_data = None
-            self.send("Data", None)
-            self.send("Features", None)
+            self.Outputs.data.send(None)
+            self.Outputs.features.send(None)
+            self.info.set_output_summary(self.info.NoOutput)
 
     def reset(self):
+        self.enable_used_attrs()
+        self.use_features_box.checkbox.setChecked(False)
         if self.data is not None:
             self.available_attrs[:] = []
             self.used_attrs[:] = self.data.domain.attributes
             self.class_attrs[:] = self.data.domain.class_vars
             self.meta_attrs[:] = self.data.domain.metas
             self.update_domain_role_hints()
+            self.commit()
 
     def send_report(self):
         if not self.data or not self.output_data:
@@ -672,27 +644,7 @@ class OWSelectAttributes(widget.OWWidget):
                 self.report_items((("Removed", text),))
 
 
-def test_main(argv=None):
-    from AnyQt.QtWidgets import QApplication
-    if argv is None:
-        argv = sys.argv
-    argv = list(argv)
-    app = QApplication(list(argv))
-
-    if len(argv) > 1:
-        filename = argv[1]
-    else:
-        filename = "brown-selected"
-
-    w = OWSelectAttributes()
-    data = Orange.data.Table(filename)
-    w.set_data(data)
-    w.show()
-    w.raise_()
-    rval = app.exec_()
-    w.set_data(None)
-    w.saveSettings()
-    return rval
-
-if __name__ == "__main__":
-    sys.exit(test_main())
+if __name__ == "__main__":  # pragma: no cover
+    brown = Orange.data.Table("brown-selected")
+    feats = AttributeList(brown.domain.attributes[:2])
+    WidgetPreview(OWSelectAttributes).run(set_data=brown, set_features=feats)

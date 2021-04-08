@@ -6,7 +6,9 @@ from AnyQt.QtWidgets import (
     QGraphicsTextItem, QGraphicsLinearLayout, QGraphicsView, QApplication
 )
 from AnyQt.QtGui import QColor, QBrush, QPen, QLinearGradient, QFont
-from AnyQt.QtCore import Qt, QPointF, QSizeF, QRectF, QPoint, QSize, QRect
+from AnyQt.QtCore import Qt, QPointF, QSizeF, QPoint, QSize, QRect
+
+from Orange.widgets.utils.colorpalettes import ContinuousPalette
 
 
 class Anchorable(QGraphicsWidget):
@@ -223,6 +225,7 @@ class LegendItemSquare(ColorIndicator):
     """
 
     SIZE = QSizeF(12, 12)
+    _size_hint = SIZE
 
     def __init__(self, color, parent):
         super().__init__(parent)
@@ -232,9 +235,10 @@ class LegendItemSquare(ColorIndicator):
         self.__square.setBrush(QBrush(color))
         self.__square.setPen(QPen(QColor(0, 0, 0, 0)))
         self.__square.setParentItem(self)
+        self._size_hint = QSizeF(self.__square.boundingRect().size())
 
     def sizeHint(self, size_hint, size_constraint=None, *args, **kwargs):
-        return QSizeF(self.__square.boundingRect().size())
+        return self._size_hint
 
 
 class LegendItemCircle(ColorIndicator):
@@ -258,6 +262,7 @@ class LegendItemCircle(ColorIndicator):
     """
 
     SIZE = QSizeF(12, 12)
+    _size_hint = SIZE
 
     def __init__(self, color, parent):
         super().__init__(parent)
@@ -267,9 +272,10 @@ class LegendItemCircle(ColorIndicator):
         self.__circle.setBrush(QBrush(color))
         self.__circle.setPen(QPen(QColor(0, 0, 0, 0)))
         self.__circle.setParentItem(self)
+        self._size_hint = QSizeF(self.__circle.boundingRect().size())
 
     def sizeHint(self, size_hint, size_constraint=None, *args, **kwargs):
-        return QSizeF(self.__circle.boundingRect().size())
+        return self._size_hint
 
 
 class LegendItemTitle(QGraphicsWidget):
@@ -285,6 +291,7 @@ class LegendItemTitle(QGraphicsWidget):
         This
 
     """
+    _size_hint = QSizeF(100, 10)
 
     def __init__(self, text, parent, font):
         super().__init__(parent)
@@ -292,9 +299,10 @@ class LegendItemTitle(QGraphicsWidget):
         self.__text = QGraphicsTextItem(text.title())
         self.__text.setParentItem(self)
         self.__text.setFont(font)
+        self._size_hint = QSizeF(self.__text.boundingRect().size())
 
     def sizeHint(self, size_hint, size_constraint=None, *args, **kwargs):
-        return QSizeF(self.__text.boundingRect().size())
+        return self._size_hint
 
 
 class LegendItem(QGraphicsLinearLayout):
@@ -356,6 +364,7 @@ class LegendGradient(QGraphicsWidget):
     # Default sizes (assume gradient is vertical by default)
     GRADIENT_WIDTH = 20
     GRADIENT_HEIGHT = 150
+    _size_hint = QSizeF(GRADIENT_WIDTH, GRADIENT_HEIGHT)
 
     def __init__(self, palette, parent, orientation):
         super().__init__(parent)
@@ -382,9 +391,22 @@ class LegendGradient(QGraphicsWidget):
         self.__rect_item = QGraphicsRectItem(0, 0, width, height, self)
         self.__rect_item.setPen(QPen(QColor(0, 0, 0, 0)))
         self.__rect_item.setBrush(QBrush(self.__gradient))
+        self._size_hint = QSizeF(self.__rect_item.boundingRect().size())
 
     def sizeHint(self, size_hint, size_constraint=None, *args, **kwargs):
-        return QSizeF(self.__rect_item.boundingRect().size())
+        return self._size_hint
+
+
+class ColorStripItem(QGraphicsWidget):
+    def __init__(self, palette, parent, orientation):
+        super().__init__(parent)
+        self.__strip = palette.color_strip(150, 13, orientation)
+
+    def paint(self, painter, option, widget):
+        painter.drawPixmap(0, 0, self.__strip)
+
+    def sizeHint(self, *_):
+        return QSizeF(self.__strip.width(), self.__strip.height())
 
 
 class ContinuousLegendItem(QGraphicsLinearLayout):
@@ -416,7 +438,10 @@ class ContinuousLegendItem(QGraphicsLinearLayout):
         self.__palette = palette
         self.__values = values
 
-        self.__gradient = LegendGradient(palette, parent, orientation)
+        if isinstance(palette, ContinuousPalette):
+            self.__gradient = ColorStripItem(palette, parent, orientation)
+        else:
+            self.__gradient = LegendGradient(palette, parent, orientation)
         self.__labels_layout = QGraphicsLinearLayout(orientation)
 
         str_vals = self._format_values(values)
@@ -496,6 +521,7 @@ class Legend(Anchorable):
         self.setFlags(QGraphicsWidget.ItemIsMovable |
                       QGraphicsItem.ItemIgnoresTransformations)
 
+        self._setup_layout()
         if domain is not None:
             self.set_domain(domain)
         elif items is not None:
@@ -554,11 +580,16 @@ class Legend(Anchorable):
     def _convert_to_color(obj):
         if isinstance(obj, QColor):
             return obj
-        elif isinstance(obj, tuple) or isinstance(obj, list):
+        elif isinstance(obj, tuple) or isinstance(obj, list) \
+                or isinstance(obj, np.ndarray):
             assert len(obj) in (3, 4)
             return QColor(*obj)
         else:
             return QColor(obj)
+
+    def setVisible(self, is_visible):
+        """Only display the legend if it contains any items."""
+        return super().setVisible(is_visible and len(self._layout) > 0)
 
     def paint(self, painter, options, widget=None):
         painter.save()
@@ -588,10 +619,9 @@ class OWDiscreteLegend(Legend):
             raise AttributeError('[OWDiscreteLegend] The class var provided '
                                  'was not discrete.')
 
-        self.set_items(zip(class_var.values, class_var.colors.tolist()))
+        self.set_items(zip(class_var.values, list(class_var.colors)))
 
     def set_items(self, values):
-        self._setup_layout()
         for class_name, color in values:
             legend_item = LegendItem(
                 color=self._convert_to_color(color),
@@ -631,29 +661,14 @@ class OWContinuousLegend(Legend):
         # The first and last values must represent the range, the rest should
         # be dummy variables, as they are not shown anywhere
         values = self.__range
-
-        start, end, pass_through_black = class_var.colors
-        # If pass through black, push black in between and add index to vals
-        if pass_through_black:
-            colors = [self._convert_to_color(c) for c
-                      in [start, '#000000', end]]
-            values.insert(1, -1)
-        else:
-            colors = [self._convert_to_color(c) for c in [start, end]]
-
-        self.set_items(list(zip(values, colors)))
+        self.set_items((values, class_var.palette))
 
     def set_items(self, values):
-        vals, colors = list(zip(*values))
-
-        # If the orientation is vertical, it makes more sense for the smaller
-        # value to be shown on the bottom
-        if self.orientation == Qt.Vertical and vals[0] < vals[len(vals) - 1]:
-            colors, vals = list(reversed(colors)), list(reversed(vals))
-
-        self._setup_layout()
+        vals, palette = values
+        if self.orientation == Qt.Vertical:
+            vals = list(reversed(vals))
         self._layout.addItem(ContinuousLegendItem(
-            palette=colors,
+            palette=palette,
             values=vals,
             parent=self,
             font=self.font,

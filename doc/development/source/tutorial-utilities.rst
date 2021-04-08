@@ -13,45 +13,7 @@ and in the title bar of the widget's window.
 
 .. image:: images/progressbar-title.png
 
-There are three mechanisms for implementing this.
-
-Context handlers
-................
-
-The recommended and the simplest approach is to wrap the code into
-context handler :obj:`~Orange.widgets.widgetOWWidget.progressBar`.
-
-If the operation consists of a known number of steps that take similar
-time, the context handler can be used as follows::
-
-    with self.progressBar(n_steps) as progress:
-        for k in range(n_steps):
-            self.do_some_processing()
-            progress.advance()
-
-In general, the argument of `self.progressBar` represents the total
-towards which the progress bar advances. Method `progress.advance()` accepts
-an argument representing the advance. ::
-
-    with self.progressBar(total) as progress:
-        for k in s:
-            self.do_some_processing()
-            progress.advance(adv)
-
-In this case, the values of `adv` should sum up to the `total`;
-`adv` and `total` do not need to be integer numbers.
-
-If `total` is omitted, it defaults to 1, so the advances must sum to 1.
-
-The progress can also be set to absolute values by calling the widget's
-methods `self.progressBarSet(perc)`. This method belongs to the group
-of methods for direct manipulation of the progress bar (see below) and
-expects the state in percents (0 to 100). ::
-
-    with self.progressBar():
-        ...
-        self.progressBarSet(perc)
-        ...
+There are two mechanisms for implementing this.
 
 Progress bar class
 ..................
@@ -60,13 +22,6 @@ Class `Orange.widgets.gui.ProgressBar` is initialized with a widget and the
 number of iterations::
 
     progress = Orange.widgets.gui.ProgressBar(self, n)
-
-is equivalent to ::
-
-     with self.progressBar(n) as progress:
-
-This form is useful when the initialization of the progress bar and setting
-of its state are not in the same block.
 
 Direct manipulation of progress bar
 ...................................
@@ -169,6 +124,59 @@ messags (`self.clear_message()`) apply to all messages of this type.
 **Note**: handling multiple messages through ids, that is, using
 `self.information(id, text)`, `self.warning(id, text)` and
 `self.error(id, text)` is deprecated and will be removed in the future.
+
+
+I/O Summaries
+-------------
+
+.. versionadded:: 3.19
+
+Widgets can optionally summarize their inputs/outputs via the
+:attr:`~Orange.widgets.widget.OWWidget.info` namespace using the
+:func:`~Orange.widgets.widget.StateInfo.set_input_summary` and
+:func:`~Orange.widgets.widget.StateInfo.set_output_summary` methods.
+::
+
+   self.info.set_input_summary("foo")
+   self.info.set_output_summary("bar")
+
+Summaries are then displayed in the widget's status bar:
+
+.. image:: images/io-summary.png
+   :scale: 50 %
+   :alt: Inline status bar summary
+
+Predefined constants indicating no input/output are available as
+``self.info.NoInput`` and ``self.info.NoOutput`` respectively
+::
+
+   self.info.set_input_summary(self.info.NoInput)
+   self.info.set_output_summary(self.info.NoOutput)
+
+.. image:: images/io-summary-empty.png
+   :scale: 50 %
+   :alt: Empty summary
+
+The summaries can also contain more detailed information to be displayed
+in tool tip or popup::
+
+   self.info.set_output_summary("2 animals", "• 1 cat\n• 1 dog")
+
+
+.. image:: images/io-summary-popup.png
+   :scale: 50 %
+   :alt: Detailed summary popup
+
+
+.. seealso::
+   :func:`~Orange.widgets.widget.StateInfo.set_input_summary`,
+   :func:`~Orange.widgets.widget.StateInfo.set_output_summary`
+
+
+.. note::
+   No I/O summary messages are displayed initially. Widget authors should
+   initialize them (to empty state) in the widget's ``__init__`` method.
+
 
 Tips
 ----

@@ -5,31 +5,41 @@ A widget for defining (constructing) new features from values
 of other variables.
 
 """
-import sys
 import re
 import copy
 import functools
 import builtins
 import math
 import random
+import logging
+import ast
+import types
+
+from traceback import format_exception_only
 from collections import namedtuple, OrderedDict
 from itertools import chain, count
+from typing import List, Dict, Any
+
+import numpy as np
 
 from AnyQt.QtWidgets import (
     QSizePolicy, QAbstractItemView, QComboBox, QFormLayout, QLineEdit,
     QHBoxLayout, QVBoxLayout, QStackedWidget, QStyledItemDelegate,
-    QPushButton, QMenu, QListView, QFrame
-)
-from AnyQt.QtGui import QIcon, QKeySequence
+    QPushButton, QMenu, QListView, QFrame, QLabel)
+from AnyQt.QtGui import QKeySequence, QColor
 from AnyQt.QtCore import Qt, pyqtSignal as Signal, pyqtProperty as Property
+from orangewidget.utils.combobox import ComboBoxSearch
 
 import Orange
+from Orange.data.util import get_unique_names
 from Orange.widgets import gui
 from Orange.widgets.settings import ContextSetting, DomainContextHandler
 from Orange.widgets.utils import itemmodels, vartype
 from Orange.widgets.utils.sql import check_sql_input
-from Orange.canvas import report
-from Orange.widgets.widget import OWWidget, Msg
+from Orange.widgets import report
+from Orange.widgets.utils.widgetpreview import WidgetPreview
+from Orange.widgets.utils.state_summary import format_summary_details
+from Orange.widgets.widget import OWWidget, Msg, Input, Output
 
 FeatureDescriptor = \
     namedtuple("FeatureDescriptor", ["name", "expression"])
@@ -37,12 +47,16 @@ FeatureDescriptor = \
 ContinuousDescriptor = \
     namedtuple("ContinuousDescriptor",
                ["name", "expression", "number_of_decimals"])
+DateTimeDescriptor = \
+    namedtuple("DateTimeDescriptor",
+               ["name", "expression"])
 DiscreteDescriptor = \
     namedtuple("DiscreteDescriptor",
-               ["name", "expression", "values", "base_value", "ordered"])
+               ["name", "expression", "values", "ordered"])
 
 StringDescriptor = namedtuple("StringDescriptor", ["name", "expression"])
 
+#warningIcon = gui.createAttributePixmap('!', QColor((202, 0, 32)))
 
 def make_variable(descriptor, compute_value):
     if isinstance(descriptor, ContinuousDescriptor):
@@ -50,12 +64,14 @@ def make_variable(descriptor, compute_value):
             descriptor.name,
             descriptor.number_of_decimals,
             compute_value)
+    if isinstance(descriptor, DateTimeDescriptor):
+        return Orange.data.TimeVariable(
+            descriptor.name,
+            compute_value=compute_value, have_date=True, have_time=True)
     elif isinstance(descriptor, DiscreteDescriptor):
         return Orange.data.DiscreteVariable(
             descriptor.name,
             values=descriptor.values,
-            ordered=descriptor.ordered,
-            base_value=descriptor.base_value,
             compute_value=compute_value)
     elif isinstance(descriptor, StringDescriptor):
         return Orange.data.StringVariable(
@@ -87,7 +103,9 @@ def selected_row(view):
 class FeatureEditor(QFrame):
     FUNCTIONS = dict(chain([(key, val) for key, val in math.__dict__.items()
                             if not key.startswith("_")],
-                           [("str", str)]))
+                           [(key, val) for key, val in builtins.__dict__.items()
+                            if key in {"str", "float", "int", "len",
+                                       "abs", "max", "min"}]))
     featureChanged = Signal()
     featureEdited = Signal()
 
@@ -106,12 +124,12 @@ class FeatureEditor(QFrame):
                                    QSizePolicy.Fixed)
         )
         self.expressionedit = QLineEdit(
-            placeholderText="Expression..."
-        )
+            placeholderText="Expression...",
+            toolTip=self.ExpressionTooltip)
 
         self.attrs_model = itemmodels.VariableListModel(
             ["Select Feature"], parent=self)
-        self.attributescb = QComboBox(
+        self.attributescb = ComboBoxSearch(
             minimumContentsLength=16,
             sizeAdjustPolicy=QComboBox.AdjustToMinimumContentsLengthWithIcon,
             sizePolicy=QSizePolicy(QSizePolicy.Minimum, QSizePolicy.Minimum)
@@ -127,7 +145,7 @@ class FeatureEditor(QFrame):
             [''],
             [self.FUNCTIONS[func].__doc__ for func in sorted_funcs])
 
-        self.functionscb = QComboBox(
+        self.functionscb = ComboBoxSearch(
             minimumContentsLength=16,
             sizeAdjustPolicy=QComboBox.AdjustToMinimumContentsLengthWithIcon,
             sizePolicy=QSizePolicy(QSizePolicy.Minimum, QSizePolicy.Minimum))
@@ -149,7 +167,7 @@ class FeatureEditor(QFrame):
         self._modified = False
 
     def setModified(self, modified):
-        if not type(modified) is bool:
+        if not isinstance(modified, bool):
             raise TypeError
 
         if self._modified != modified:
@@ -168,7 +186,7 @@ class FeatureEditor(QFrame):
         self.setModified(False)
         self.featureChanged.emit()
         self.attrs_model[:] = ["Select Feature"]
-        if domain is not None and (domain or domain.metas):
+        if domain is not None and not domain.empty():
             self.attrs_model[:] += chain(domain.attributes,
                                          domain.class_vars,
                                          domain.metas)
@@ -213,24 +231,47 @@ class FeatureEditor(QFrame):
 
 
 class ContinuousFeatureEditor(FeatureEditor):
+    ExpressionTooltip = "A numeric expression"
 
     def editorData(self):
         return ContinuousDescriptor(
             name=self.nameedit.text(),
-            number_of_decimals=3,
+            number_of_decimals=None,
+            expression=self.expressionedit.text()
+        )
+
+
+class DateTimeFeatureEditor(FeatureEditor):
+    ExpressionTooltip = \
+        "Result must be a string in ISO-8601 format " \
+        "(e.g. 2019-07-30T15:37:27 or a part thereof),\n" \
+        "or a number of seconds since Jan 1, 1970."
+
+    def editorData(self):
+        return DateTimeDescriptor(
+            name=self.nameedit.text(),
             expression=self.expressionedit.text()
         )
 
 
 class DiscreteFeatureEditor(FeatureEditor):
+    ExpressionTooltip = \
+        "Result must be a string, if values are not explicitly given\n" \
+        "or a zero-based integer indices into a list of values given below."
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.valuesedit = QLineEdit()
+        tooltip = \
+            "If values are given, above expression must return zero-based " \
+            "integer indices into that list."
+        self.valuesedit = QLineEdit(placeholderText="A, B ...", toolTip=tooltip)
         self.valuesedit.textChanged.connect(self._invalidate)
 
         layout = self.layout()
-        layout.addRow(self.tr("Values"), self.valuesedit)
+        label = QLabel(self.tr("Values (optional)"))
+        label.setToolTip(tooltip)
+        layout.addRow(label, self.valuesedit)
 
     def setEditorData(self, data, domain):
         self.valuesedit.setText(
@@ -241,17 +282,18 @@ class DiscreteFeatureEditor(FeatureEditor):
     def editorData(self):
         values = self.valuesedit.text()
         values = re.split(r"(?<!\\),", values)
-        values = tuple(v.replace(r"\,", ",").strip() for v in values)
+        values = tuple(filter(None, [v.replace(r"\,", ",").strip() for v in values]))
         return DiscreteDescriptor(
             name=self.nameedit.text(),
             values=values,
-            base_value=-1,
             ordered=False,
             expression=self.expressionedit.text()
         )
 
 
 class StringFeatureEditor(FeatureEditor):
+    ExpressionTooltip = "A string expression"
+
     def editorData(self):
         return StringDescriptor(
             name=self.nameedit.text(),
@@ -260,23 +302,22 @@ class StringFeatureEditor(FeatureEditor):
 
 
 _VarMap = {
-    DiscreteDescriptor: vartype(Orange.data.DiscreteVariable()),
-    ContinuousDescriptor: vartype(Orange.data.ContinuousVariable()),
-    StringDescriptor: vartype(Orange.data.StringVariable())
+    DiscreteDescriptor: vartype(Orange.data.DiscreteVariable("d")),
+    ContinuousDescriptor: vartype(Orange.data.ContinuousVariable("c")),
+    DateTimeDescriptor: vartype(Orange.data.TimeVariable("t")),
+    StringDescriptor: vartype(Orange.data.StringVariable("s"))
 }
 
 
 @functools.lru_cache(20)
 def variable_icon(dtype):
     vtype = _VarMap.get(dtype, dtype)
-    try:
-        return gui.attributeIconDict[vtype]
-    except Exception:
-        return QIcon()
+    return gui.attributeIconDict[vtype]
 
 
 class FeatureItemDelegate(QStyledItemDelegate):
-    def displayText(self, value, locale):
+    @staticmethod
+    def displayText(value, _):
         return value.name + " := " + value.expression
 
 
@@ -289,52 +330,70 @@ class DescriptorModel(itemmodels.PyListModel):
             return super().data(index, role)
 
 
-class FeatureConstructorSettingsHandler(DomainContextHandler):
+class FeatureConstructorHandler(DomainContextHandler):
     """Context handler that filters descriptors"""
 
-    def is_valid_item(self, setting, descriptor, attrs, metas):
-        """Check if descriptor can be used with given domain.
+    def is_valid_item(self, setting, item, attrs, metas):
+        """Check if descriptor `item` can be used with given domain.
 
         Return True if descriptor's expression contains only
         available variables and descriptors name does not clash with
         existing variables.
         """
-        if descriptor.name in attrs or descriptor.name in metas:
+        if item.name in attrs or item.name in metas:
             return False
 
         try:
-            exp_ast = ast.parse(descriptor.expression, mode="eval")
+            exp_ast = ast.parse(item.expression, mode="eval")
+        # ast.parse can return arbitrary errors, not only SyntaxError
+        # pylint: disable=broad-except
         except Exception:
             return False
 
-        for name in freevars(exp_ast, []):
-            if not (name in attrs or name in metas):
-                return False
+        available = dict(globals()["__GLOBALS"])
+        for var in attrs:
+            available[sanitized_name(var)] = None
+        for var in metas:
+            available[sanitized_name(var)] = None
+
+        if freevars(exp_ast, available):
+            return False
         return True
 
 
 class OWFeatureConstructor(OWWidget):
     name = "Feature Constructor"
     description = "Construct new features (data columns) from a set of " \
-                  "existing features in the input data set."
+                  "existing features in the input dataset."
     icon = "icons/FeatureConstructor.svg"
-    inputs = [("Data", Orange.data.Table, "setData")]
-    outputs = [("Data", Orange.data.Table)]
+    keywords = ['function', 'lambda']
+
+    class Inputs:
+        data = Input("Data", Orange.data.Table)
+
+    class Outputs:
+        data = Output("Data", Orange.data.Table)
 
     want_main_area = False
 
-    settingsHandler = FeatureConstructorSettingsHandler()
+    settingsHandler = FeatureConstructorHandler()
     descriptors = ContextSetting([])
     currentIndex = ContextSetting(-1)
 
     EDITORS = [
         (ContinuousDescriptor, ContinuousFeatureEditor),
+        (DateTimeDescriptor, DateTimeFeatureEditor),
         (DiscreteDescriptor, DiscreteFeatureEditor),
         (StringDescriptor, StringFeatureEditor)
     ]
 
     class Error(OWWidget.Error):
-        more_values_needed = Msg("Discrete feature {} needs more values.")
+        more_values_needed = Msg("Categorical feature {} needs more values.")
+        invalid_expressions = Msg("Invalid expressions: {}.")
+
+    class Warning(OWWidget.Warning):
+        renamed_var = Msg("Recently added variable has been renamed, "
+                           "to avoid duplicates.\n")
 
     def __init__(self):
         super().__init__()
@@ -373,34 +432,31 @@ class OWFeatureConstructor(OWWidget):
             candidates = (fmt.format(i) for i in count(1))
             return next(c for c in candidates if c not in reserved)
 
-        def reserved_names():
-            varnames = []
-            if self.data is not None:
-                varnames = [var.name for var in
-                            self.data.domain.variables + self.data.domain.metas]
-            varnames += [desc.name for desc in self.featuremodel]
-            return set(varnames)
-
         def generate_newname(fmt):
-            return unique_name(fmt, reserved_names())
+            return unique_name(fmt, self.reserved_names())
 
         menu = QMenu(self.addbutton)
-        cont = menu.addAction("Continuous")
+        cont = menu.addAction("Numeric")
         cont.triggered.connect(
             lambda: self.addFeature(
                 ContinuousDescriptor(generate_newname("X{}"), "", 3))
         )
-        disc = menu.addAction("Discrete")
+        disc = menu.addAction("Categorical")
         disc.triggered.connect(
             lambda: self.addFeature(
-                DiscreteDescriptor(generate_newname("D{}"), "",
-                                   ("A", "B"), -1, False))
+                DiscreteDescriptor(generate_newname("D{}"), "", (), False))
         )
-        string = menu.addAction("String")
+        string = menu.addAction("Text")
         string.triggered.connect(
             lambda: self.addFeature(
                 StringDescriptor(generate_newname("S{}"), ""))
         )
+        datetime = menu.addAction("Date/Time")
+        datetime.triggered.connect(
+            lambda: self.addFeature(
+                DateTimeDescriptor(generate_newname("T{}"), ""))
+        )
+
         menu.addSeparator()
         self.duplicateaction = menu.addAction("Duplicate Selected Variable")
         self.duplicateaction.triggered.connect(self.duplicateFeature)
@@ -426,7 +482,7 @@ class OWFeatureConstructor(OWWidget):
         self.featuremodel = DescriptorModel(parent=self)
 
         self.featureview = QListView(
-            minimumWidth=200,
+            minimumWidth=200, minimumHeight=50,
             sizePolicy=QSizePolicy(QSizePolicy.Minimum,
                                    QSizePolicy.MinimumExpanding)
         )
@@ -437,17 +493,14 @@ class OWFeatureConstructor(OWWidget):
             self._on_selectedVariableChanged
         )
 
+        self.info.set_input_summary(self.info.NoInput)
+        self.info.set_output_summary(self.info.NoOutput)
+
         layout.addWidget(self.featureview)
 
         box.layout().addLayout(layout, 1)
 
-        box = gui.hBox(self.controlArea)
-        box.layout().addWidget(self.report_button)
-        self.report_button.setMinimumWidth(180)
-        gui.rubber(box)
-        commit = gui.button(box, self, "Send", callback=self.apply,
-                            default=True)
-        commit.setMinimumWidth(180)
+        gui.button(self.buttonsArea, self, "Send", callback=self.apply, default=True)
 
     def setCurrentIndex(self, index):
         index = min(index, len(self.featuremodel) - 1)
@@ -471,8 +524,18 @@ class OWFeatureConstructor(OWWidget):
 
     def _on_modified(self):
         if self.currentIndex >= 0:
+            self.Warning.clear()
             editor = self.editorstack.currentWidget()
-            self.featuremodel[self.currentIndex] = editor.editorData()
+            proposed = editor.editorData().name
+            unique = get_unique_names(self.reserved_names(self.currentIndex),
+                                      proposed)
+
+            feature = editor.editorData()
+            if editor.editorData().name != unique:
+                self.Warning.renamed_var()
+                feature = feature.__class__(unique, *feature[1:])
+
+            self.featuremodel[self.currentIndex] = feature
             self.descriptors = list(self.featuremodel)
 
     def setDescriptors(self, descriptors):
@@ -482,6 +545,16 @@ class OWFeatureConstructor(OWWidget):
         self.descriptors = descriptors
         self.featuremodel[:] = list(self.descriptors)
 
+    def reserved_names(self, idx_=None):
+        varnames = []
+        if self.data is not None:
+            varnames = [var.name for var in
+                        self.data.domain.variables + self.data.domain.metas]
+        varnames += [desc.name for idx, desc in enumerate(self.featuremodel)
+                     if idx != idx_]
+        return set(varnames)
+
+    @Inputs.data
     @check_sql_input
     def setData(self, data=None):
         """Set the input dataset."""
@@ -489,12 +562,14 @@ class OWFeatureConstructor(OWWidget):
 
         self.data = data
 
+        self.info.set_input_summary(self.info.NoInput)
         if self.data is not None:
             descriptors = list(self.descriptors)
             currindex = self.currentIndex
             self.descriptors = []
             self.currentIndex = -1
             self.openContext(data)
+            self.info.set_input_summary(len(data), format_summary_details(data))
 
             if descriptors != self.descriptors or \
                     self.currentIndex != currindex:
@@ -515,7 +590,8 @@ class OWFeatureConstructor(OWWidget):
         if self.data is not None:
             self.apply()
         else:
-            self.send("Data", None)
+            self.info.set_output_summary(self.info.NoOutput)
+            self.Outputs.data.send(None)
 
     def addFeature(self, descriptor):
         self.featuremodel.append(descriptor)
@@ -529,9 +605,9 @@ class OWFeatureConstructor(OWWidget):
         index = selected_row(self.featureview)
         if index is not None:
             self.setCurrentIndex(index)
-        elif index is None and len(self.featuremodel) > 0:
+        elif index is None and self.featuremodel.rowCount():
             # Deleting the last item clears selection
-            self.setCurrentIndex(len(self.featuremodel) - 1)
+            self.setCurrentIndex(self.featuremodel.rowCount() - 1)
 
     def removeSelectedFeature(self):
         if self.currentIndex >= 0:
@@ -541,7 +617,8 @@ class OWFeatureConstructor(OWWidget):
         desc = self.featuremodel[self.currentIndex]
         self.addFeature(copy.deepcopy(desc))
 
-    def check_attrs_values(self, attr, data):
+    @staticmethod
+    def check_attrs_values(attr, data):
         for i in range(len(data)):
             for var in attr:
                 if not math.isnan(data[i, var]) \
@@ -549,25 +626,49 @@ class OWFeatureConstructor(OWWidget):
                     return var.name
         return None
 
-    def apply(self):
-        if self.data is None:
-            return
-
-        desc = list(self.featuremodel)
+    def _validate_descriptors(self, desc):
 
         def validate(source):
             try:
                 return validate_exp(ast.parse(source, mode="eval"))
+            # ast.parse can return arbitrary errors, not only SyntaxError
+            # pylint: disable=broad-except
             except Exception:
                 return False
 
-        def remove_invalid_expression(desc):
-            return (desc if validate(desc.expression)
-                    else desc._replace(expression=""))
+        final = []
+        invalid = []
+        for d in desc:
+            if validate(d.expression):
+                final.append(d)
+            else:
+                final.append(d._replace(expression=""))
+                invalid.append(d)
 
-        desc = map(remove_invalid_expression, desc)
-        source_vars = tuple(self.data.domain) + self.data.domain.metas
-        new_variables = construct_variables(desc, source_vars)
+        if invalid:
+            self.Error.invalid_expressions(", ".join(s.name for s in invalid))
+
+        return final
+
+    def apply(self):
+        def report_error(err):
+            log = logging.getLogger(__name__)
+            log.error("", exc_info=True)
+            self.error("".join(format_exception_only(type(err), err)).rstrip())
+
+        self.Error.clear()
+
+        if self.data is None:
+            return
+
+        desc = list(self.featuremodel)
+        desc = self._validate_descriptors(desc)
+        try:
+            new_variables = construct_variables(desc, self.data)
+        # user's expression can contain arbitrary errors
+        except Exception as err:  # pylint: disable=broad-except
+            report_error(err)
+            return
 
         attrs = [var for var in new_variables if var.is_primitive()]
         metas = [var for var in new_variables if not var.is_primitive()]
@@ -577,37 +678,43 @@ class OWFeatureConstructor(OWWidget):
             metas=self.data.domain.metas + tuple(metas)
         )
 
-        self.Error.clear()
         try:
-            data = Orange.data.Table(new_domain, self.data)
+            for variable in new_variables:
+                variable.compute_value.mask_exceptions = False
+            data = self.data.transform(new_domain)
+        # user's expression can contain arbitrary errors
+        # pylint: disable=broad-except
         except Exception as err:
-            self.error(err.args[0])
+            report_error(err)
             return
+        finally:
+            for variable in new_variables:
+                variable.compute_value.mask_exceptions = True
+
         disc_attrs_not_ok = self.check_attrs_values(
             [var for var in attrs if var.is_discrete], data)
         if disc_attrs_not_ok:
             self.Error.more_values_needed(disc_attrs_not_ok)
             return
 
-        self.send("Data", data)
+        self.info.set_output_summary(len(data), format_summary_details(data))
+        self.Outputs.data.send(data)
 
     def send_report(self):
         items = OrderedDict()
         for feature in self.featuremodel:
             if isinstance(feature, DiscreteDescriptor):
-                items[feature.name] = "{} (discrete with values {}{})".format(
+                items[feature.name] = "{} (categorical with values {}{})".format(
                     feature.expression, feature.values,
                     "; ordered" * feature.ordered)
             elif isinstance(feature, ContinuousDescriptor):
                 items[feature.name] = "{} (numeric)".format(feature.expression)
+            elif isinstance(feature, DateTimeDescriptor):
+                items[feature.name] = "{} (date/time)".format(feature.expression)
             else:
                 items[feature.name] = "{} (text)".format(feature.expression)
         self.report_items(
             report.plural("Constructed feature{s}", len(items)), items)
-
-
-
-import ast
 
 
 def freevars(exp, env):
@@ -630,6 +737,7 @@ def freevars(exp, env):
     ast
 
     """
+    # pylint: disable=too-many-return-statements,too-many-branches
     etype = type(exp)
     if etype in [ast.Expr, ast.Expression]:
         return freevars(exp.body, env)
@@ -677,25 +785,18 @@ def freevars(exp, env):
     elif etype == ast.Compare:
         return sum((freevars(v, env)
                     for v in [exp.left] + exp.comparators), [])
-    elif etype == ast.Call and sys.version_info < (3, 5):
-        return sum((freevars(e, env)
-                    for e in [exp.func] + (exp.args or []) +
-                    ([k.value for k in exp.keywords or []]) +
-                    ([exp.starargs] if exp.starargs else []) +
-                    ([exp.kwargs] if exp.kwargs else [])),
-                   [])
     elif etype == ast.Call:
         return sum(map(lambda e: freevars(e, env),
                        chain([exp.func],
                              exp.args or [],
                              [k.value for k in exp.keywords or []])),
                    [])
-    elif sys.version_info >= (3, 5) and etype == ast.Starred:
+    elif etype == ast.Starred:
         # a 'starred' call parameter (e.g. a and b in `f(x, *a, *b)`
         return freevars(exp.value, env)
-    elif etype in [ast.Num, ast.Str, ast.Ellipsis, ast.Bytes]:
+    elif etype in [ast.Num, ast.Str, ast.Ellipsis, ast.Bytes, ast.NameConstant]:
         return []
-    elif sys.version_info >= (3, 4) and etype == ast.NameConstant:
+    elif etype == ast.Constant:
         return []
     elif etype == ast.Attribute:
         return freevars(exp.value, env)
@@ -734,6 +835,7 @@ def validate_exp(exp):
         A parsed abstract syntax tree
 
     """
+    # pylint: disable=too-many-branches
     if not isinstance(exp, ast.AST):
         raise TypeError("exp is not a 'ast.AST' instance")
 
@@ -757,16 +859,13 @@ def validate_exp(exp):
     elif etype == ast.Call:
         subexp = chain([exp.func], exp.args or [],
                        [k.value for k in exp.keywords or []])
-        if sys.version_info < (3, 5):
-            extra = [exp.starargs, exp.kwargs]
-            subexp = chain(subexp, *filter(None, extra))
         return all(map(validate_exp, subexp))
-    elif sys.version_info >= (3, 5) and etype == ast.Starred:
+    elif etype == ast.Starred:
         assert isinstance(exp.ctx, ast.Load)
         return validate_exp(exp.value)
-    elif etype in [ast.Num, ast.Str, ast.Bytes, ast.Ellipsis]:
+    elif etype in [ast.Num, ast.Str, ast.Bytes, ast.Ellipsis, ast.NameConstant]:
         return True
-    elif sys.version_info >= (3, 4) and etype == ast.NameConstant:
+    elif etype == ast.Constant:
         return True
     elif etype == ast.Attribute:
         return True
@@ -790,27 +889,31 @@ def validate_exp(exp):
         raise ValueError(exp)
 
 
-def construct_variables(descriptions, source_vars):
+def construct_variables(descriptions, data):
     # subs
     variables = []
+    source_vars = data.domain.variables + data.domain.metas
     for desc in descriptions:
-        _, func = bind_variable(desc, source_vars)
+        desc, func = bind_variable(desc, source_vars, data)
         var = make_variable(desc, func)
         variables.append(var)
     return variables
 
 
 def sanitized_name(name):
-    return re.sub(r"\W", "_", name)
+    sanitized = re.sub(r"\W", "_", name)
+    if sanitized[0].isdigit():
+        sanitized = "_" + sanitized
+    return sanitized
 
 
-def bind_variable(descriptor, env):
+def bind_variable(descriptor, env, data):
     """
     (descriptor, env) ->
         (descriptor, (instance -> value) | (table -> value list))
     """
     if not descriptor.expression.strip():
-        return (descriptor, lambda _: float("nan"))
+        return descriptor, FeatureFunc("nan", [], {"nan": float("nan")})
 
     exp_ast = ast.parse(descriptor.expression, mode="eval")
     freev = unique(freevars(exp_ast, []))
@@ -818,38 +921,96 @@ def bind_variable(descriptor, env):
     source_vars = [(name, variables[name]) for name in freev
                    if name in variables]
 
-    values = []
+    values = {}
+    cast = None
+    nan = float("nan")
+
     if isinstance(descriptor, DiscreteDescriptor):
-        values = [sanitized_name(v) for v in descriptor.values]
-    return descriptor, FeatureFunc(exp_ast, source_vars, values)
+        if not descriptor.values:
+            str_func = FeatureFunc(descriptor.expression, source_vars)
+            values = sorted({str(x) for x in str_func(data)})
+            values = {name: i for i, name in enumerate(values)}
+            descriptor = descriptor._replace(values=values)
 
+            def cast(x):  # pylint: disable=function-redefined
+                return values.get(x, nan)
 
-def make_lambda(expression, args, values):
-    def make_arg(name):
-        if sys.version_info >= (3, 0):
-            return ast.arg(arg=name, annotation=None)
         else:
-            return ast.Name(id=arg, ctx=ast.Param(), lineno=1, col_offset=0)
+            values = [sanitized_name(v) for v in descriptor.values]
+            values = {name: i for i, name in enumerate(values)}
 
+    if isinstance(descriptor, DateTimeDescriptor):
+        parse = Orange.data.TimeVariable("_").parse
+
+        def cast(e):  # pylint: disable=function-redefined
+            if isinstance(e, (int, float)):
+                return e
+            if e == "" or e is None:
+                return np.nan
+            return parse(e)
+
+    func = FeatureFunc(descriptor.expression, source_vars, values, cast)
+    return descriptor, func
+
+
+def make_lambda(expression, args, env=None):
+    # type: (ast.Expression, List[str], Dict[str, Any]) -> types.FunctionType
+    """
+    Create an lambda function from a expression AST.
+
+    Parameters
+    ----------
+    expression : ast.Expression
+        The body of the lambda.
+    args : List[str]
+        A list of positional argument names
+    env : Optional[Dict[str, Any]]
+        Extra environment to capture in the lambda's closure.
+
+    Returns
+    -------
+    func : types.FunctionType
+    """
+    # lambda *{args}* : EXPRESSION
     lambda_ = ast.Lambda(
         args=ast.arguments(
-            args=[make_arg(arg) for arg in args + values],
+            posonlyargs=[],
+            args=[ast.arg(arg=arg, annotation=None) for arg in args],
             varargs=None,
             varargannotation=None,
             kwonlyargs=[],
             kwarg=None,
             kwargannotation=None,
-            defaults=[ast.Num(i) for i in range(len(values))],
+            defaults=[],
             kw_defaults=[]),
         body=expression.body,
     )
     lambda_ = ast.copy_location(lambda_, expression.body)
-    exp = ast.Expression(body=lambda_, lineno=1, col_offset=0)
-    ast.dump(exp)
+    # lambda **{env}** : lambda *{args}*: EXPRESSION
+    outer = ast.Lambda(
+        args=ast.arguments(
+            posonlyargs=[],
+            args=[ast.arg(arg=name, annotation=None) for name in (env or {})],
+            varargs=None,
+            varargannotation=None,
+            kwonlyargs=[],
+            kwarg=None,
+            kwargannotation=None,
+            defaults=[],
+            kw_defaults=[],
+        ),
+        body=lambda_,
+    )
+    exp = ast.Expression(body=outer, lineno=1, col_offset=0)
     ast.fix_missing_locations(exp)
     GLOBALS = __GLOBALS.copy()
     GLOBALS["__builtins__"] = {}
-    return eval(compile(exp, "<lambda>", "eval"), GLOBALS)
+    # pylint: disable=eval-used
+    fouter = eval(compile(exp, "<lambda>", "eval"), GLOBALS)
+    assert isinstance(fouter, types.FunctionType)
+    finner = fouter(**env)
+    assert isinstance(finner, types.FunctionType)
+    return finner
 
 
 __ALLOWED = [
@@ -857,9 +1018,9 @@ __ALLOWED = [
     "bin", "bool", "bytearray", "bytes", "chr", "complex", "dict",
     "divmod", "enumerate", "filter", "float", "format", "frozenset",
     "getattr", "hasattr", "hash", "hex", "id", "int", "iter", "len",
-    "list", "map", "max", "memoryview", "min", "next", "object",
+    "list", "map", "memoryview", "next", "object",
     "oct", "ord", "pow", "range", "repr", "reversed", "round",
-    "set", "slice", "sorted", "str", "sum", "tuple", "type",
+    "set", "slice", "sorted", "str", "tuple", "type",
     "zip"
 ]
 
@@ -880,23 +1041,83 @@ __GLOBALS.update({
     "vonmisesvariate": random.vonmisesvariate,
     "weibullvariate": random.weibullvariate,
     "triangular": random.triangular,
-    "uniform": random.uniform}
-)
+    "uniform": random.uniform,
+    "nanmean": lambda *args: np.nanmean(args),
+    "nanmin": lambda *args: np.nanmin(args),
+    "nanmax": lambda *args: np.nanmax(args),
+    "nansum": lambda *args: np.nansum(args),
+    "nanstd": lambda *args: np.nanstd(args),
+    "nanmedian": lambda *args: np.nanmedian(args),
+    "nancumsum": lambda *args: np.nancumsum(args),
+    "nancumprod": lambda *args: np.nancumprod(args),
+    "nanargmax": lambda *args: np.nanargmax(args),
+    "nanargmin": lambda *args: np.nanargmin(args),
+    "nanvar": lambda *args: np.nanvar(args),
+    "mean": lambda *args: np.mean(args),
+    "min": lambda *args: np.min(args),
+    "max": lambda *args: np.max(args),
+    "sum": lambda *args: np.sum(args),
+    "std": lambda *args: np.std(args),
+    "median": lambda *args: np.median(args),
+    "cumsum": lambda *args: np.cumsum(args),
+    "cumprod": lambda *args: np.cumprod(args),
+    "argmax": lambda *args: np.argmax(args),
+    "argmin": lambda *args: np.argmin(args),
+    "var": lambda *args: np.var(args)})
 
 
 class FeatureFunc:
-    def __init__(self, expression, args, values):
+    """
+    Parameters
+    ----------
+    expression : str
+        An expression string
+    args : List[Tuple[str, Orange.data.Variable]]
+        A list of (`name`, `variable`) tuples where `name` is the name of
+        a variable as used in `expression`, and `variable` is the variable
+        instance used to extract the corresponding column/value from a
+        Table/Instance.
+    extra_env : Optional[Dict[str, Any]]
+        Extra environment specifying constant values to be made available
+        in expression. It must not shadow names in `args`
+    cast: Optional[Callable]
+        A function for casting the expressions result to the appropriate
+        type (e.g. string representation of date/time variables to floats)
+    """
+    def __init__(self, expression, args, extra_env=None, cast=None):
         self.expression = expression
         self.args = args
-        self.values = values
-        self.func = make_lambda(expression, [name for name, _ in args], values)
+        self.extra_env = dict(extra_env or {})
+        self.func = make_lambda(ast.parse(expression, mode="eval"),
+                                [name for name, _ in args], self.extra_env)
+        self.cast = cast
+        self.mask_exceptions = True
 
     def __call__(self, instance, *_):
         if isinstance(instance, Orange.data.Table):
             return [self(inst) for inst in instance]
         else:
-            args = [instance[var] for _, var in self.args]
-            return self.func(*args)
+            try:
+                args = [str(instance[var])
+                        if instance.domain[var].is_string else instance[var]
+                        for _, var in self.args]
+                y = self.func(*args)
+            # user's expression can contain arbitrary errors
+            # this also covers missing attributes
+            except:  # pylint: disable=bare-except
+                if not self.mask_exceptions:
+                    raise
+                return np.nan
+            if self.cast:
+                y = self.cast(y)
+            return y
+
+    def __reduce__(self):
+        return type(self), (self.expression, self.args,
+                            self.extra_env, self.cast)
+
+    def __repr__(self):
+        return "{0.__name__}{1!r}".format(*self.__reduce__())
 
 
 def unique(seq):
@@ -909,26 +1130,5 @@ def unique(seq):
     return unique_el
 
 
-def main(argv=sys.argv):
-    from AnyQt.QtWidgets import QApplication
-    app = QApplication(list(argv))
-    argv = app.arguments()
-    if len(argv) > 1:
-        filename = argv[1]
-    else:
-        filename = "iris"
-
-    w = OWFeatureConstructor()
-    w.show()
-    w.raise_()
-    data = Orange.data.Table(filename)
-    w.setData(data)
-    w.handleNewSignals()
-    app.exec_()
-    w.setData(None)
-    w.handleNewSignals()
-    w.saveSettings()
-    return 0
-
-if __name__ == "__main__":
-    sys.exit(main())
+if __name__ == "__main__":  # pragma: no cover
+    WidgetPreview(OWFeatureConstructor).run(Orange.data.Table("iris"))

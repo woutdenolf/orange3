@@ -1,12 +1,7 @@
-import sys
-from collections import OrderedDict
-
-from AnyQt.QtWidgets import (
-    QLineEdit, QComboBox, QTextEdit, QMessageBox, QSizePolicy, QApplication)
+from AnyQt.QtWidgets import QComboBox, QTextEdit, QMessageBox, QApplication
 from AnyQt.QtGui import QCursor
-from AnyQt.QtCore import Qt, QTimer
+from AnyQt.QtCore import Qt
 
-from Orange.canvas import report
 from Orange.data import Table
 from Orange.data.sql.backend import Backend
 from Orange.data.sql.backend.base import BackendError
@@ -14,9 +9,15 @@ from Orange.data.sql.table import SqlTable, LARGE_TABLE, AUTO_DL_LIMIT
 from Orange.widgets import gui
 from Orange.widgets.settings import Setting
 from Orange.widgets.utils.itemmodels import PyListModel
-from Orange.widgets.widget import OWWidget, OutputSignal, Msg
+from Orange.widgets.utils.owbasesql import OWBaseSql
+from Orange.widgets.utils.widgetpreview import WidgetPreview
+from Orange.widgets.widget import Output, Msg
 
 MAX_DL_LIMIT = 1000000
+
+
+def is_postgres(backend):
+    return getattr(backend, 'display_name', '') == "PostgreSQL"
 
 
 class TableModel(PyListModel):
@@ -35,27 +36,23 @@ class BackendModel(PyListModel):
         return super().data(index, role)
 
 
-class OWSql(OWWidget):
+class OWSql(OWBaseSql):
     name = "SQL Table"
     id = "orange.widgets.data.sql"
-    description = "Load data set from SQL."
+    description = "Load dataset from SQL."
     icon = "icons/SQLTable.svg"
-    priority = 10
+    priority = 30
     category = "Data"
-    keywords = ["data", "file", "load", "read"]
-    outputs = [OutputSignal(
-        "Data", Table,
-        doc="Attribute-valued data set read from the input file.")]
+    keywords = ["load"]
 
-    want_main_area = False
-    resizing_enabled = False
+    class Outputs:
+        data = Output("Data", Table, doc="Attribute-valued dataset read from the input file.")
 
-    host = Setting(None)
-    port = Setting(None)
-    database = Setting(None)
-    schema = Setting(None)
-    username = Setting(None)
-    password = Setting(None)
+    settings_version = 2
+
+    buttons_area_orientation = None
+
+    selected_backend = Setting(None)
     table = Setting(None)
     sql = Setting("")
     guess_values = Setting(True)
@@ -64,77 +61,63 @@ class OWSql(OWWidget):
     materialize = Setting(False)
     materialize_table_name = Setting("")
 
-    class Information(OWWidget.Information):
+    class Information(OWBaseSql.Information):
         data_sampled = Msg("Data description was generated from a sample.")
 
-    class Error(OWWidget.Error):
-        connection = Msg("{}")
-        no_backends = Msg("Please install a backend to use this widget")
-        missing_extension = Msg("Database is missing extension{}: {}")
+    class Warning(OWBaseSql.Warning):
+        missing_extension = Msg("Database is missing extensions: {}")
+
+    class Error(OWBaseSql.Error):
+        no_backends = Msg("Please install a backend to use this widget.")
 
     def __init__(self):
+        # Lint
+        self.backends = None
+        self.backendcombo = None
+        self.tables = None
+        self.tablecombo = None
+        self.sqltext = None
+        self.custom_sql = None
+        self.downloadcb = None
         super().__init__()
 
-        self.backend = None
-        self.data_desc_table = None
-        self.database_desc = None
+    def _setup_gui(self):
+        super()._setup_gui()
+        self._add_backend_controls()
+        self._add_tables_controls()
 
-        vbox = gui.vBox(self.controlArea, "Server", addSpace=True)
-        box = gui.vBox(vbox)
-
-        self.backendmodel = BackendModel(Backend.available_backends())
+    def _add_backend_controls(self):
+        box = self.serverbox
+        self.backends = BackendModel(Backend.available_backends())
         self.backendcombo = QComboBox(box)
-        if len(self.backendmodel):
-            self.backendcombo.setModel(self.backendmodel)
+        if self.backends:
+            self.backendcombo.setModel(self.backends)
+            names = [backend.display_name for backend in self.backends]
+            if self.selected_backend and self.selected_backend in names:
+                self.backendcombo.setCurrentText(self.selected_backend)
         else:
             self.Error.no_backends()
             box.setEnabled(False)
-        box.layout().addWidget(self.backendcombo)
+        self.backendcombo.currentTextChanged.connect(self.__backend_changed)
+        box.layout().insertWidget(0, self.backendcombo)
 
-        self.servertext = QLineEdit(box)
-        self.servertext.setPlaceholderText('Server')
-        self.servertext.setToolTip('Server')
-        if self.host:
-            self.servertext.setText(self.host if not self.port else
-                                    '{}:{}'.format(self.host, self.port))
-        box.layout().addWidget(self.servertext)
-        self.databasetext = QLineEdit(box)
-        self.databasetext.setPlaceholderText('Database[/Schema]')
-        self.databasetext.setToolTip('Database or optionally Database/Schema')
-        if self.database:
-            self.databasetext.setText(
-                self.database if not self.schema else
-                '{}/{}'.format(self.database, self.schema))
-        box.layout().addWidget(self.databasetext)
-        self.usernametext = QLineEdit(box)
-        self.usernametext.setPlaceholderText('Username')
-        self.usernametext.setToolTip('Username')
-        if self.username:
-            self.usernametext.setText(self.username)
-        box.layout().addWidget(self.usernametext)
-        self.passwordtext = QLineEdit(box)
-        self.passwordtext.setPlaceholderText('Password')
-        self.passwordtext.setToolTip('Password')
-        self.passwordtext.setEchoMode(QLineEdit.Password)
-        if self.password:
-            self.passwordtext.setText(self.password)
-        box.layout().addWidget(self.passwordtext)
+    def __backend_changed(self):
+        backend = self.get_backend()
+        self.selected_backend = backend.display_name if backend else None
 
-        tables = gui.hBox(box)
-        self.tablemodel = TableModel()
+    def _add_tables_controls(self):
+        vbox = gui.vBox(self.controlArea, "Tables")
+        box = gui.vBox(vbox)
+        self.tables = TableModel()
+
         self.tablecombo = QComboBox(
             minimumContentsLength=35,
             sizeAdjustPolicy=QComboBox.AdjustToMinimumContentsLength
         )
-        self.tablecombo.setModel(self.tablemodel)
+        self.tablecombo.setModel(self.tables)
         self.tablecombo.setToolTip('table')
-        tables.layout().addWidget(self.tablecombo)
         self.tablecombo.activated[int].connect(self.select_table)
-        self.connectbutton = gui.button(
-            tables, self, '↻', callback=self.connect)
-        self.connectbutton.setSizePolicy(
-            QSizePolicy.Fixed, QSizePolicy.Fixed)
-        tables.layout().addWidget(self.connectbutton)
+        box.layout().addWidget(self.tablecombo)
 
         self.custom_sql = gui.vBox(box)
         self.custom_sql.setVisible(False)
@@ -148,80 +131,68 @@ class OWSql(OWWidget):
         le = gui.lineEdit(mt, self, 'materialize_table_name')
         le.setToolTip('Save results of the query in a table')
 
-        self.executebtn = gui.button(
-            self.custom_sql, self, 'Execute', callback=self.open_table)
+        gui.button(self.custom_sql, self, 'Execute', callback=self.open_table)
 
         box.layout().addWidget(self.custom_sql)
 
         gui.checkBox(box, self, "guess_values",
-                     "Auto-discover discrete variables",
+                     "Auto-discover categorical variables",
                      callback=self.open_table)
 
-        gui.checkBox(box, self, "download",
-                     "Download data to local memory",
-                     callback=self.open_table)
+        self.downloadcb = gui.checkBox(box, self, "download",
+                                       "Download data to local memory",
+                                       callback=self.open_table)
 
-        gui.rubber(self.buttonsArea)
-        QTimer.singleShot(0, self.connect)
+    def highlight_error(self, text=""):
+        err = ['', 'QLineEdit {border: 2px solid red;}']
+        self.servertext.setStyleSheet(err['server' in text or 'host' in text])
+        self.usernametext.setStyleSheet(err['role' in text])
+        self.databasetext.setStyleSheet(err['database' in text])
 
-    def error(self, id=0, text=""):
-        super().error(id, text)
-        err_style = 'QLineEdit {border: 2px solid red;}'
-        if 'server' in text or 'host' in text:
-            self.servertext.setStyleSheet(err_style)
-        else:
-            self.servertext.setStyleSheet('')
-        if 'role' in text:
-            self.usernametext.setStyleSheet(err_style)
-        else:
-            self.usernametext.setStyleSheet('')
-        if 'database' in text:
-            self.databasetext.setStyleSheet(err_style)
-        else:
-            self.databasetext.setStyleSheet('')
+    def get_backend(self):
+        if self.backendcombo.currentIndex() < 0:
+            return None
+        return self.backends[self.backendcombo.currentIndex()]
 
-    def connect(self):
-        hostport = self.servertext.text().split(':')
-        self.host = hostport[0]
-        self.port = hostport[1] if len(hostport) == 2 else None
-        self.database, _, self.schema = self.databasetext.text().partition('/')
-        self.username = self.usernametext.text() or None
-        self.password = self.passwordtext.text() or None
-        try:
-            if self.backendcombo.currentIndex() < 0:
-                return
-            backend = self.backendmodel[self.backendcombo.currentIndex()]
-            self.backend = backend(dict(
-                host=self.host,
-                port=self.port,
-                database=self.database,
-                user=self.username,
-                password=self.password
-            ))
-            self.Error.connection.clear()
-            self.database_desc = OrderedDict((
-                ("Host", self.host), ("Port", self.port),
-                ("Database", self.database), ("User name", self.username)
-            ))
-            self.refresh_tables()
-            self.select_table()
-        except BackendError as err:
-            error = str(err).split('\n')[0]
-            self.Error.connection(error)
-            self.database_desc = self.data_desc_table = None
-            self.tablecombo.clear()
+    def on_connection_success(self):
+        if getattr(self.backend, 'missing_extension', False):
+            self.Warning.missing_extension(
+                ", ".join(self.backend.missing_extension))
+            self.download = True
+            self.downloadcb.setEnabled(False)
+        if not is_postgres(self.backend):
+            self.download = True
+            self.downloadcb.setEnabled(False)
+        super().on_connection_success()
+        self.refresh_tables()
+        self.select_table()
+
+    def on_connection_error(self, err):
+        super().on_connection_error(err)
+        self.highlight_error(str(err).split("\n")[0])
+
+    def clear(self):
+        super().clear()
+        self.Warning.missing_extension.clear()
+        self.downloadcb.setEnabled(True)
+        self.highlight_error()
+        self.tablecombo.clear()
+        self.tablecombo.repaint()
 
     def refresh_tables(self):
-        self.tablemodel.clear()
-        self.Error.missing_extension.clear()
+        self.tables.clear()
         if self.backend is None:
             self.data_desc_table = None
             return
 
-        self.tablemodel.append("Select a table")
-        self.tablemodel.extend(self.backend.list_tables(self.schema))
-        self.tablemodel.append("Custom SQL")
+        self.tables.append("Select a table")
+        self.tables.append("Custom SQL")
+        self.tables.extend(self.backend.list_tables(self.schema))
+        index = self.tablecombo.findText(str(self.table))
+        self.tablecombo.setCurrentIndex(index if index != -1 else 0)
+        self.tablecombo.repaint()
 
+    # Called on tablecombo selection change:
     def select_table(self):
         curIdx = self.tablecombo.currentIndex()
         if self.tablecombo.itemText(curIdx) != "Custom SQL":
@@ -232,48 +203,45 @@ class OWSql(OWWidget):
             self.data_desc_table = None
             self.database_desc["Table"] = "(None)"
             self.table = None
-
-        #self.Error.missing_extension(
-        #    's' if len(missing) > 1 else '',
-        #    ', '.join(missing),
-        #    shown=missing)
-
-    def open_table(self):
-        table = self.get_table()
-        self.data_desc_table = table
-        self.send("Data", table)
+            if len(str(self.sql)) > 14:
+                return self.open_table()
+        return None
 
     def get_table(self):
-        if self.tablecombo.currentIndex() <= 0:
+        curIdx = self.tablecombo.currentIndex()
+        if curIdx <= 0:
             if self.database_desc:
                 self.database_desc["Table"] = "(None)"
             self.data_desc_table = None
-            return
+            return None
 
-        if self.tablecombo.currentIndex() < self.tablecombo.count() - 1:
-            self.table = self.tablemodel[self.tablecombo.currentIndex()]
+        if self.tablecombo.itemText(curIdx) != "Custom SQL":
+            self.table = self.tables[self.tablecombo.currentIndex()]
             self.database_desc["Table"] = self.table
             if "Query" in self.database_desc:
                 del self.database_desc["Query"]
+            what = self.table
         else:
-            self.sql = self.table = self.sqltext.toPlainText()
+            what = self.sql = self.sqltext.toPlainText()
+            self.table = "Custom SQL"
             if self.materialize:
-                import psycopg2
                 if not self.materialize_table_name:
                     self.Error.connection(
                         "Specify a table name to materialize the query")
-                    return
+                    return None
                 try:
-                    with self.backend.execute_sql_query("DROP TABLE IF EXISTS " + self.materialize_table_name):
+                    with self.backend.execute_sql_query("DROP TABLE IF EXISTS " +
+                                                        self.materialize_table_name):
                         pass
-                    with self.backend.execute_sql_query("CREATE TABLE " + self.materialize_table_name + " AS " + self.table):
+                    with self.backend.execute_sql_query("CREATE TABLE " +
+                                                        self.materialize_table_name +
+                                                        " AS " + self.sql):
                         pass
                     with self.backend.execute_sql_query("ANALYZE " + self.materialize_table_name):
                         pass
-                    self.table = self.materialize_table_name
-                except psycopg2.ProgrammingError as ex:
+                except BackendError as ex:
                     self.Error.connection(str(ex))
-                    return
+                    return None
 
         try:
             table = SqlTable(dict(host=self.host,
@@ -281,17 +249,17 @@ class OWSql(OWWidget):
                                   database=self.database,
                                   user=self.username,
                                   password=self.password),
-                             self.table,
+                             what,
                              backend=type(self.backend),
                              inspect_values=False)
         except BackendError as ex:
             self.Error.connection(str(ex))
-            return
+            return None
 
         self.Error.connection.clear()
 
-
         sample = False
+
         if table.approx_len() > LARGE_TABLE and self.guess_values:
             confirm = QMessageBox(self)
             confirm.setIcon(QMessageBox.Warning)
@@ -300,12 +268,14 @@ class OWSql(OWWidget):
                             "Do you want to auto discover attributes?")
             confirm.addButton("Yes", QMessageBox.YesRole)
             no_button = confirm.addButton("No", QMessageBox.NoRole)
-            sample_button = confirm.addButton("Yes, on a sample",
-                                              QMessageBox.YesRole)
+            if is_postgres(self.backend):
+                sample_button = confirm.addButton("Yes, on a sample",
+                                                  QMessageBox.YesRole)
             confirm.exec()
             if confirm.clickedButton() == no_button:
                 self.guess_values = False
-            elif confirm.clickedButton() == sample_button:
+            elif is_postgres(self.backend) and \
+                    confirm.clickedButton() == sample_button:
                 sample = True
 
         self.Information.clear()
@@ -321,37 +291,52 @@ class OWSql(OWWidget):
             table.domain = domain
 
         if self.download:
-            if table.approx_len() > MAX_DL_LIMIT:
-                QMessageBox.warning(
-                    self, 'Warning', "Data is too big to download.\n"
-                    "Consider using the Data Sampler widget to download "
-                    "a sample instead.")
-                self.download = False
-            elif table.approx_len() > AUTO_DL_LIMIT:
-                confirm = QMessageBox.question(
-                    self, 'Question', "Data appears to be big. Do you really "
-                                      "want to download it to local memory?",
-                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-                if confirm == QMessageBox.No:
-                    self.download = False
-        if self.download:
+            if table.approx_len() > AUTO_DL_LIMIT:
+                if is_postgres(self.backend):
+                    confirm = QMessageBox(self)
+                    confirm.setIcon(QMessageBox.Warning)
+                    confirm.setText("Data appears to be big. Do you really "
+                                    "want to download it to local memory?")
+
+                    if table.approx_len() <= MAX_DL_LIMIT:
+                        confirm.addButton("Yes", QMessageBox.YesRole)
+                    no_button = confirm.addButton("No", QMessageBox.NoRole)
+                    sample_button = confirm.addButton("Yes, a sample",
+                                                      QMessageBox.YesRole)
+                    confirm.exec()
+                    if confirm.clickedButton() == no_button:
+                        return None
+                    elif confirm.clickedButton() == sample_button:
+                        table = table.sample_percentage(
+                            AUTO_DL_LIMIT / table.approx_len() * 100)
+                else:
+                    if table.approx_len() > MAX_DL_LIMIT:
+                        QMessageBox.warning(
+                            self, 'Warning', "Data is too big to download.\n")
+                        return None
+                    else:
+                        confirm = QMessageBox.question(
+                            self, 'Question',
+                            "Data appears to be big. Do you really "
+                            "want to download it to local memory?",
+                            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                        if confirm == QMessageBox.No:
+                            return None
+
             table.download_data(MAX_DL_LIMIT)
             table = Table(table)
 
         return table
 
-    def send_report(self):
-        if not self.database_desc:
-            self.report_paragraph("No database connection.")
-            return
-        self.report_items("Database", self.database_desc)
-        if self.data_desc_table:
-            self.report_items("Data",
-                              report.describe_data(self.data_desc_table))
+    @classmethod
+    def migrate_settings(cls, settings, version):
+        if version < 2:
+            # Until Orange version 3.4.4 username and password had been stored
+            # in Settings.
+            cm = cls._credential_manager(settings["host"], settings["port"])
+            cm.username = settings["username"]
+            cm.password = settings["password"]
 
-if __name__ == "__main__":
-    a = QApplication(sys.argv)
-    ow = OWSql()
-    ow.show()
-    a.exec_()
-    ow.saveSettings()
+
+if __name__ == "__main__":  # pragma: no cover
+    WidgetPreview(OWSql).run()

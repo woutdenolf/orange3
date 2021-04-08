@@ -1,7 +1,7 @@
-import weakref
+import warnings
 
 from math import log
-from collections import Iterable
+from collections.abc import Iterable
 from itertools import chain
 from numbers import Integral
 
@@ -10,6 +10,7 @@ import numpy as np
 from Orange.data import (
     Unknown, Variable, ContinuousVariable, DiscreteVariable, StringVariable
 )
+from Orange.util import deprecated, OrangeDeprecationWarning
 
 __all__ = ["DomainConversion", "Domain"]
 
@@ -43,24 +44,55 @@ class DomainConversion:
     .. attribute:: metas
 
         Indices for meta attributes
+
+    .. attribute:: sparse_X
+
+        Flag whether the resulting X matrix should be sparse.
+
+    .. attribute:: sparse_Y
+
+        Flag whether the resulting Y matrix should be sparse.
+
+    .. attribute:: sparse_metas
+
+        Flag whether the resulting metas matrix should be sparse.
     """
 
     def __init__(self, source, destination):
         """
         Compute the conversion indices from the given `source` to `destination`
         """
+        def match(var):
+            if var in source:
+                sourcevar = source[var]
+                sourceindex = source.index(sourcevar)
+                if var.is_discrete and var is not sourcevar:
+                    mapping = var.get_mapper_from(sourcevar)
+                    return lambda table: mapping(table.get_column_view(sourceindex)[0])
+                return source.index(var)
+            return var.compute_value  # , which may also be None
+
         self.source = source
 
-        self.attributes = [
-            source.index(var) if var in source
-            else var.compute_value for var in destination.attributes]
-        self.class_vars = [
-            source.index(var) if var in source
-            else var.compute_value for var in destination.class_vars]
+        self.attributes = [match(var) for var in destination.attributes]
+        self.class_vars = [match(var) for var in destination.class_vars]
         self.variables = self.attributes + self.class_vars
-        self.metas = [
-            source.index(var) if var in source
-            else var.compute_value for var in destination.metas]
+        self.metas = [match(var) for var in destination.metas]
+
+        def should_be_sparse(feats):
+            """
+            For a matrix to be stored in sparse, more than 2/3 of columns
+            should be marked as sparse and there should be no string columns
+            since Scipy's sparse matrices don't support dtype=object.
+            """
+            fraction_sparse = sum(f.sparse for f in feats) / max(len(feats), 1)
+            contain_strings = any(f.is_string for f in feats)
+            return fraction_sparse > 2/3 and not contain_strings
+
+        # check whether X, Y or metas should be sparse
+        self.sparse_X = should_be_sparse(destination.attributes)
+        self.sparse_Y = should_be_sparse(destination.class_vars)
+        self.sparse_metas = should_be_sparse(destination.metas)
 
 
 def filter_visible(feats):
@@ -116,6 +148,11 @@ class Domain:
                             "descriptors must be instances of Variable, "
                             "not '%s'" % type(var).__name__)
 
+        names = [var.name for var in chain(attributes, class_vars, metas)]
+        if len(names) != len(set(names)):
+            raise Exception('All variables in the domain should have'
+                            ' unique names.')
+
         # Store everything
         self.attributes = tuple(attributes)
         self.class_vars = tuple(class_vars)
@@ -134,11 +171,8 @@ class Domain:
             for idx, var in enumerate(self.metas)))
 
         self.anonymous = False
-        self._known_domains = weakref.WeakKeyDictionary()
-        self._last_conversion = None
 
-        # Precompute hash, which is frequently used in domain conversions.
-        self._hash = hash(self.attributes) ^ hash(self.class_vars) ^ hash(self.metas)
+        self._hash = None  # cache for __hash__()
 
     # noinspection PyPep8Naming
     @classmethod
@@ -215,6 +249,28 @@ class Domain:
         """The number of variables (features and class attributes)."""
         return len(self._variables)
 
+    def __bool__(self):
+        warnings.warn(
+            "Domain.__bool__ is ambiguous; use 'is None' or 'empty' instead",
+            OrangeDeprecationWarning, stacklevel=2)
+        return len(self) > 0  # Keep the obsolete behaviour
+
+    def empty(self):
+        """True if the domain has no variables of any kind"""
+        return not self.variables and not self.metas
+
+    def _get_equivalent(self, var):
+        if isinstance(var, Variable):
+            index = self._indices.get(var.name)
+            if index is not None:
+                if index >= 0:
+                    myvar = self.variables[index]
+                else:
+                    myvar = self.metas[-1 - index]
+                if myvar == var:
+                    return myvar
+        return None
+
     def __getitem__(self, idx):
         """
         Return a variable descriptor from the given argument, which can be
@@ -229,22 +285,34 @@ class Domain:
         if isinstance(idx, slice):
             return self._variables[idx]
 
-        idx = self._indices[idx]
-        if idx >= 0:
-            return self.variables[idx]
+        index = self._indices.get(idx)
+        if index is None:
+            var = self._get_equivalent(idx)
+            if var is not None:
+                return var
+            raise KeyError(idx)
+        if index >= 0:
+            return self.variables[index]
         else:
-            return self.metas[-1-idx]
+            return self.metas[-1 - index]
 
     def __contains__(self, item):
         """
         Return `True` if the item (`str`, `int`, :class:`Variable`) is
         in the domain.
         """
-        return item in self._indices
+        return item in self._indices or self._get_equivalent(item) is not None
 
+    @deprecated("Domain.variables")
     def __iter__(self):
         """
         Return an iterator through variables (features and class attributes).
+
+        The current behaviour is confusing, as `x in domain` returns True
+        for meta variables, but iter(domain) does not yield them.
+        This will be consolidated eventually (in 3.12?), the code that
+        currently iterates over domain should iterate over domain.variables
+        instead.
         """
         return iter(self._variables)
 
@@ -263,25 +331,20 @@ class Domain:
 
     __repr__ = __str__
 
-    def __getstate__(self):
-        state = self.__dict__.copy()
-        state.pop("_known_domains", None)
-        return state
-
-    def __setstate__(self, state):
-        self.__dict__.update(state)
-        self._known_domains = weakref.WeakKeyDictionary()
-
     def index(self, var):
         """
         Return the index of the given variable or meta attribute, represented
         with an instance of :class:`Variable`, `int` or `str`.
         """
 
-        try:
-            return self._indices[var]
-        except KeyError:
-            raise ValueError("'%s' is not in domain" % var)
+        idx = self._indices.get(var)
+        if idx is not None:
+            return idx
+        equiv = self._get_equivalent(var)
+        if equiv is not None:
+            return self._indices[equiv]
+
+        raise ValueError("'%s' is not in domain" % var)
 
     def has_discrete_attributes(self, include_class=False, include_metas=False):
         """
@@ -303,6 +366,16 @@ class Domain:
         vars += self.metas if include_metas else ()
         return any(var.is_continuous for var in vars)
 
+    def has_time_attributes(self, include_class=False, include_metas=False):
+        """
+        Return `True` if domain has any time attributes. If
+        `include_class` is set, the check includes the class attribute(s). If
+        `include_metas` is set, the check includes the meta attributes.
+        """
+        vars = self.variables if include_class else self.attributes
+        vars += self.metas if include_metas else ()
+        return any(var.is_time for var in vars)
+
     @property
     def has_continuous_class(self):
         return bool(self.class_var and self.class_var.is_continuous)
@@ -311,26 +384,9 @@ class Domain:
     def has_discrete_class(self):
         return bool(self.class_var and self.class_var.is_discrete)
 
-    def get_conversion(self, source):
-        """
-        Return an instance of :class:`DomainConversion` for conversion from the
-        given source domain to this domain. Domain conversions are cached to
-        speed-up the conversion in the common case in which the domain
-        is based on another domain, for instance, when the domain contains
-        discretized variables from another domain.
-
-        :param source: the source domain
-        :type source: Orange.data.Domain
-        """
-        # the method is thread-safe
-        c = self._last_conversion
-        if c and c.source is source:
-            return c
-        c = self._known_domains.get(source, None)
-        if not c:
-            c = DomainConversion(source, self)
-            self._known_domains[source] = self._last_conversion = c
-        return c
+    @property
+    def has_time_class(self):
+        return bool(self.class_var and self.class_var.is_time)
 
     # noinspection PyProtectedMember
     def convert(self, inst):
@@ -345,7 +401,7 @@ class Domain:
         if isinstance(inst, Instance):
             if inst.domain == self:
                 return inst._x, inst._y, inst._metas
-            c = self.get_conversion(inst.domain)
+            c = DomainConversion(inst.domain, self)
             l = len(inst.domain.attributes)
             values = [(inst._x[i] if 0 <= i < l
                        else inst._y[i - l] if i >= l
@@ -422,6 +478,21 @@ class Domain:
     def checksum(self):
         return hash(self)
 
+    def copy(self):
+        """
+        Make a copy of the domain. New features are proxies of the old ones,
+        hence the new domain can be used anywhere the old domain was used.
+
+        Returns:
+            Domain: a copy of the domain.
+        """
+        return Domain(
+            attributes=[a.make_proxy() for a in self.attributes],
+            class_vars=[a.make_proxy() for a in self.class_vars],
+            metas=[a.make_proxy() for a in self.metas],
+            source=self,
+        )
+
     def __eq__(self, other):
         if not isinstance(other, Domain):
             return False
@@ -431,4 +502,6 @@ class Domain:
                 self.metas == other.metas)
 
     def __hash__(self):
+        if self._hash is None:
+            self._hash = hash(self.attributes) ^ hash(self.class_vars) ^ hash(self.metas)
         return self._hash

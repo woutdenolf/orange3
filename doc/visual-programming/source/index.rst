@@ -11,7 +11,10 @@ Here we need to copy the getting started guide.
    :maxdepth: 1
 
    loading-your-data/index
-
+   building-workflows/index
+   exporting-models/index
+   exporting-visualizations/index
+   report/index
 
 Widgets
 =======
@@ -23,29 +26,39 @@ Data
    :maxdepth: 1
 
    widgets/data/file
-   widgets/data/sql
+   widgets/data/csvfileimport
+   widgets/data/datasets
+   widgets/data/sqltable
    widgets/data/save
    widgets/data/datainfo
    widgets/data/datatable
    widgets/data/selectcolumns
    widgets/data/selectrows
    widgets/data/datasampler
+   widgets/data/transpose
    widgets/data/discretize
    widgets/data/continuize
+   widgets/data/createinstance
+   widgets/data/createclass
+   widgets/data/randomize
    widgets/data/concatenate
-   widgets/data/transpose
+   widgets/data/select-by-data-index
    widgets/data/paintdata
+   widgets/data/pivot
    widgets/data/pythonscript
    widgets/data/featureconstructor
    widgets/data/editdomain
-   widgets/data/imageviewer
    widgets/data/impute
    widgets/data/mergedata
    widgets/data/outliers
    widgets/data/preprocess
+   widgets/data/applydomain
    widgets/data/purgedomain
    widgets/data/rank
+   widgets/data/correlations
    widgets/data/color
+   widgets/data/featurestatistics
+   widgets/data/neighbors
 
 
 Visualize
@@ -55,54 +68,67 @@ Visualize
    :maxdepth: 1
 
    widgets/visualize/boxplot
+   widgets/visualize/violinplot
    widgets/visualize/distributions
    widgets/visualize/heatmap
    widgets/visualize/scatterplot
+   widgets/visualize/lineplot
+   widgets/visualize/barplot
    widgets/visualize/venndiagram
    widgets/visualize/linearprojection
-   widgets/visualize/scattermap
    widgets/visualize/sievediagram
    widgets/visualize/pythagoreantree
    widgets/visualize/pythagoreanforest
    widgets/visualize/cn2ruleviewer
    widgets/visualize/mosaicdisplay
    widgets/visualize/silhouetteplot
+   widgets/visualize/treeviewer
+   widgets/visualize/nomogram
+   widgets/visualize/freeviz
+   widgets/visualize/radviz
 
 
-Classify
+Model
+-----
+
+.. toctree::
+   :maxdepth: 1
+
+   widgets/model/constant
+   widgets/model/cn2ruleinduction
+   widgets/model/calibratedlearner
+   widgets/model/knn
+   widgets/model/tree
+   widgets/model/randomforest
+   widgets/model/gradientboosting
+   widgets/model/svm
+   widgets/model/linearregression
+   widgets/model/logisticregression
+   widgets/model/naivebayes
+   widgets/model/adaboost
+   widgets/model/neuralnetwork
+   widgets/model/stochasticgradient
+   widgets/model/stacking
+   widgets/model/loadmodel
+   widgets/model/savemodel
+
+
+Evaluate
 --------
 
 .. toctree::
    :maxdepth: 1
 
-   widgets/classify/naivebayes
-   widgets/classify/logisticregression
-   widgets/classify/classificationtree
-   widgets/classify/classificationtreeviewer
-   widgets/classify/knearestneighbours
-   widgets/classify/loadclassifier
-   widgets/classify/majority
-   widgets/classify/randomforest
-   widgets/classify/saveclassifier
-   widgets/classify/svm
-   widgets/classify/cn2ruleinduction
-   widgets/classify/adaboost
+   widgets/evaluate/calibrationplot
+   widgets/evaluate/confusionmatrix
+   widgets/evaluate/liftcurve
+   widgets/evaluate/predictions
+   widgets/evaluate/rocanalysis
+   widgets/evaluate/testandscore
 
-
-Regression
-----------
 
 .. toctree::
    :maxdepth: 1
-
-   widgets/regression/linear
-   widgets/regression/mean
-   widgets/regression/nearestneighbors
-   widgets/regression/stochasticgradient
-   widgets/regression/svmregression
-   widgets/regression/regressiontree
-   widgets/regression/regressiontreeviewer
-   widgets/regression/randomforestregression
 
 
 Unsupervised
@@ -120,26 +146,11 @@ Unsupervised
    widgets/unsupervised/distancefile
    widgets/unsupervised/savedistancematrix
    widgets/unsupervised/hierarchicalclustering
-   widgets/unsupervised/kmeansclustering
-   widgets/unsupervised/manifoldlearning
+   widgets/unsupervised/kmeans
+   widgets/unsupervised/louvainclustering
+   widgets/unsupervised/DBSCAN
    widgets/unsupervised/mds
-   
-
-Evaluation
-----------
-
-.. toctree::
-   :maxdepth: 1
-
-   widgets/evaluation/calibrationplot
-   widgets/evaluation/confusionmatrix
-   widgets/evaluation/liftcurve
-   widgets/evaluation/predictions
-   widgets/evaluation/rocanalysis
-   widgets/evaluation/testlearners
-
-
-.. toctree::
-   :maxdepth: 1
-
+   widgets/unsupervised/tsne
+   widgets/unsupervised/manifoldlearning
+   widgets/unsupervised/selforganizingmap
 

@@ -3,18 +3,17 @@
 
 import unittest
 import numpy as np
-from Orange.data import Table
-from Orange.preprocess import RemoveNaNClasses, Impute
 
-from Orange.classification.rules import main as rules_main
+from Orange.classification import (CN2Learner, CN2UnorderedLearner,
+                                   CN2SDLearner, CN2SDUnorderedLearner)
 from Orange.classification.rules import (_RuleLearner, _RuleClassifier,
                                          RuleHunter, Rule, EntropyEvaluator,
                                          LaplaceAccuracyEvaluator,
                                          WeightedRelativeAccuracyEvaluator,
                                          argmaxrnd, hash_dist)
-
-from Orange.classification import (CN2Learner, CN2UnorderedLearner,
-                                   CN2SDLearner, CN2SDUnorderedLearner)
+from Orange.data import Table
+from Orange.data.filter import HasClass
+from Orange.preprocess import Impute
 
 
 class TestRuleInduction(unittest.TestCase):
@@ -36,15 +35,12 @@ class TestRuleInduction(unittest.TestCase):
         raised).
         """
         base_rule_learner = _RuleLearner()
-        self.assertRaises(NotImplementedError, base_rule_learner.fit,
-                          self.iris.X, self.iris.Y)
 
         # test the number of default preprocessors
-        self.assertEqual(len(base_rule_learner.preprocessors), 2)
-
+        self.assertEqual(len(list(base_rule_learner.active_preprocessors)), 3)
         # preprocessor types
-        preprocessor_types = [type(x) for x in base_rule_learner.preprocessors]
-        self.assertIn(RemoveNaNClasses, preprocessor_types)
+        preprocessor_types = [type(x) for x in base_rule_learner.active_preprocessors]
+        self.assertIn(HasClass, preprocessor_types)
         self.assertIn(Impute, preprocessor_types)
 
         # test find_rules
@@ -108,7 +104,7 @@ class TestRuleInduction(unittest.TestCase):
         # all learning instances are covered when limitations do not
         # impose rule length or minimum number of covered examples
         num_covered = np.sum([rule.curr_class_dist
-                              for rule in classifier.rule_list])
+                              for rule in classifier.rule_list[:-1]])
         self.assertEqual(num_covered, self.titanic.X.shape[0])
 
         # prediction (matrix-wise, all testing instances at once)

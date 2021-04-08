@@ -1,18 +1,18 @@
-import pickle
 from numbers import Number, Integral
 from math import isnan, isinf
 
 import operator
-from collections import namedtuple, Sequence, defaultdict
+from collections import namedtuple, defaultdict
+from collections.abc import Sequence
 from contextlib import contextmanager
-from functools import reduce, partial, lru_cache
+from functools import reduce, partial, lru_cache, wraps
 from itertools import chain
+from warnings import warn
 from xml.sax.saxutils import escape
 
 from AnyQt.QtCore import (
-    Qt, QAbstractListModel, QAbstractTableModel, QModelIndex,
-    QItemSelectionModel, QByteArray
-)
+    Qt, QObject, QAbstractListModel, QModelIndex,
+    QItemSelectionModel, QItemSelection)
 from AnyQt.QtCore import pyqtSignal as Signal
 from AnyQt.QtGui import QColor
 from AnyQt.QtWidgets import (
@@ -21,27 +21,23 @@ from AnyQt.QtWidgets import (
 
 import numpy
 
+from orangewidget.utils.itemmodels import (
+    PyListModel, AbstractSortTableModel as _AbstractSortTableModel
+)
+
+from Orange.widgets.utils.colorpalettes import ContinuousPalettes, ContinuousPalette
 from Orange.data import Variable, Storage, DiscreteVariable, ContinuousVariable
+from Orange.data.domain import filter_visible
 from Orange.widgets import gui
 from Orange.widgets.utils import datacaching
 from Orange.statistics import basic_stats
+from Orange.util import deprecated
 
-
-class _store(dict):
-    pass
-
-
-def _argsort(seq, cmp=None, key=None, reverse=False):
-    indices = range(len(seq))
-    if key is not None:
-        return sorted(indices, key=lambda i: key(seq[i]), reverse=reverse)
-    elif cmp is not None:
-        from functools import cmp_to_key
-        return sorted(indices, key=cmp_to_key(lambda a, b: cmp(seq[a], seq[b])),
-                      reverse=reverse)
-    else:
-        return sorted(indices, key=lambda i: seq[i], reverse=reverse)
-
+__all__ = [
+    "PyListModel", "VariableListModel", "PyListModelTooltip", "DomainModel",
+    "AbstractSortTableModel", "PyTableModel", "TableModel",
+    "ModelActionsWidget", "ListSingleSelectionModel"
+]
 
 @contextmanager
 def signal_blocking(obj):
@@ -63,7 +59,20 @@ def _as_contiguous_range(the_slice, length):
     return start, stop, step
 
 
-class PyTableModel(QAbstractTableModel):
+class AbstractSortTableModel(_AbstractSortTableModel):
+    # these were defined on TableModel below. When the AbstractSortTableModel
+    # was extracted and made a base of TableModel these deprecations were
+    # misplaced, they belong in TableModel.
+    @deprecated('Orange.widgets.utils.itemmodels.AbstractSortTableModel.mapFromSourceRows')
+    def mapFromTableRows(self, rows):
+        return self.mapFromSourceRows(rows)
+
+    @deprecated('Orange.widgets.utils.itemmodels.AbstractSortTableModel.mapToSourceRows')
+    def mapToTableRows(self, rows):
+        return self.mapToSourceRows(rows)
+
+
+class PyTableModel(AbstractSortTableModel):
     """ A model for displaying python tables (sequences of sequences) in
     QTableView objects.
 
@@ -94,17 +103,20 @@ class PyTableModel(QAbstractTableModel):
     # pylint: disable=missing-docstring
     def __init__(self, sequence=None, parent=None, editable=False):
         super().__init__(parent)
+        self._rows = self._cols = 0
         self._headers = {}
         self._editable = editable
         self._table = None
-        self._roleData = None
-        self.wrap(sequence or [])
+        self._roleData = {}
+        if sequence is None:
+            sequence = []
+        self.wrap(sequence)
 
     def rowCount(self, parent=QModelIndex()):
-        return 0 if parent.isValid() else len(self)
+        return 0 if parent.isValid() else self._rows
 
     def columnCount(self, parent=QModelIndex()):
-        return 0 if parent.isValid() else max(map(len, self._table), default=0)
+        return 0 if parent.isValid() else self._cols
 
     def flags(self, index):
         flags = super().flags(index)
@@ -115,26 +127,26 @@ class PyTableModel(QAbstractTableModel):
         return flags | Qt.ItemIsEditable
 
     def setData(self, index, value, role):
+        row = self.mapFromSourceRows(index.row())
         if role == Qt.EditRole:
-            self[index.row()][index.column()] = value
+            self[row][index.column()] = value
             self.dataChanged.emit(index, index)
         else:
-            self._roleData[index.row()][index.column()][role] = value
+            self._roleData[row][index.column()][role] = value
         return True
 
     def data(self, index, role=Qt.DisplayRole):
         if not index.isValid():
             return
 
-        role_value = (self._roleData
-                      .get(index.row(), {})
-                      .get(index.column(), {})
-                      .get(role))
+        row, column = self.mapToSourceRows(index.row()), index.column()
+
+        role_value = self._roleData.get(row, {}).get(column, {}).get(role)
         if role_value is not None:
             return role_value
 
         try:
-            value = self[index.row()][index.column()]
+            value = self[row][column]
         except IndexError:
             return
         if role == Qt.EditRole:
@@ -162,42 +174,51 @@ class PyTableModel(QAbstractTableModel):
         if role == Qt.ToolTipRole:
             return str(value)
 
-    def sort(self, column, order=Qt.AscendingOrder):
-        self.beginResetModel()
-        indices = sorted(range(len(self._table)),
-                         key=lambda i: self._table[i][column],
-                         reverse=order != Qt.AscendingOrder)
-        self._table[:] = [self._table[i] for i in indices]
-
-        rd = self._roleData
-        self._roleData = self._RoleData()
-        self._roleData.update((i, rd.get(row))
-                              for i, row in enumerate(indices)
-                              if rd.get(row))
-
-        vheaders = self._headers.get(Qt.Vertical, ())
-        if vheaders:
-            vheaders = tuple(vheaders) + ('',) * max(0, (len(self._table) - len(vheaders)))
-            vheaders = [vheaders[i] for i in indices]
-            self._headers[Qt.Vertical] = vheaders
-        self.endResetModel()
+    def sortColumnData(self, column):
+        return [row[column] for row in self._table]
 
     def setHorizontalHeaderLabels(self, labels):
-        self._headers[Qt.Horizontal] = labels
+        """
+        Parameters
+        ----------
+        labels : list of str or list of Variable
+        """
+        self._headers[Qt.Horizontal] = tuple(labels)
 
     def setVerticalHeaderLabels(self, labels):
-        self._headers[Qt.Vertical] = labels
+        """
+        Parameters
+        ----------
+        labels : list of str or list of Variable
+        """
+        self._headers[Qt.Vertical] = tuple(labels)
 
     def headerData(self, section, orientation, role=Qt.DisplayRole):
-        if role == Qt.DisplayRole:
-            headers = self._headers.get(orientation)
-            return headers[section] if headers and section < len(headers) else str(section)
+        headers = self._headers.get(orientation)
+
+        if headers and section < len(headers):
+            section = self.mapToSourceRows(section) if orientation == Qt.Vertical else section
+            value = headers[section]
+
+            if role == Qt.ToolTipRole:
+                role = Qt.DisplayRole
+
+            if role == Qt.DisplayRole:
+                return value.name if isinstance(value, Variable) else value
+
+            if role == Qt.DecorationRole:
+                if isinstance(value, Variable):
+                    return gui.attributeIconDict[value]
+
+        # Use QAbstractItemModel default for non-existent header/sections
+        return super().headerData(section, orientation, role)
 
     def removeRows(self, row, count, parent=QModelIndex()):
         if not parent.isValid():
             del self[row:row + count]
-            for row in range(row, row + count):
-                self._roleData.pop(row, None)
+            for rowidx in range(row, row + count):
+                self._roleData.pop(rowidx, None)
+            self._rows = self._table_dim()[0]
             return True
         return False
 
@@ -209,18 +230,27 @@ class PyTableModel(QAbstractTableModel):
             for col in range(column, column + count):
                 cols.pop(col, None)
         del self._headers.get(Qt.Horizontal, [])[column:column + count]
+        self._cols = self._table_dim()[1]
         self.endRemoveColumns()
+        return True
+
+    def _table_dim(self):
+        return len(self._table), max(map(len, self), default=0)
 
     def insertRows(self, row, count, parent=QModelIndex()):
         self.beginInsertRows(parent, row, row + count - 1)
         self._table[row:row] = [[''] * self.columnCount() for _ in range(count)]
+        self._rows = self._table_dim()[0]
         self.endInsertRows()
+        return True
 
     def insertColumns(self, column, count, parent=QModelIndex()):
         self.beginInsertColumns(parent, column, column + count - 1)
         for row in self._table:
             row[column:column] = [''] * count
+        self._rows = self._table_dim()[0]
         self.endInsertColumns()
+        return True
 
     def __len__(self):
         return len(self._table)
@@ -240,30 +270,68 @@ class PyTableModel(QAbstractTableModel):
             stop -= 1
         else:
             start = stop = i = i if i >= 0 else len(self) + i
+        if stop < start:
+            return
+        self._check_sort_order()
         self.beginRemoveRows(QModelIndex(), start, stop)
         del self._table[i]
+        rows = self._table_dim()[0]
+        self._rows = rows
         self.endRemoveRows()
+        self._update_column_count()
 
     def __setitem__(self, i, value):
+        self._check_sort_order()
         if isinstance(i, slice):
             start, stop, _ = _as_contiguous_range(i, len(self))
-            stop -= 1
+            self.removeRows(start, stop - start)
+            if len(value) == 0:
+                return
+            self.beginInsertRows(QModelIndex(), start, start + len(value) - 1)
+            self._table[start:start] = value
+            self._rows = self._table_dim()[0]
+            self.endInsertRows()
+            self._update_column_count()
         else:
-            start = stop = i = i if i >= 0 else len(self) + i
-        self._table[i] = value
-        self.dataChanged.emit(self.index(start, 0),
-                              self.index(stop, self.columnCount() - 1))
+            self._table[i] = value
+            self.dataChanged.emit(self.index(i, 0),
+                                  self.index(i, self.columnCount() - 1))
+
+    def _update_column_count(self):
+        cols_before = self._cols
+        cols_after = self._table_dim()[1]
+        if cols_before < cols_after:
+            self.beginInsertColumns(QModelIndex(), cols_before, cols_after - 1)
+            self._cols = cols_after
+            self.endInsertColumns()
+        elif cols_before > cols_after:
+            self.beginRemoveColumns(QModelIndex(), cols_after, cols_before - 1)
+            self._cols = cols_after
+            self.endRemoveColumns()
+
+    def _check_sort_order(self):
+        if self.mapToSourceRows(Ellipsis) is not Ellipsis:
+            warn("Can't modify PyTableModel when it's sorted",
+                 RuntimeWarning, stacklevel=3)
+            raise RuntimeError("Can't modify PyTableModel when it's sorted")
 
     def wrap(self, table):
         self.beginResetModel()
         self._table = table
         self._roleData = self._RoleData()
+        self._rows, self._cols = self._table_dim()
+        self.resetSorting()
         self.endResetModel()
+
+    def tolist(self):
+        return self._table
 
     def clear(self):
         self.beginResetModel()
         self._table.clear()
+        self.resetSorting()
         self._roleData.clear()
+        self._rows, self._cols = self._table_dim()
         self.endResetModel()
 
     def append(self, row):
@@ -289,296 +357,6 @@ class PyTableModel(QAbstractTableModel):
         del self[self._table.index(val)]
 
 
-class PyListModel(QAbstractListModel):
-    """ A model for displaying python list like objects in Qt item view classes
-    """
-    MIME_TYPES = ["application/x-Orange-PyListModelData"]
-    Separator = object()
-
-    def __init__(self, iterable=None, parent=None,
-                 flags=Qt.ItemIsSelectable | Qt.ItemIsEnabled,
-                 list_item_role=Qt.DisplayRole,
-                 supportedDropActions=Qt.MoveAction):
-        super().__init__(parent)
-        self._list = []
-        self._other_data = []
-        self._flags = flags
-        self.list_item_role = list_item_role
-
-        self._supportedDropActions = supportedDropActions
-        if iterable is not None:
-            self.extend(iterable)
-
-    def _is_index_valid_for(self, index, list_like):
-        if isinstance(index, QModelIndex) and index.isValid():
-            row, column = index.row(), index.column()
-            return 0 <= row < len(list_like) and not column
-        elif isinstance(index, int):
-            return -len(self) < index < len(list_like)
-        else:
-            return False
-
-    def wrap(self, lst):
-        """ Wrap the list with this model. All changes to the model
-        are done in place on the passed list
-        """
-        self.beginResetModel()
-        self._list = lst
-        self._other_data = [_store() for _ in lst]
-        self.endResetModel()
-
-
-    # noinspection PyMethodOverriding
-    def index(self, row, column=0, parent=QModelIndex()):
-        if self._is_index_valid_for(row, self) and column == 0:
-            return QAbstractListModel.createIndex(self, row, column, parent)
-        else:
-            return QModelIndex()
-
-    def headerData(self, section, orientation, role=Qt.DisplayRole):
-        if role == Qt.DisplayRole:
-            return str(section)
-
-
-    # noinspection PyMethodOverriding
-    def rowCount(self, parent=QModelIndex()):
-        return 0 if parent.isValid() else len(self)
-
-    def columnCount(self, parent=QModelIndex()):
-        return 0 if parent.isValid() else 1
-
-    def data(self, index, role=Qt.DisplayRole):
-        row = index.row()
-        if role in [self.list_item_role, Qt.EditRole] \
-                and self._is_index_valid_for(index, self):
-            return self[row]
-        elif self._is_index_valid_for(row, self._other_data):
-            return self._other_data[row].get(role, None)
-
-    def itemData(self, index):
-        mapping = QAbstractListModel.itemData(self, index)
-        if self._is_index_valid_for(index, self._other_data):
-            items = list(self._other_data[index.row()].items())
-        else:
-            items = []
-        for key, value in items:
-            mapping[key] = value
-        return mapping
-
-    def parent(self, index=QModelIndex()):
-        return QModelIndex()
-
-    def setData(self, index, value, role=Qt.EditRole):
-        if role == Qt.EditRole and self._is_index_valid_for(index, self):
-            self[index.row()] = value  # Will emit proper dataChanged signal
-            return True
-        elif self._is_index_valid_for(index, self._other_data):
-            self._other_data[index.row()][role] = value
-            self.dataChanged.emit(index, index)
-            return True
-        else:
-            return False
-
-    def setItemData(self, index, data):
-        data = dict(data)
-        with signal_blocking(self):
-            for role, value in data.items():
-                if role == Qt.EditRole and \
-                        self._is_index_valid_for(index, self):
-                    self[index.row()] = value
-                elif self._is_index_valid_for(index, self._other_data):
-                    self._other_data[index.row()][role] = value
-
-        self.dataChanged.emit(index, index)
-        return True
-
-    def flags(self, index):
-        if self._is_index_valid_for(index, self._other_data):
-            return self._other_data[index.row()].get("flags", self._flags)
-        else:
-            return self._flags | Qt.ItemIsDropEnabled
-
-
-    # noinspection PyMethodOverriding
-    def insertRows(self, row, count, parent=QModelIndex()):
-        """ Insert ``count`` rows at ``row``, the list fill be filled
-        with ``None``
-        """
-        if not parent.isValid():
-            self[row:row] = [None] * count
-            return True
-        else:
-            return False
-
-
-    # noinspection PyMethodOverriding
-    def removeRows(self, row, count, parent=QModelIndex()):
-        """Remove ``count`` rows starting at ``row``
-        """
-        if not parent.isValid():
-            del self[row:row + count]
-            return True
-        else:
-            return False
-
-    def extend(self, iterable):
-        list_ = list(iterable)
-        self.beginInsertRows(QModelIndex(),
-                             len(self), len(self) + len(list_) - 1)
-        self._list.extend(list_)
-        self._other_data.extend([_store() for _ in list_])
-        self.endInsertRows()
-
-    def append(self, item):
-        self.extend([item])
-
-    def insert(self, i, val):
-        self.beginInsertRows(QModelIndex(), i, i)
-        self._list.insert(i, val)
-        self._other_data.insert(i, _store())
-        self.endInsertRows()
-
-    def remove(self, val):
-        i = self._list.index(val)
-        self.__delitem__(i)
-
-    def pop(self, i):
-        item = self._list[i]
-        self.__delitem__(i)
-        return item
-
-    def indexOf(self, value):
-        return self._list.index(value)
-
-    def clear(self):
-        del self[:]
-
-    def __len__(self):
-        return len(self._list)
-
-    def __contains__(self, value):
-        return value in self._list
-
-    def __iter__(self):
-        return iter(self._list)
-
-    def __getitem__(self, i):
-        return self._list[i]
-
-    def __add__(self, iterable):
-        new_list = PyListModel(list(self._list),
-                               self.parent(),
-                               flags=self._flags,
-                               list_item_role=self.list_item_role,
-                               supportedDropActions=self.supportedDropActions()
-                               )
-        new_list._other_data = list(self._other_data)
-        new_list.extend(iterable)
-        return new_list
-
-    def __iadd__(self, iterable):
-        self.extend(iterable)
-
-    def __delitem__(self, s):
-        if isinstance(s, slice):
-            start, stop, step = _as_contiguous_range(s, len(self))
-            self.beginRemoveRows(QModelIndex(), start, stop - 1)
-        else:
-            s = operator.index(s)
-            s = len(self) + s if s < 0 else s
-            self.beginRemoveRows(QModelIndex(), s, s)
-        del self._list[s]
-        del self._other_data[s]
-        self.endRemoveRows()
-
-    def __setitem__(self, s, value):
-        if isinstance(s, slice):
-            start, stop, step = _as_contiguous_range(s, len(self))
-            self.__delitem__(slice(start, stop, step))
-
-            if not isinstance(value, list):
-                value = list(value)
-            separators = [start + i for i, v in enumerate(value) if v is self.Separator]
-            self.beginInsertRows(QModelIndex(), start, start + len(value) - 1)
-            self._list[start:start] = value
-            self._other_data[start:start] = (_store() for _ in value)
-            for idx in separators:
-                self._other_data[idx]['flags'] = Qt.NoItemFlags
-                self._other_data[idx][Qt.AccessibleDescriptionRole] = 'separator'
-            self.endInsertRows()
-        else:
-            s = operator.index(s)
-            s = len(self) + s if s < 0 else s
-            self._list[s] = value
-            self._other_data[s] = _store()
-            self.dataChanged.emit(self.index(s), self.index(s))
-
-    def reverse(self):
-        self._list.reverse()
-        self._other_data.reverse()
-        self.dataChanged.emit(self.index(0), self.index(len(self) - 1))
-
-    def sort(self, *args, **kwargs):
-        indices = _argsort(self._list, *args, **kwargs)
-        lst = [self._list[i] for i in indices]
-        other = [self._other_data[i] for i in indices]
-        for i, (new_l, new_o) in enumerate(zip(lst, other)):
-            self._list[i] = new_l
-            self._other_data[i] = new_o
-        self.dataChanged.emit(self.index(0), self.index(len(self) - 1))
-
-    def __repr__(self):
-        return "PyListModel(%s)" % repr(self._list)
-
-    def __bool__(self):
-        return len(self) != 0
-
-    def emitDataChanged(self, indexList):
-        if isinstance(indexList, int):
-            indexList = [indexList]
-
-        #TODO: group indexes into ranges
-        for ind in indexList:
-            self.dataChanged.emit(self.index(ind), self.index(ind))
-
-    ###########
-    # Drag/drop
-    ###########
-
-    def supportedDropActions(self):
-        return self._supportedDropActions
-
-    def mimeTypes(self):
-        return self.MIME_TYPES + list(QAbstractListModel.mimeTypes(self))
-
-    def mimeData(self, indexlist):
-        if len(indexlist) <= 0:
-            return None
-
-        items = [self[i.row()] for i in indexlist]
-        mime = QAbstractListModel.mimeData(self, indexlist)
-        data = pickle.dumps(vars)
-        mime.set_data(self.MIME_TYPE, QByteArray(data))
-        mime._items = items
-        return mime
-
-    def dropMimeData(self, mime, action, row, column, parent):
-        if action == Qt.IgnoreAction:
-            return True
-
-        if not mime.hasFormat(self.MIME_TYPE):
-            return False
-
-        if hasattr(mime, "_vars"):
-            vars_ = mime._vars
-        else:
-            desc = str(mime.data(self.MIME_TYPE))
-            vars_ = pickle.loads(desc)
-
-        return QAbstractListModel.dropMimeData(
-            self, mime, action, row, column, parent)
-
-
 class PyListModelTooltip(PyListModel):
     def __init__(self):
         super().__init__()
@@ -599,7 +377,7 @@ class VariableListModel(PyListModel):
         self.placeholder = placeholder
 
     def data(self, index, role=Qt.DisplayRole):
-        if self._is_index_valid_for(index, self):
+        if self._is_index_valid(index):
             var = self[index.row()]
             if var is None and role == Qt.DisplayRole:
                 return self.placeholder or "None"
@@ -619,6 +397,8 @@ class VariableListModel(PyListModel):
     def variable_tooltip(self, var):
         if var.is_discrete:
             return self.discrete_variable_tooltip(var)
+        elif var.is_time:
+            return self.time_variable_toltip(var)
         elif var.is_continuous:
             return self.continuous_variable_toltip(var)
         elif var.is_string:
@@ -635,24 +415,24 @@ class VariableListModel(PyListModel):
         return text
 
     def discrete_variable_tooltip(self, var):
-        text = "<b>%s</b><br/>Discrete with %i values: " %\
+        text = "<b>%s</b><br/>Categorical with %i values: " %\
                (safe_text(var.name), len(var.values))
         text += ", ".join("%r" % safe_text(v) for v in var.values)
         text += self.variable_labels_tooltip(var)
         return text
 
+    def time_variable_toltip(self, var):
+        text = "<b>%s</b><br/>Time" % safe_text(var.name)
+        text += self.variable_labels_tooltip(var)
+        return text
+
     def continuous_variable_toltip(self, var):
-        text = "<b>%s</b><br/>Continuous" % safe_text(var.name)
+        text = "<b>%s</b><br/>Numeric" % safe_text(var.name)
         text += self.variable_labels_tooltip(var)
         return text
 
     def string_variable_tooltip(self, var):
-        text = "<b>%s</b><br/>String" % safe_text(var.name)
-        text += self.variable_labels_tooltip(var)
-        return text
-
-    def python_variable_tooltip(self, var):
-        text = "<b>%s</b><br/>Python" % safe_text(var.name)
+        text = "<b>%s</b><br/>Text" % safe_text(var.name)
         text += self.variable_labels_tooltip(var)
         return text
 
@@ -665,9 +445,26 @@ class DomainModel(VariableListModel):
                  ATTRIBUTES)
     PRIMITIVE = (DiscreteVariable, ContinuousVariable)
 
-    def __init__(self, order=SEPARATED, placeholder=None,
-                 valid_types=None, alphabetical=False):
-        super().__init__(placeholder=placeholder)
+    def __init__(self, order=SEPARATED, separators=True, placeholder=None,
+                 valid_types=None, alphabetical=False, skip_hidden_vars=True, **kwargs):
+        """
+
+        Parameters
+        ----------
+        order: tuple or int
+            Order of attributes, metas, classes, separators and other options
+        separators: bool
+            If False, remove separators from `order`.
+        placeholder: str
+            The text that is shown when no variable is selected
+        valid_types: tuple
+            (Sub)types of `Variable` that are included in the model
+        alphabetical: bool
+            If true, variables are sorted alphabetically.
+        skip_hidden_vars: bool
+            If true, variables marked as "hidden" are skipped.
+        """
+        super().__init__(placeholder=placeholder, **kwargs)
         if isinstance(order, int):
             order = (order,)
         if placeholder is not None and None not in order:
@@ -676,9 +473,13 @@ class DomainModel(VariableListModel):
             order = (None,) + \
                     (self.Separator, ) * (self.Separator in order) + \
                     order
+        if not separators:
+            order = [e for e in order if e is not self.Separator]
         self.order = order
         self.valid_types = valid_types
         self.alphabetical = alphabetical
+        self.skip_hidden_vars = skip_hidden_vars
+        self._within_set_domain = False
         self.set_domain(None)
 
     def set_domain(self, domain):
@@ -699,6 +500,8 @@ class DomainModel(VariableListModel):
                     *(vars for i, vars in enumerate(
                         (domain.attributes, domain.class_vars, domain.metas))
                       if (1 << i) & section)))
+                if self.skip_hidden_vars:
+                    to_add = list(filter_visible(to_add))
                 if self.valid_types is not None:
                     to_add = [var for var in to_add
                               if isinstance(var, self.valid_types)]
@@ -713,9 +516,86 @@ class DomainModel(VariableListModel):
                     content.append(self.Separator)
                     add_separator = False
                 content += to_add
-        self[:] = content
+        try:
+            self._within_set_domain = True
+            self[:] = content
+        finally:
+            self._within_set_domain = False
         self.endResetModel()
 
+    def prevent_modification(method):  # pylint: disable=no-self-argument
+        @wraps(method)
+        # pylint: disable=protected-access
+        def e(self, *args, **kwargs):
+            if self._within_set_domain:
+                method(self, *args, **kwargs)
+            else:
+                raise TypeError(
+                    "{} can be modified only by calling 'set_domain'".
+                    format(type(self).__name__))
+        return e
+
+    @prevent_modification
+    def extend(self, iterable):
+        return super().extend(iterable)
+
+    @prevent_modification
+    def append(self, item):
+        return super().append(item)
+
+    @prevent_modification
+    def insert(self, i, val):
+        return super().insert(i, val)
+
+    @prevent_modification
+    def remove(self, val):
+        return super().remove(val)
+
+    @prevent_modification
+    def pop(self, i):
+        return super().pop(i)
+
+    @prevent_modification
+    def clear(self):
+        return super().clear()
+
+    @prevent_modification
+    def __delitem__(self, s):
+        return super().__delitem__(s)
+
+    @prevent_modification
+    def __setitem__(self, s, value):
+        return super().__setitem__(s, value)
+
+    @prevent_modification
+    def reverse(self):
+        return super().reverse()
+
+    @prevent_modification
+    def sort(self, *args, **kwargs):
+        return super().sort(*args, **kwargs)
+
+    def setData(self, index, value, role=Qt.EditRole):
+        # reimplemented
+        if role == Qt.EditRole:
+            return False
+        else:
+            return super().setData(index, value, role)
+
+    def setItemData(self, index, data):
+        # reimplemented
+        if Qt.EditRole in data:
+            return False
+        else:
+            return super().setItemData(index, data)
+
+    def insertRows(self, row, count, parent=QModelIndex()):
+        # reimplemented
+        return False
+
+    def removeRows(self, row, count, parent=QModelIndex()):
+        # reimplemented
+        return False
 
 _html_replace = [("<", "&lt;"), (">", "&gt;")]
 
@@ -724,6 +604,69 @@ def safe_text(text):
     for old, new in _html_replace:
         text = str(text).replace(old, new)
     return text
+
+
+class ContinuousPalettesModel(QAbstractListModel):
+    """
+    Model for combo boxes
+    """
+    KeyRole = Qt.UserRole + 1
+    def __init__(self, parent=None, categories=None, icon_width=64):
+        super().__init__(parent)
+        self.icon_width = icon_width
+
+        palettes = list(ContinuousPalettes.values())
+        if categories is None:
+            # Use dict, not set, to keep order of categories
+            categories = dict.fromkeys(palette.category for palette in palettes)
+
+        self.items = []
+        for category in categories:
+            self.items.append(category)
+            self.items += [palette for palette in palettes
+                           if palette.category == category]
+        if len(categories) == 1:
+            del self.items[0]
+
+    def rowCount(self, parent):
+        return 0 if parent.isValid() else len(self.items)
+
+    @staticmethod
+    def columnCount(parent):
+        return 0 if parent.isValid() else 1
+
+    def data(self, index, role):
+        item = self.items[index.row()]
+        if isinstance(item, str):
+            if role in [Qt.EditRole, Qt.DisplayRole]:
+                return item
+        else:
+            if role in [Qt.EditRole, Qt.DisplayRole]:
+                return item.friendly_name
+            if role == Qt.DecorationRole:
+                return item.color_strip(self.icon_width, 16)
+            if role == Qt.UserRole:
+                return item
+            if role == self.KeyRole:
+                return item.name
+        return None
+
+    def flags(self, index):
+        item = self.items[index.row()]
+        if isinstance(item, ContinuousPalette):
+            return Qt.ItemIsEnabled | Qt.ItemIsSelectable
+        else:
+            return Qt.NoItemFlags
+
+    def indexOf(self, x):
+        if isinstance(x, str):
+            for i, item in enumerate(self.items):
+                if not isinstance(item, str) \
+                        and x in (item.name, item.friendly_name):
+                    return i
+        elif isinstance(x, ContinuousPalette):
+            return self.items.index(x)
+        return None
 
 
 class ListSingleSelectionModel(QItemSelectionModel):
@@ -773,6 +716,23 @@ def select_row(view, row):
                     QItemSelectionModel.Rows)
 
 
+def select_rows(view, row_indices, command=QItemSelectionModel.ClearAndSelect):
+    """
+    Select several rows in view.
+
+    :param QAbstractItemView view:
+    :param row_indices: Integer indices of rows to select.
+    :param command: QItemSelectionModel.SelectionFlags
+    """
+    selmodel = view.selectionModel()
+    model = view.model()
+    selection = QItemSelection()
+    for row in row_indices:
+        index = model.index(row, 0)
+        selection.select(index, index)
+    selmodel.select(selection, command | QItemSelectionModel.Rows)
+
+
 class ModelActionsWidget(QWidget):
     def __init__(self, actions=None, parent=None,
                  direction=QBoxLayout.LeftToRight):
@@ -807,7 +767,7 @@ class ModelActionsWidget(QWidget):
         return self.insertAction(-1, action, *args)
 
 
-class TableModel(QAbstractTableModel):
+class TableModel(AbstractSortTableModel):
     """
     An adapter for using Orange.data.Table within Qt's Item View Framework.
 
@@ -844,6 +804,8 @@ class TableModel(QAbstractTableModel):
     Basket = namedtuple(
         "Basket", ["vars", "role", "background", "density", "format"])
 
+    # The class uses the same names (X_density etc) as Table
+    # pylint: disable=invalid-name
     def __init__(self, sourcedata, parent=None):
         super().__init__(parent)
         self.source = sourcedata
@@ -873,7 +835,7 @@ class TableModel(QAbstractTableModel):
             elif role == TableModel.ClassVar:
                 getter = operator.attrgetter("sparse_y")
             elif role == TableModel.Meta:
-                getter = operator.attrgetter("sparse_meta")
+                getter = operator.attrgetter("sparse_metas")
             return partial(formater, vars, getter)
 
         def make_basket(vars, density, role):
@@ -938,78 +900,17 @@ class TableModel(QAbstractTableModel):
         if self.__rowCount > (2 ** 31 - 1):
             raise ValueError("len(sourcedata) > 2 ** 31 - 1")
 
-        self.__sortColumn = -1
-        self.__sortOrder = Qt.AscendingOrder
-        # Indices sorting the source table
-        self.__sortInd = None
-        # The inverse of __sortInd
-        self.__sortIndInv = None
+    def sortColumnData(self, column):
+        return self._columnSortKeyData(column, TableModel.ValueRole)
 
-    def sort(self, column, order):
-        """
-        Sort the data by `column` index into `order`
-
-        To reset the sort order pass -1 as the column.
-
-        :type column: int
-        :type order: Qt.SortOrder
-
-        Reimplemented from QAbstractItemModel.sort
-
-        .. note::
-            This only affects the model's data presentation, the
-            underlying data table is left unmodified.
-
-        """
-        self.layoutAboutToBeChanged.emit()
-
-        # Store persistent indices as well as their (actual) rows in the
-        # source data table.
-        persistent = self.persistentIndexList()
-        persistent_rows = numpy.array([ind.row() for ind in persistent], int)
-        if self.__sortInd is not None:
-            persistent_rows = self.__sortInd[persistent_rows]
-
-        self.__sortColumn = column
-        self.__sortOrder = order
-
-        if column < 0:
-            indices = None
-        else:
-            keydata = self.columnSortKeyData(column, TableModel.ValueRole)
-            if keydata is not None:
-                if keydata.dtype == object:
-                    indices = sorted(range(self.__rowCount),
-                                     key=lambda i: str(keydata[i]))
-                    indices = numpy.array(indices)
-                else:
-                    indices = numpy.argsort(keydata, kind="mergesort")
-            else:
-                indices = numpy.arange(0, self.__rowCount)
-
-            if order == Qt.DescendingOrder:
-                indices = indices[::-1]
-
-            if self.__sortInd is not None:
-                indices = self.__sortInd[indices]
-
-        if indices is not None:
-            self.__sortInd = indices
-            self.__sortIndInv = numpy.argsort(indices)
-        else:
-            self.__sortInd = None
-            self.__sortIndInv = None
-
-        if self.__sortInd is not None:
-            persistent_rows = self.__sortIndInv[persistent_rows]
-
-        for pind, row in zip(persistent, persistent_rows):
-            self.changePersistentIndex(pind, self.index(row, pind.column()))
-        self.layoutChanged.emit()
-
+    @deprecated('Orange.widgets.utils.itemmodels.TableModel.sortColumnData')
     def columnSortKeyData(self, column, role):
+        return self._columnSortKeyData(column, role)
+
+    def _columnSortKeyData(self, column, role):
         """
-        Return a sequence of objects which can be used as `keys` for sorting.
+        Return a sequence of source table objects which can be used as
+        `keys` for sorting.
 
         :param int column: Sort column.
         :param Qt.ItemRole role: Sort item role.
@@ -1018,51 +919,15 @@ class TableModel(QAbstractTableModel):
         coldesc = self.columns[column]
         if isinstance(coldesc, TableModel.Column) \
                 and role == TableModel.ValueRole:
-            col_view, _ = self.source.get_column_view(coldesc.var)
-            col_data = numpy.asarray(col_view)
+            col_data = numpy.asarray(self.source.get_column_view(coldesc.var)[0])
+
             if coldesc.var.is_continuous:
                 # continuous from metas have dtype object; cast it to float
                 col_data = col_data.astype(float)
-            if self.__sortInd is not None:
-                col_data = col_data[self.__sortInd]
             return col_data
         else:
-            if self.__sortInd is not None:
-                indices = self.__sortInd
-            else:
-                indices = range(self.rowCount())
             return numpy.asarray([self.index(i, column).data(role)
-                                  for i in indices])
-
-    def sortColumn(self):
-        """
-        The column currently used for sorting (-1 if no sorting is applied).
-        """
-        return self.__sortColumn
-
-    def sortOrder(self):
-        """
-        The current sort order.
-        """
-        return self.__sortOrder
-
-    def mapToTableRows(self, modelrows):
-        """
-        Return the row indices in the source table for the given model rows.
-        """
-        if self.__sortColumn < 0:
-            return modelrows
-        else:
-            return self.__sortInd[modelrows].tolist()
-
-    def mapFromTableRows(self, tablerows):
-        """
-        Return the row indices in the model for the given source table rows.
-        """
-        if self.__sortColumn < 0:
-            return tablerows
-        else:
-            return self.__sortIndInv[tablerows].tolist()
+                                  for i in range(self.rowCount())])
 
     def data(self, index, role,
              # For optimizing out LOAD_GLOBAL byte code instructions in
@@ -1078,15 +943,14 @@ class TableModel(QAbstractTableModel):
              _VariableStatsRole=VariableStatsRole,
              # Some cached local precomputed values.
              # All of the above roles we respond to
-             _recognizedRoles=set([Qt.DisplayRole,
-                                   Qt.EditRole,
-                                   Qt.BackgroundRole,
-                                   ValueRole,
-                                   ClassValueRole,
-                                   VariableRole,
-                                   DomainRole,
-                                   VariableStatsRole]),
-             ):
+             _recognizedRoles=frozenset([Qt.DisplayRole,
+                                         Qt.EditRole,
+                                         Qt.BackgroundRole,
+                                         ValueRole,
+                                         ClassValueRole,
+                                         VariableRole,
+                                         DomainRole,
+                                         VariableStatsRole])):
         """
         Reimplemented from `QAbstractItemModel.data`
         """
@@ -1097,8 +961,7 @@ class TableModel(QAbstractTableModel):
         if  not 0 <= row <= self.__rowCount:
             return None
 
-        if self.__sortInd is not None:
-            row = self.__sortInd[row]
+        row = self.mapToSourceRows(row)
 
         try:
             instance = self._row_instance(row)
@@ -1117,7 +980,6 @@ class TableModel(QAbstractTableModel):
             return instance[coldesc.var]
         elif role == _Qt_BackgroundRole:
             return coldesc.background
-            return self.color_for_role[coldesc.role]
         elif role == _ValueRole and isinstance(coldesc, TableModel.Column):
             return instance[coldesc.var]
         elif role == _ClassValueRole:
@@ -1135,10 +997,10 @@ class TableModel(QAbstractTableModel):
             return None
 
     def setData(self, index, value, role):
-        row, col = self.__sortIndInv[index.row()], index.column()
+        row = self.mapFromSourceRows(index.row())
         if role == Qt.EditRole:
             try:
-                self.source[row, col] = value
+                self.source[row, index.column()] = value
             except (TypeError, IndexError):
                 return False
             else:
@@ -1163,12 +1025,8 @@ class TableModel(QAbstractTableModel):
         """Reimplemented from `QAbstractTableModel.headerData`."""
         if orientation == Qt.Vertical:
             if role == Qt.DisplayRole:
-                if self.__sortInd is not None:
-                    return int(self.__sortInd[section] + 1)
-                else:
-                    return int(section + 1)
-            else:
-                return None
+                return int(self.mapToSourceRows(section) + 1)
+            return None
 
         coldesc = self.columns[section]
         if role == Qt.DisplayRole:

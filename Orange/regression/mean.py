@@ -1,7 +1,6 @@
 import numpy
 
 from Orange.regression import Learner, Model
-from Orange.data import ContinuousVariable
 from Orange.statistics import distribution
 
 __all__ = ["MeanLearner"]
@@ -11,9 +10,6 @@ class MeanLearner(Learner):
     """
     Fit a regression model that returns the average response (class) value.
     """
-
-    name = 'mean'
-
     def fit_storage(self, data):
         """
         Construct a :obj:`MeanModel` by computing the mean value of the given
@@ -26,7 +22,7 @@ class MeanLearner(Learner):
         """
         if not data.domain.has_continuous_class:
             raise ValueError("regression.MeanLearner expects a domain with a "
-                             "(single) continuous variable")
+                             "(single) numeric variable.")
         dist = distribution.get_distribution(data, data.domain.class_var)
         return MeanModel(dist)
 

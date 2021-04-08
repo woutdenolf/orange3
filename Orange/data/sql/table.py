@@ -15,7 +15,6 @@ from Orange.data import (
 from Orange.data.sql import filter as sql_filter
 from Orange.data.sql.backend import Backend
 from Orange.data.sql.backend.base import TableDesc, BackendError
-from Orange.misc import import_late_warning
 
 LARGE_TABLE = 100000
 AUTO_DL_LIMIT = 10000
@@ -76,8 +75,8 @@ class SqlTable(Table):
                 try:
                     self.backend = backend(connection_params)
                     break
-                except BackendError as ex:
-                    print(ex)
+                except BackendError:
+                    pass
             else:
                 raise ValueError("No backend could connect to server")
         else:
@@ -86,7 +85,7 @@ class SqlTable(Table):
         if table_or_sql is not None:
             if isinstance(table_or_sql, TableDesc):
                 table = table_or_sql.sql
-            elif "SELECT" in table_or_sql:
+            elif "select" in table_or_sql.lower():
                 table = "(%s) as my_table" % table_or_sql.strip("; ")
             else:
                 table = self.backend.quote_identifier(table_or_sql)
@@ -179,7 +178,7 @@ class SqlTable(Table):
         if not values:
             raise IndexError('Could not retrieve row {} from table {}'.format(
                 row_index, self.name))
-        return SqlRowInstance(self.domain, values[0])
+        return Instance(self.domain, values[0])
 
     def __iter__(self):
         """ Iterating through the rows executes the query using a cursor and
@@ -188,7 +187,7 @@ class SqlTable(Table):
         attributes = self.domain.variables + self.domain.metas
 
         for row in self._query(attributes):
-            yield SqlRowInstance(self.domain, row)
+            yield Instance(self.domain, row)
 
     def _query(self, attributes=None, filters=(), rows=None):
         if attributes is not None:
@@ -355,9 +354,9 @@ class SqlTable(Table):
         if columns is not None:
             columns = [self.domain[col] for col in columns]
         else:
-            columns = list(self.domain)
+            columns = self.domain.variables
             if include_metas:
-                columns += list(self.domain.metas)
+                columns += self.domain.metas
         return self._get_stats(columns)
 
     def _get_stats(self, columns):
@@ -387,7 +386,7 @@ class SqlTable(Table):
         if columns is not None:
             columns = [self.domain[col] for col in columns]
         else:
-            columns = list(self.domain)
+            columns = self.domain.variables
         return self._get_distributions(columns)
 
     def _get_distributions(self, columns):
@@ -446,11 +445,12 @@ class SqlTable(Table):
                 data = list(cur.fetchall())
                 if column.is_continuous:
                     all_contingencies[i] = \
-                        (self._continuous_contingencies(data, row), [])
+                        (self._continuous_contingencies(data, row), [], [], 0)
                 else:
                     all_contingencies[i] =\
-                        (self._discrete_contingencies(data, row, column), [])
-        return all_contingencies, None
+                        (self._discrete_contingencies(data, row, column), [],
+                         [], 0)
+        return all_contingencies
 
     def _continuous_contingencies(self, data, row):
         values = np.zeros(len(data))
@@ -596,6 +596,8 @@ class SqlTable(Table):
                             no_cache=no_cache)
 
     def _sample(self, method, parameter, no_cache=False):
+        # the module is optional, but this function is not called if it's not installed
+        # pylint: disable=import-error
         import psycopg2
         if "," in self.table_name:
             raise NotImplementedError("Sampling of complex queries is not supported")
@@ -617,27 +619,29 @@ class SqlTable(Table):
         create = False
         try:
             query = "SELECT * FROM " + sample_table_q + " LIMIT 0;"
-            with self.backend.execute_sql_query(query): pass
+            with self.backend.execute_sql_query(query):
+                pass
 
             if no_cache:
                 query = "DROP TABLE " + sample_table_q
-                with self.backend.execute_sql_query(query): pass
+                with self.backend.execute_sql_query(query):
+                    pass
                 create = True
 
         except BackendError:
             create = True
 
         if create:
-            with self.backend.execute_sql_query(" ".join([
-                    "CREATE TABLE", sample_table_q, "AS",
-                    "SELECT * FROM", self.table_name,
-                    "TABLESAMPLE", method, "(", parameter, ")"])):
+            with self.backend.execute_sql_query(
+                    " ".join(["CREATE TABLE", sample_table_q, "AS",
+                              "SELECT * FROM", self.table_name,
+                              "TABLESAMPLE", method, "(", parameter, ")"])):
                 pass
 
         sampled_table = self.copy()
         sampled_table.table_name = sample_table_q
-        with sampled_table.backend.execute_sql_query(
-                'ANALYZE' + sample_table_q):
+        with sampled_table.backend.execute_sql_query('ANALYZE'
+                                                     + sample_table_q):
             pass
         return sampled_table
 
@@ -649,16 +653,3 @@ class SqlTable(Table):
 
     def checksum(self, include_metas=True):
         return np.nan
-
-
-class SqlRowInstance(Instance):
-    """
-    Extends :obj:`Orange.data.Instance` to correctly handle values of meta
-    attributes.
-    """
-
-    def __init__(self, domain, data=None):
-        nvar = len(domain.variables)
-        super().__init__(domain, data[:nvar])
-        if len(data) > nvar:
-            self._metas = np.asarray(data[nvar:], dtype=object)

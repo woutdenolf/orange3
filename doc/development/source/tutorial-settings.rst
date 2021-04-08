@@ -15,7 +15,7 @@ What we added is an Options box, with a spin entry box to set the
 sample size, and a check box and button to commit (send out) any
 change we made in setting. If the check box with "Commit data on
 selection change" is checked, than any change in the sample size will
-make the widget send out the sampled data set. If data sets are large
+make the widget send out the sampled dataset. If datasets are large
 (say of several thousands or more) instances, we may want to send out
 the sample data only after we are done setting the sample size, hence
 we left the commit check box unchecked and press "Commit" when we are
@@ -111,7 +111,7 @@ disabling. The data processing and token sending part of our widget
 now is
 
 
-.. literalinclude:: OWDataSamplerB.py
+.. literalinclude:: orange-demo/orangedemo/OWDataSamplerB.py
    :start-after: start-snippet-4
    :end-before: end-snippet-4
 
@@ -130,6 +130,29 @@ Well-behaved widgets remember their settings - the state of their
 checkboxes and radio-buttons, the text in their line edits, the
 selections in their combo boxes and similar.
 
+Persisting defaults
+*******************
+When a widget is removed, its settings are stored to be used as defaults
+for future instances of this widget.
+
+Updated defaults are stored in user's profile. It's location depends
+on the operating system:
+(%APPDATA%\Orange\<version>\widgets on windows,
+~/Library/Application\ Support/orange/<version>/widgets on macOS,
+~/.local/share/Orange/<version>/widgets on linux)
+Original default values can be restored by deleting files from this folder,
+by running Orange from command line with `--clear-widget-settings` option,
+or through Options/Reset Widget Settings menu action.
+
+Schema-only settings
+--------------------
+Some settings have defaults that should not change. For instance, when using
+a Paint Data widget, drawn points should be saved in a workflow, but a new
+widget should always start with a blank page - modified value should not
+be remembered.
+
+This can be achieved by declaring a setting with a `schema_only` flag. Such
+setting is saved with a workflow, but its default value never changes.
 
 Context dependent settings
 **************************
@@ -144,15 +167,15 @@ selection with which one can select the examples based on values of
 certain attributes. Before applying the saved settings, these widgets
 needs to check their compliance with the domain of the actual data
 set. To be truly useful, context dependent settings needs to save a
-setting configuration for each particular data set used. That is, when
-given a particular data set, it has to select the saved settings that
-is applicable and matches best currently used data set.
+setting configuration for each particular dataset used. That is, when
+given a particular dataset, it has to select the saved settings that
+is applicable and matches best currently used dataset.
 
 Saving, loading and matching contexts is taken care of by context
 handlers. Currently, there are only two classes of context handlers
 implemented. The first one is the abstract :class:`ContextHandler`
 and the second one is :class:`DomainContextHandler` in which the
-context is defined by the data set domain and where the settings
+context is defined by the dataset domain and where the settings
 contain attribute names. The latter should cover most of your needs,
 while for more complicated widgets you will need to derive a new
 classes from it. There may even be some cases in which the context is
@@ -167,6 +190,7 @@ that handles the data signal. This is how it looks in the scatter plot
 
 .. code-block:: python
 
+    @Input.data
     def set_data(self, data):
         self.closeContext()
         self.data = data
@@ -272,6 +296,13 @@ Imagine opening a complex workflow you have designed a year ago with the
 new version of Orange and finding out that all the settings are back to
 default. Not fun!
 
+.. warning::
+
+   If you change the format of an existing setting in a backwards-incompatible
+   way, you will also want to *change the name* of that setting. Otherwise,
+   older versions of Orange won't be able to load workflows with the new
+   setting format.
+
 There are two helper functions you can use.
 :obj:`Orange.widget.settings.rename_settings(settings, old_name, new_name)`
 does the obvious operation on `settings`, which can be either a dictionary
@@ -280,13 +311,21 @@ or a context, thus it can be called from `migrate_settings` or
 
 Another common operation may be upgrading your widget from storing variable
 names (as `str`) to storing variables (instances of classes derived from
-`Variable`). In a typical scenario, this happenswhen combo boxes are upgraded to
+`Variable`). In a typical scenario, this happens when combo boxes are upgraded to
 using models. Function
 :obj:`Orange.widget.settings.migrate_str_to_variable(settings, names=None)`
 makes the necessary changes to the settings listed in `names`. `names` can be
 a list of setting names, a single string or `None`. In the latter case, all
-settings that may refer to variables (that is two-elements tuples constisting
+settings that may refer to variables (that is two-elements tuples consisting
 of a string and an int) are migrated.
+
+What about situations in which some context settings become inapplicable due
+to some changes in the widget? For instance, a widget that used to accept any
+kind of variables is modified so that it requires a numeric variable?
+Context with categorical variables will match and be reused ... and crash the
+widget. In these (rare) cases, `migrate_context` must raise exception
+:obj:`Orange.widget.settings.IncompatibleContext` and the context will be
+removed.
 
 So take some time, write the migrations and do not forget to bump the
 `settings_version` when you do breaking changes.

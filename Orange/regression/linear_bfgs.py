@@ -1,15 +1,15 @@
 import numpy as np
 from scipy.optimize import fmin_l_bfgs_b
 
+from Orange.data.filter import HasClass
+from Orange.preprocess import Normalize, Continuize, Impute, RemoveNaNColumns
 from Orange.regression import Learner, Model
-from Orange.preprocess import (RemoveNaNClasses, Normalize, Continuize,
-                               Impute, RemoveNaNColumns)
 
 __all__ = ["LinearRegressionLearner"]
 
 
 class LinearRegressionLearner(Learner):
-    '''L2 regularized linear regression (a.k.a Ridge regression)
+    r'''L2 regularized linear regression (a.k.a Ridge regression)
 
     This model uses the L-BFGS algorithm to minimize the linear least
     squares penalty with L2 regularization. When using this model you
@@ -26,8 +26,9 @@ class LinearRegressionLearner(Learner):
         data and keeping parameters small. Higher values of lambda\_ force
         parameters to be smaller.
 
-    preprocessors : list, optional (default="[Normalize(), Continuize(), Impute(), RemoveNaNColumns()])
+    preprocessors : list, optional
         Preprocessors are applied to data before training or testing. Default preprocessors
+        `[Normalize(), Continuize(), Impute(), RemoveNaNColumns()]`:
         - transform the dataset so that the columns are on a similar scale,
         - continuize all discrete attributes,
         - remove columns with all values as NaN
@@ -51,7 +52,7 @@ class LinearRegressionLearner(Learner):
         print(c(data)) # predict
     '''
     name = 'linear_bfgs'
-    preprocessors = [RemoveNaNClasses(),
+    preprocessors = [HasClass(),
                      Normalize(),
                      Continuize(),
                      Impute(),
@@ -102,8 +103,8 @@ class LinearRegressionModel(Model):
 
 if __name__ == '__main__':
     import Orange.data
-    import sklearn.cross_validation as skl_cross_validation
-    
+    from Orange.evaluation import CrossValidation
+
     np.random.seed(42)
 
     def numerical_grad(f, params, e=1e-4):
@@ -136,7 +137,8 @@ if __name__ == '__main__':
     for lambda_ in (0.01, 0.03, 0.1, 0.3, 1, 3):
         m = LinearRegressionLearner(lambda_=lambda_)
         scores = []
-        for tr_ind, te_ind in skl_cross_validation.KFold(d.X.shape[0]):
+        res = CrossValidation(d, [m], 3, False)
+        for tr_ind, te_ind in res.indices:
             s = np.mean((m(d[tr_ind])(d[te_ind]) - d[te_ind].Y.ravel())**2)
             scores.append(s)
         print('{:5.2f} {}'.format(lambda_, np.mean(scores)))

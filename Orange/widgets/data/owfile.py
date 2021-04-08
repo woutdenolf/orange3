@@ -1,25 +1,28 @@
 import os
 import logging
-from itertools import chain, count
-from warnings import catch_warnings
+from itertools import chain
+from urllib.parse import urlparse
+from typing import List
 
 import numpy as np
 from AnyQt.QtWidgets import \
-    QStyle, QComboBox, QMessageBox, QFileDialog, QGridLayout, QLabel, \
-    QLineEdit
-from AnyQt.QtWidgets import QSizePolicy as Policy
+    QStyle, QComboBox, QMessageBox, QGridLayout, QLabel, \
+    QLineEdit, QSizePolicy as Policy, QCompleter
 from AnyQt.QtCore import Qt, QTimer, QSize
 
-from Orange.canvas.gui.utils import OSX_NSURL_toLocalFile
-from Orange.data import Domain, DiscreteVariable, StringVariable
 from Orange.data.table import Table, get_sample_datasets_dir
-from Orange.data.io import FileFormat, UrlReader
+from Orange.data.io import FileFormat, UrlReader, class_from_qualified_name
+from Orange.util import log_warnings
 from Orange.widgets import widget, gui
-from Orange.widgets.settings import Setting, ContextHandler, ContextSetting, \
-    PerfectDomainContextHandler
+from Orange.widgets.settings import Setting, ContextSetting, \
+    PerfectDomainContextHandler, SettingProvider
 from Orange.widgets.utils.domaineditor import DomainEditor
 from Orange.widgets.utils.itemmodels import PyListModel
-from Orange.widgets.utils.filedialogs import RecentPathsWComboMixin
+from Orange.widgets.utils.filedialogs import RecentPathsWComboMixin, \
+    open_filename_dialog
+from Orange.widgets.utils.widgetpreview import WidgetPreview
+from Orange.widgets.utils.state_summary import format_summary_details
+from Orange.widgets.widget import Output, Msg
 
 # Backward compatibility: class RecentPath used to be defined in this module,
 # and it is used in saved (pickled) settings. It must be imported into the
@@ -38,9 +41,10 @@ def add_origin(examples, filename):
     """
     if not filename:
         return
-    vars = examples.domain.variables + examples.domain.metas
-    strings = [var for var in vars if var.is_string]
-    dir_name, basename = os.path.split(filename)
+    strings = [var
+               for var in examples.domain.variables + examples.domain.metas
+               if var.is_string]
+    dir_name, _ = os.path.split(filename)
     for var in strings:
         if "type" in var.attributes and "origin" not in var.attributes:
             var.attributes["origin"] = dir_name
@@ -51,7 +55,7 @@ class NamedURLModel(PyListModel):
         self.mapping = mapping
         super().__init__()
 
-    def data(self, index, role):
+    def data(self, index, role=Qt.DisplayRole):
         data = super().data(index, role)
         if role == Qt.DisplayRole:
             return self.mapping.get(data, data)
@@ -60,22 +64,6 @@ class NamedURLModel(PyListModel):
     def add_name(self, url, name):
         self.mapping[url] = name
         self.modelReset.emit()
-
-
-class XlsContextHandler(ContextHandler):
-    def new_context(self, filename, sheet):
-        context = super().new_context()
-        context.filename = filename
-        return context
-
-    # noinspection PyMethodOverriding
-    def match(self, context, filename, sheets):
-        context_sheet = context.values.get("xls_sheet")
-        if context.filename == filename and context_sheet in sheets:
-            return ContextHandler.PERFECT_MATCH
-        if context_sheet in sheets:
-            return 1
-        return ContextHandler.NO_MATCH
 
 
 class LineEditSelectOnFocus(QLineEdit):
@@ -93,18 +81,27 @@ class OWFile(widget.OWWidget, RecentPathsWComboMixin):
     icon = "icons/File.svg"
     priority = 10
     category = "Data"
-    keywords = ["data", "file", "load", "read"]
-    outputs = [widget.OutputSignal(
-        "Data", Table,
-        doc="Attribute-valued data set read from the input file.")]
+    keywords = ["file", "load", "read", "open"]
+
+    class Outputs:
+        data = Output("Data", Table,
+                      doc="Attribute-valued dataset read from the input file.")
 
     want_main_area = False
+    buttons_area_orientation = None
 
     SEARCH_PATHS = [("sample-datasets", get_sample_datasets_dir())]
     SIZE_LIMIT = 1e7
     LOCAL_FILE, URL = range(2)
 
-    settingsHandler = PerfectDomainContextHandler()
+    settingsHandler = PerfectDomainContextHandler(
+        match_values=PerfectDomainContextHandler.MATCH_VALUES_ALL
+    )
+
+    # pylint seems to want declarations separated from definitions
+    recent_paths: List[RecentPath]
+    recent_urls: List[str]
+    variables: list
 
     # Overload RecentPathsWidgetMixin.recent_paths to set defaults
     recent_paths = Setting([
@@ -112,25 +109,48 @@ class OWFile(widget.OWWidget, RecentPathsWComboMixin):
         RecentPath("", "sample-datasets", "titanic.tab"),
         RecentPath("", "sample-datasets", "housing.tab"),
         RecentPath("", "sample-datasets", "heart_disease.tab"),
+        RecentPath("", "sample-datasets", "brown-selected.tab"),
+        RecentPath("", "sample-datasets", "zoo.tab"),
     ])
     recent_urls = Setting([])
     source = Setting(LOCAL_FILE)
-    xls_sheet = ContextSetting("")
     sheet_names = Setting({})
     url = Setting("")
 
     variables = ContextSetting([])
 
-    dlg_formats = (
-        "All readable files ({});;".format(
-            '*' + ' *'.join(FileFormat.readers.keys())) +
-        ";;".join("{} (*{})".format(f.DESCRIPTION, ' *'.join(f.EXTENSIONS))
-                  for f in sorted(set(FileFormat.readers.values()),
-                                  key=list(FileFormat.readers.values()).index)))
+    domain_editor = SettingProvider(DomainEditor)
 
     class Warning(widget.OWWidget.Warning):
-        file_too_big = widget.Msg("The file is too large to load automatically."
-                                  " Press Reload to load.")
+        file_too_big = Msg("The file is too large to load automatically."
+                           " Press Reload to load.")
+        load_warning = Msg("Read warning:\n{}")
+        performance_warning = Msg(
+            "Categorical variables with >100 values may decrease performance.")
+        renamed_vars = Msg("Some variables have been renamed "
+                           "to avoid duplicates.\n{}")
+        multiple_targets = Msg("Most widgets do not support multiple targets")
+
+    class Error(widget.OWWidget.Error):
+        file_not_found = Msg("File not found.")
+        missing_reader = Msg("Missing reader.")
+        sheet_error = Msg("Error listing available sheets.")
+        unknown = Msg("Read error:\n{}")
+
+    class NoFileSelected:
+        pass
+
+    UserAdviceMessages = [
+        widget.Message(
+            "Use CSV File Import widget for advanced options "
+            "for comma-separated files",
+            "use-csv-file-import"),
+        widget.Message(
+            "This widget loads only tabular data. Use other widgets to load "
+            "other data types like models, distance matrices and networks.",
+            "other-data-types"
+        )
+    ]
 
     def __init__(self):
         super().__init__()
@@ -141,8 +161,9 @@ class OWFile(widget.OWWidget, RecentPathsWComboMixin):
         self.reader = None
 
         layout = QGridLayout()
-        gui.widgetBox(self.controlArea, margin=0, orientation=layout)
-        vbox = gui.radioButtons(None, self, "source", box=True, addSpace=True,
+        layout.setSpacing(4)
+        gui.widgetBox(self.controlArea, orientation=layout, box='Source')
+        vbox = gui.radioButtons(None, self, "source", box=True,
                                 callback=self.load_data, addToLayout=False)
 
         rb_button = gui.appendRadioButton(vbox, "File:", addToLayout=False)
@@ -169,9 +190,8 @@ class OWFile(widget.OWWidget, RecentPathsWComboMixin):
         layout.addWidget(reload_button, 0, 3)
 
         self.sheet_box = gui.hBox(None, addToLayout=False, margin=0)
-        self.sheet_combo = gui.comboBox(None, self, "xls_sheet",
-                                        callback=self.select_sheet,
-                                        sendSelectedValue=True)
+        self.sheet_combo = QComboBox()
+        self.sheet_combo.activated[str].connect(self.select_sheet)
         self.sheet_combo.setSizePolicy(
             Policy.MinimumExpanding, Policy.Fixed)
         self.sheet_label = QLabel()
@@ -193,32 +213,35 @@ class OWFile(widget.OWWidget, RecentPathsWComboMixin):
         url_model.wrap(self.recent_urls)
         url_combo.setLineEdit(LineEditSelectOnFocus())
         url_combo.setModel(url_model)
-        url_combo.setSizePolicy(Policy.MinimumExpanding, Policy.Fixed)
+        url_combo.setSizePolicy(Policy.Ignored, Policy.Fixed)
         url_combo.setEditable(True)
         url_combo.setInsertPolicy(url_combo.InsertAtTop)
         url_edit = url_combo.lineEdit()
         l, t, r, b = url_edit.getTextMargins()
         url_edit.setTextMargins(l + 5, t, r, b)
-        layout.addWidget(url_combo, 3, 1, 3, 3)
+        layout.addWidget(url_combo, 3, 1, 1, 3)
         url_combo.activated.connect(self._url_set)
+        # whit completer we set that combo box is case sensitive when
+        # matching the history
+        completer = QCompleter()
+        completer.setCaseSensitivity(Qt.CaseSensitive)
+        url_combo.setCompleter(completer)
 
         box = gui.vBox(self.controlArea, "Info")
-        self.info = gui.widgetLabel(box, 'No data loaded.')
+        self.infolabel = gui.widgetLabel(box, 'No data loaded.')
         self.warnings = gui.widgetLabel(box, '')
 
         box = gui.widgetBox(self.controlArea, "Columns (Double click to edit)")
-        domain_editor = DomainEditor(self.variables)
-        self.editor_model = domain_editor.model()
-        box.layout().addWidget(domain_editor)
+        self.domain_editor = DomainEditor(self)
+        self.editor_model = self.domain_editor.model()
+        box.layout().addWidget(self.domain_editor)
 
-        box = gui.hBox(self.controlArea)
+        box = gui.hBox(box)
         gui.button(
-            box, self, "Browse documentation data sets",
-            callback=lambda: self.browse_file(True), autoDefault=False)
+            box, self, "Reset", callback=self.reset_domain_edit,
+            autoDefault=False
+        )
         gui.rubber(box)
-        box.layout().addWidget(self.report_button)
-        self.report_button.setFixedWidth(170)
-
         self.apply_button = gui.button(
             box, self, "Apply", callback=self.apply_domain_edit)
         self.apply_button.setEnabled(False)
@@ -226,20 +249,32 @@ class OWFile(widget.OWWidget, RecentPathsWComboMixin):
         self.editor_model.dataChanged.connect(
             lambda: self.apply_button.setEnabled(True))
 
+        hBox = gui.hBox(self.controlArea)
+        gui.rubber(hBox)
+        gui.button(
+            hBox, self, "Browse documentation datasets",
+            callback=lambda: self.browse_file(True), autoDefault=False)
+        gui.rubber(hBox)
+
+        self.info.set_output_summary(self.info.NoOutput)
+
         self.set_file_list()
         # Must not call open_file from within __init__. open_file
         # explicitly re-enters the event loop (by a progress bar)
 
         self.setAcceptDrops(True)
 
-        if self.source == self.LOCAL_FILE and \
-                        os.path.getsize(self.last_path()) > self.SIZE_LIMIT:
-            self.Warning.file_too_big()
-            return
+        if self.source == self.LOCAL_FILE:
+            last_path = self.last_path()
+            if last_path and os.path.exists(last_path) and \
+                    os.path.getsize(last_path) > self.SIZE_LIMIT:
+                self.Warning.file_too_big()
+                return
 
         QTimer.singleShot(0, self.load_data)
 
-    def sizeHint(self):
+    @staticmethod
+    def sizeHint():
         return QSize(600, 550)
 
     def select_file(self, n):
@@ -255,6 +290,15 @@ class OWFile(widget.OWWidget, RecentPathsWComboMixin):
         self.load_data()
 
     def _url_set(self):
+        url = self.url_combo.currentText()
+        pos = self.recent_urls.index(url)
+        url = url.strip()
+
+        if not urlparse(url).scheme:
+            url = 'http://' + url
+            self.url_combo.setItemText(pos, url)
+            self.recent_urls[pos] = url
+
         self.source = self.URL
         self.load_data()
 
@@ -264,17 +308,21 @@ class OWFile(widget.OWWidget, RecentPathsWComboMixin):
             if not os.path.exists(start_file):
                 QMessageBox.information(
                     None, "File",
-                    "Cannot find the directory with documentation data sets")
+                    "Cannot find the directory with documentation datasets")
                 return
         else:
             start_file = self.last_path() or os.path.expanduser("~/")
 
-        filename, _ = QFileDialog.getOpenFileName(
-            self, 'Open Orange Data File', start_file, self.dlg_formats)
+        readers = [f for f in FileFormat.formats
+                   if getattr(f, 'read', None)
+                   and getattr(f, "EXTENSIONS", None)]
+        filename, reader, _ = open_filename_dialog(start_file, None, readers)
         if not filename:
             return
-        self.loaded_file = filename
         self.add_path(filename)
+        if reader is not None:
+            self.recent_paths[0].file_format = reader.qualified_name()
+
         self.source = self.LOCAL_FILE
         self.load_data()
 
@@ -282,64 +330,80 @@ class OWFile(widget.OWWidget, RecentPathsWComboMixin):
     def load_data(self):
         # We need to catch any exception type since anything can happen in
         # file readers
-        # pylint: disable=broad-except
-        self.editor_model.set_domain(None)
+        self.closeContext()
+        self.domain_editor.set_domain(None)
         self.apply_button.setEnabled(False)
-        self.Warning.file_too_big.clear()
+        self.clear_messages()
+        self.set_file_list()
 
-        error = None
+        error = self._try_load()
+        if error:
+            error()
+            self.data = None
+            self.sheet_box.hide()
+            self.Outputs.data.send(None)
+            self.infolabel.setText("No data.")
+            self.info.set_output_summary(self.info.NoOutput)
+
+    def _try_load(self):
+        # pylint: disable=broad-except
+        if self.last_path() and not os.path.exists(self.last_path()):
+            return self.Error.file_not_found
+
         try:
             self.reader = self._get_reader()
-            if self.reader is None:
-                self.data = None
-                self.send("Data", None)
-                self.info.setText("No data.")
-                self.sheet_box.hide()
-                return
-        except Exception as ex:
-            error = ex
+            assert self.reader is not None
+        except Exception:
+            return self.Error.missing_reader
 
-        if not error:
+        if self.reader is self.NoFileSelected:
+            self.Outputs.data.send(None)
+            self.info.set_output_summary(self.info.NoOutput)
+            return None
+
+        try:
             self._update_sheet_combo()
-            with catch_warnings(record=True) as warnings:
-                try:
-                    data = self.reader.read()
-                except Exception as ex:
-                    log.exception(ex)
-                    error = ex
-                self.warning(warnings[-1].message.args[0] if warnings else '')
+        except Exception:
+            return self.Error.sheet_error
 
-        if error:
-            self.data = None
-            self.send("Data", None)
-            self.info.setText("An error occurred:\n{}".format(error))
-            self.editor_model.reset()
-            self.sheet_box.hide()
-            return
+        with log_warnings() as warnings:
+            try:
+                data = self.reader.read()
+            except Exception as ex:
+                log.exception(ex)
+                return lambda x=ex: self.Error.unknown(str(x))
+            if warnings:
+                self.Warning.load_warning(warnings[-1].message.args[0])
 
-        self.info.setText(self._describe(data))
+        self.infolabel.setText(self._describe(data))
 
-        add_origin(data, self.loaded_file or self.last_path())
-        self.send("Data", data)
-        self.editor_model.set_domain(data.domain)
+        self.loaded_file = self.last_path()
+        add_origin(data, self.loaded_file)
         self.data = data
+        self.openContext(data.domain)
+        self.apply_domain_edit()  # sends data
+        return None
 
-    def _get_reader(self):
-        """
-
-        Returns
-        -------
-        FileFormat
-        """
+    def _get_reader(self) -> FileFormat:
         if self.source == self.LOCAL_FILE:
-            reader = FileFormat.get_reader(self.last_path())
+            path = self.last_path()
+            if path is None:
+                return self.NoFileSelected
+            if self.recent_paths and self.recent_paths[0].file_format:
+                qname = self.recent_paths[0].file_format
+                reader_class = class_from_qualified_name(qname)
+                reader = reader_class(path)
+            else:
+                reader = FileFormat.get_reader(path)
             if self.recent_paths and self.recent_paths[0].sheet:
                 reader.select_sheet(self.recent_paths[0].sheet)
             return reader
-        elif self.source == self.URL:
+        else:
             url = self.url_combo.currentText().strip()
             if url:
                 return UrlReader(url)
+            else:
+                return self.NoFileSelected
 
     def _update_sheet_combo(self):
         if len(self.reader.sheets) < 2:
@@ -353,17 +417,22 @@ class OWFile(widget.OWWidget, RecentPathsWComboMixin):
         self.sheet_box.show()
 
     def _select_active_sheet(self):
-        if self.reader.sheet:
-            try:
-                idx = self.reader.sheets.index(self.reader.sheet)
-                self.sheet_combo.setCurrentIndex(idx)
-            except ValueError:
-                # Requested sheet does not exist in this file
-                self.reader.select_sheet(None)
-        else:
+        try:
+            idx = self.reader.sheets.index(self.reader.sheet)
+            self.sheet_combo.setCurrentIndex(idx)
+        except ValueError:
+            # Requested sheet does not exist in this file
+            self.reader.select_sheet(None)
             self.sheet_combo.setCurrentIndex(0)
 
-    def _describe(self, table):
+    @staticmethod
+    def _describe(table):
+        def missing_prop(prop):
+            if prop:
+                return f"({prop * 100:.1f}% missing values)"
+            else:
+                return "(no missing values)"
+
         domain = table.domain
         text = ""
 
@@ -371,28 +440,35 @@ class OWFile(widget.OWWidget, RecentPathsWComboMixin):
         descs = [attrs[desc]
                  for desc in ("Name", "Description") if desc in attrs]
         if len(descs) == 2:
-            descs[0] = "<b>{}</b>".format(descs[0])
+            descs[0] = f"<b>{descs[0]}</b>"
         if descs:
-            text += "<p>{}</p>".format("<br/>".join(descs))
+            text += f"<p>{'<br/>'.join(descs)}</p>"
 
-        text += "<p>{} instance(s), {} feature(s), {} meta attribute(s)".\
-            format(len(table), len(domain.attributes), len(domain.metas))
+        text += f"<p>{len(table)} instance(s)"
+
+        missing_in_attr = missing_prop(table.has_missing_attribute()
+                                       and table.get_nan_frequency_attribute())
+        missing_in_class = missing_prop(table.has_missing_class()
+                                        and table.get_nan_frequency_class())
+        text += f"<br/>{len(domain.attributes)} feature(s) {missing_in_attr}"
         if domain.has_continuous_class:
-            text += "<br/>Regression; numerical class."
+            text += f"<br/>Regression; numerical class {missing_in_class}"
         elif domain.has_discrete_class:
-            text += "<br/>Classification; discrete class with {} values.".\
-                format(len(domain.class_var.values))
+            text += "<br/>Classification; categorical class " \
+                f"with {len(domain.class_var.values)} values {missing_in_class}"
         elif table.domain.class_vars:
-            text += "<br/>Multi-target; {} target variables.".format(
-                len(table.domain.class_vars))
+            text += "<br/>Multi-target; " \
+                f"{len(table.domain.class_vars)} target variables " \
+                f"{missing_in_class}"
         else:
             text += "<br/>Data has no target variable."
+        text += f"<br/>{len(domain.metas)} meta attribute(s)"
         text += "</p>"
 
         if 'Timestamp' in table.domain:
             # Google Forms uses this header to timestamp responses
-            text += '<p>First entry: {}<br/>Last entry: {}</p>'.format(
-                table[0, 'Timestamp'], table[-1, 'Timestamp'])
+            text += f"<p>First entry: {table[0, 'Timestamp']}<br/>" \
+                f"Last entry: {table[-1, 'Timestamp']}</p>"
         return text
 
     def storeSpecificSettings(self):
@@ -402,51 +478,44 @@ class OWFile(widget.OWWidget, RecentPathsWComboMixin):
         if hasattr(self.current_context, "modified_variables"):
             self.variables[:] = self.current_context.modified_variables
 
+    def reset_domain_edit(self):
+        self.domain_editor.reset_domain()
+        self.apply_domain_edit()
+
+    def _inspect_discrete_variables(self, domain):
+        for var in chain(domain.variables, domain.metas):
+            if var.is_discrete and len(var.values) > 100:
+                self.Warning.performance_warning()
+
     def apply_domain_edit(self):
-        attributes = []
-        class_vars = []
-        metas = []
-        places = [attributes, class_vars, metas]
-        X, y, m = [], [], []
-        cols = [X, y, m]  # Xcols, Ycols, Mcols
-
-        def is_missing(x):
-            return str(x) in ("nan", "")
-
-        for column, (name, tpe, place, vals, is_con), (orig_var, orig_plc) in \
-            zip(count(), self.editor_model.variables,
-                chain([(at, 0) for at in self.data.domain.attributes],
-                      [(cl, 1) for cl in self.data.domain.class_vars],
-                      [(mt, 2) for mt in self.data.domain.metas])):
-            if place == 3:
-                continue
-            if orig_plc == 2:
-                col_data = list(chain(*self.data[:, orig_var].metas))
+        self.Warning.performance_warning.clear()
+        self.Warning.renamed_vars.clear()
+        if self.data is None:
+            table = None
+        else:
+            domain, cols, renamed = \
+                self.domain_editor.get_domain(self.data.domain, self.data,
+                                              deduplicate=True)
+            if not (domain.variables or domain.metas):
+                table = None
+            elif domain is self.data.domain:
+                table = self.data
             else:
-                col_data = list(chain(*self.data[:, orig_var]))
-            if name == orig_var.name and tpe == type(orig_var):
-                var = orig_var
-            elif tpe == DiscreteVariable:
-                values = list(str(i) for i in set(col_data) if not is_missing(i))
-                var = tpe(name, values)
-                col_data = [np.nan if is_missing(x) else values.index(str(x))
-                            for x in col_data]
-            elif tpe == StringVariable and type(orig_var) == DiscreteVariable:
-                var = tpe(name)
-                col_data = [orig_var.repr_val(x) if not np.isnan(x) else ""
-                            for x in col_data]
-            else:
-                var = tpe(name)
-            places[place].append(var)
-            cols[place].append(col_data)
-        domain = Domain(attributes, class_vars, metas)
-        X = np.array(X).T if len(X) else np.empty((len(self.data), 0))
-        y = np.array(y).T if len(y) else None
-        dtpe = object if any(isinstance(m, StringVariable)
-                             for m in domain.metas) else float
-        m = np.array(m, dtype=dtpe).T if len(m) else None
-        table = Table.from_numpy(domain, X, y, m, self.data.W)
-        self.send("Data", table)
+                X, y, m = cols
+                table = Table.from_numpy(domain, X, y, m, self.data.W)
+                table.name = self.data.name
+                table.ids = np.array(self.data.ids)
+                table.attributes = getattr(self.data, 'attributes', {})
+                self._inspect_discrete_variables(domain)
+            if renamed:
+                self.Warning.renamed_vars(f"Renamed: {', '.join(renamed)}")
+
+        self.Warning.multiple_targets(
+            shown=table is not None and len(table.domain.class_vars) > 1)
+        summary = len(table) if table else self.info.NoOutput
+        details = format_summary_details(table) if table else ""
+        self.info.set_output_summary(summary, details)
+        self.Outputs.data.send(table)
         self.apply_button.setEnabled(False)
 
     def get_widget_name_extension(self):
@@ -468,12 +537,12 @@ class OWFile(widget.OWWidget, RecentPathsWComboMixin):
             home = os.path.expanduser("~")
             if self.loaded_file.startswith(home):
                 # os.path.join does not like ~
-                name = "~/" + \
+                name = "~" + os.path.sep + \
                        self.loaded_file[len(home):].lstrip("/").lstrip("\\")
             else:
                 name = self.loaded_file
             if self.sheet_combo.isVisible():
-                name += " ({})".format(self.sheet_combo.currentText())
+                name += f" ({self.sheet_combo.currentText()})"
             self.report_items("File", [("File name", name),
                                        ("Format", get_ext_name(name))])
         else:
@@ -482,13 +551,13 @@ class OWFile(widget.OWWidget, RecentPathsWComboMixin):
 
         self.report_data("Data", self.data)
 
-    def dragEnterEvent(self, event):
+    @staticmethod
+    def dragEnterEvent(event):
         """Accept drops of valid file urls"""
         urls = event.mimeData().urls()
         if urls:
             try:
-                FileFormat.get_reader(OSX_NSURL_toLocalFile(urls[0]) or
-                                      urls[0].toLocalFile())
+                FileFormat.get_reader(urls[0].toLocalFile())
                 event.acceptProposedAction()
             except IOError:
                 pass
@@ -497,16 +566,18 @@ class OWFile(widget.OWWidget, RecentPathsWComboMixin):
         """Handle file drops"""
         urls = event.mimeData().urls()
         if urls:
-            self.add_path(OSX_NSURL_toLocalFile(urls[0]) or
-                          urls[0].toLocalFile())  # add first file
+            self.add_path(urls[0].toLocalFile())  # add first file
             self.source = self.LOCAL_FILE
             self.load_data()
 
-if __name__ == "__main__":
-    import sys
-    from AnyQt.QtWidgets import QApplication
-    a = QApplication(sys.argv)
-    ow = OWFile()
-    ow.show()
-    a.exec_()
-    ow.saveSettings()
+    def workflowEnvChanged(self, key, value, oldvalue):
+        """
+        Function called when environment changes (e.g. while saving the scheme)
+        It make sure that all environment connected values are modified
+        (e.g. relative file paths are changed)
+        """
+        self.update_file_list(key, value, oldvalue)
+
+
+if __name__ == "__main__":  # pragma: no cover
+    WidgetPreview(OWFile).run()

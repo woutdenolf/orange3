@@ -1,13 +1,17 @@
-# pylint: disable=missing-docstring
+# pylint: disable=missing-docstring, protected-access
 import numpy as np
+
+from orangewidget.widget import StateInfo
 
 from Orange.data import Table
 from Orange.classification import NaiveBayesLearner, TreeLearner
 from Orange.regression import MeanLearner
 from Orange.evaluation.testing import CrossValidation, TestOnTrainingData, \
-    ShuffleSplit
+    ShuffleSplit, Results
 from Orange.widgets.evaluate.owconfusionmatrix import OWConfusionMatrix
 from Orange.widgets.tests.base import WidgetTest, WidgetOutputsTestMixin
+from Orange.widgets.utils.state_summary import format_summary_details
+from Orange.widgets.tests.utils import possible_duplicate_table
 
 
 class TestOWConfusionMatrix(WidgetTest, WidgetOutputsTestMixin):
@@ -18,13 +22,13 @@ class TestOWConfusionMatrix(WidgetTest, WidgetOutputsTestMixin):
 
         bayes = NaiveBayesLearner()
         tree = TreeLearner()
+        # `data` is defined in WidgetOutputsTestMixin, pylint: disable=no-member
         cls.iris = cls.data
         titanic = Table("titanic")
-        common = dict(k=3, store_data=True)
-        cls.results_1_iris = CrossValidation(cls.iris, [bayes], **common)
-        cls.results_2_iris = CrossValidation(cls.iris, [bayes, tree], **common)
-        cls.results_2_titanic = CrossValidation(titanic, [bayes, tree],
-                                                **common)
+        cv = CrossValidation(k=3, store_data=True)
+        cls.results_1_iris = cv(cls.iris, [bayes])
+        cls.results_2_iris = cv(cls.iris, [bayes, tree])
+        cls.results_2_titanic = cv(titanic, [bayes, tree])
 
         cls.signal_name = "Evaluation Results"
         cls.signal_data = cls.results_1_iris
@@ -38,15 +42,15 @@ class TestOWConfusionMatrix(WidgetTest, WidgetOutputsTestMixin):
         """Check learner and model for various values of all parameters
         when pruning parameters are not checked
         """
-        self.send_signal("Evaluation Results", self.results_2_iris)
+        self.send_signal(self.widget.Inputs.evaluation_results, self.results_2_iris)
         self.assertEqual(self.widget.selected_learner, [0])
         self.widget.selected_learner[:] = [1]
-        self.send_signal("Evaluation Results", self.results_2_titanic)
+        self.send_signal(self.widget.Inputs.evaluation_results, self.results_2_titanic)
         self.widget.selected_learner[:] = [1]
-        self.send_signal("Evaluation Results", self.results_1_iris)
+        self.send_signal(self.widget.Inputs.evaluation_results, self.results_1_iris)
         self.widget.selected_learner[:] = [0]
-        self.send_signal("Evaluation Results", None)
-        self.send_signal("Evaluation Results", self.results_1_iris)
+        self.send_signal(self.widget.Inputs.evaluation_results, None)
+        self.send_signal(self.widget.Inputs.evaluation_results, self.results_1_iris)
         self.widget.selected_learner[:] = [0]
 
     def _select_data(self):
@@ -61,24 +65,83 @@ class TestOWConfusionMatrix(WidgetTest, WidgetOutputsTestMixin):
     def test_show_error_on_regression(self):
         """On regression data, the widget must show error"""
         housing = Table("housing")
-        results = TestOnTrainingData(housing, [MeanLearner()], store_data=True)
-        self.send_signal("Evaluation Results", results)
+        results = TestOnTrainingData(store_data=True)(housing, [MeanLearner()])
+        self.send_signal(self.widget.Inputs.evaluation_results, results)
         self.assertTrue(self.widget.Error.no_regression.is_shown())
-        self.send_signal("Evaluation Results", None)
+        self.send_signal(self.widget.Inputs.evaluation_results, None)
         self.assertFalse(self.widget.Error.no_regression.is_shown())
-        self.send_signal("Evaluation Results", results)
+        self.send_signal(self.widget.Inputs.evaluation_results, results)
         self.assertTrue(self.widget.Error.no_regression.is_shown())
-        self.send_signal("Evaluation Results", self.results_1_iris)
+        self.send_signal(self.widget.Inputs.evaluation_results, self.results_1_iris)
         self.assertFalse(self.widget.Error.no_regression.is_shown())
 
     def test_row_indices(self):
         """Map data instances when using random shuffling"""
-        results = ShuffleSplit(self.iris, [NaiveBayesLearner()],
-                               store_data=True)
-        self.send_signal("Evaluation Results", results)
+        results = ShuffleSplit(store_data=True
+                               )(self.iris, [NaiveBayesLearner()])
+        self.send_signal(self.widget.Inputs.evaluation_results, results)
         self.widget.select_correct()
-        selected = self.get_output("Selected Data")
+        selected = self.get_output(self.widget.Outputs.selected_data)
+        # pylint: disable=unsubscriptable-object
         correct = np.equal(results.actual, results.predicted)[0]
         correct_indices = results.row_indices[correct]
         self.assertSetEqual(set(self.iris[correct_indices].ids),
                             set(selected.ids))
+
+    def test_empty_results(self):
+        """Test on empty results."""
+        res = Results(data=self.iris[:0], store_data=True)
+        res.row_indices = np.array([], dtype=int)
+        res.actual = np.array([])
+        res.predicted = np.array([[]])
+        res.probabilities = np.zeros((1, 0, 3))
+        self.send_signal(self.widget.Inputs.evaluation_results, res)
+        self.widget.select_correct()
+        self.widget.select_wrong()
+
+    def test_nan_results(self):
+        """Test on results with nan values in actual/predicted"""
+        res = Results(data=self.iris, nmethods=2, store_data=True)
+        res.row_indices = np.array([0, 50, 100], dtype=int)
+        res.actual = np.array([0., np.nan, 2.])
+        res.predicted = np.array([[np.nan, 1, 2],
+                                  [np.nan, np.nan, np.nan]])
+        res.probabilities = np.zeros((1, 3, 3))
+        self.send_signal(self.widget.Inputs.evaluation_results, res)
+        self.assertTrue(self.widget.Error.invalid_values.is_shown())
+        self.send_signal(self.widget.Inputs.evaluation_results, None)
+        self.assertFalse(self.widget.Error.invalid_values.is_shown())
+
+    def test_not_append_extra_meta_columns(self):
+        """
+        When a user does not want append extra meta column, the widget
+        should not crash.
+        GH-2386
+        """
+        self.widget.append_predictions = False
+        self.send_signal(self.widget.Inputs.evaluation_results, self.results_1_iris)
+
+    def test_summary(self):
+        """Check if the status bar updates"""
+        info = self.widget.info
+        no_output = "No data on output"
+
+        self.send_signal(self.widget.Inputs.evaluation_results, self.results_1_iris)
+        self.assertIsInstance(info._StateInfo__output_summary, StateInfo.Empty)
+        self.assertEqual(info._StateInfo__output_summary.details, no_output)
+        self._select_data()
+        output = self.get_output(self.widget.Outputs.selected_data)
+        summary, details = f"{len(output)}", format_summary_details(output)
+        self.assertEqual(info._StateInfo__output_summary.brief, summary)
+        self.assertEqual(info._StateInfo__output_summary.details, details)
+        self.send_signal(self.widget.Inputs.evaluation_results, None)
+        self.assertIsInstance(info._StateInfo__output_summary, StateInfo.Empty)
+        self.assertEqual(info._StateInfo__output_summary.details, no_output)
+
+    def test_unique_output_domain(self):
+        bayes = NaiveBayesLearner()
+        data = possible_duplicate_table('iris(Learner #1)')
+        input_data = CrossValidation(k=3, store_data=True)(data, [bayes])
+        self.send_signal(self.widget.Inputs.evaluation_results, input_data)
+        output = self.get_output(self.widget.Outputs.annotated_data)
+        self.assertEqual(output.domain.metas[0].name, 'iris(Learner #1) (1)')

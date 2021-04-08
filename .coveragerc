@@ -1,8 +1,13 @@
 [run]
+parallel = 1
+concurrency =
+    multiprocessing
+    thread
+source =
+    Orange
 omit =
     Orange/canvas/*
-    Orange/widgets/*
-    Orange/tests/*
+    */tests/*
     */setup.py
     */*/setup.py
 
@@ -12,3 +17,6 @@ exclude_lines =
     raise NotImplementedError
     if __name__ == .__main__.:
     except MemoryError
+    assert False
+    raise AssertionError
+    if (typing\.)?TYPE_CHECKING:

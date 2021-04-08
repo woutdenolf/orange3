@@ -76,15 +76,16 @@ def lac(conts, k, nsteps=30, window_size=1):
     m data points,
     each with dim dimensions
     """
+    import sys
+
     dim = len(conts)
 
     np.random.seed(42)
     # Initialize parameters
     priors = np.ones(k) / k
 
-
     print("Initializing")
-    import sys; sys.stdout.flush()
+    sys.stdout.flush()
     means, covars = initialize_random(conts, k)
     #means, covars = initialize_kmeans(conts, k)
     print("Done")
@@ -111,7 +112,10 @@ def lac(conts, k, nsteps=30, window_size=1):
                     inv_covars = 1. / covars[j, dims]
                     xn = x - means[j, dims]
                     factor = (2.0 * np.pi) ** (x.shape[1]/ 2.0) * det ** 0.5
-                    w[l][j] = priors[j] * np.exp(np.sum(xn * inv_covars * xn, axis=1) * -.5) / factor
+                    w[l][j] = \
+                        priors[j] \
+                        * np.exp(np.sum(xn * inv_covars * xn, axis=1) * -.5) \
+                        / factor
                 else:
                     w[l][j] = 0
             w[l][active] /= w[l][active].sum(axis=0)
@@ -196,7 +200,7 @@ def create_contingencies(X, callback=None):
 
 def get_bin_centers(X_):
     m = []
-    for i, var in enumerate(X_.domain):
+    for i, var in enumerate(X_.domain.variables):
         cleaned_values = [tuple(map(str.strip, v.strip('[]()<>=≥').split('-')))
                           for v in var.values]
         try:

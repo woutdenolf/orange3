@@ -1,30 +1,31 @@
 import random
-import Orange
-import numpy as np
-from scipy.sparse import issparse
-
 from itertools import takewhile
 from operator import itemgetter
 
-from Orange.preprocess.preprocess import Preprocess
-from Orange.preprocess.score import ANOVA, GainRatio, UnivariateLinearRegression
-from Orange.data import Domain
-
-__all__ = ["SelectBestFeatures", "RemoveNaNColumns", "SelectRandomFeatures"]
+import numpy as np
 
 
-class SelectBestFeatures:
+import Orange
+from Orange.util import Reprable
+from Orange.preprocess.score import ANOVA, GainRatio, \
+    UnivariateLinearRegression
+
+__all__ = ["SelectBestFeatures", "SelectRandomFeatures"]
+
+
+class SelectBestFeatures(Reprable):
     """
-    A feature selector that builds a new data set consisting of either the top
-    `k` features or all those that exceed a given `threshold`. Features are
-    scored using the provided feature scoring `method`. By default it is
-    assumed that feature importance diminishes with decreasing scores.
+    A feature selector that builds a new dataset consisting of either the top
+    `k` features (if `k` is an `int`) or a proportion (if `k` is a `float`
+    between 0.0 and 1.0), or all those that exceed a given `threshold`. Features
+    are scored using the provided feature scoring `method`. By default it is
+    assumed that feature importance decreases with decreasing scores.
 
     If both `k` and `threshold` are set, only features satisfying both
     conditions will be selected.
 
     If `method` is not set, it is automatically selected when presented with
-    the data set. Data sets with both continuous and discrete features are
+    the dataset. Datasets with both continuous and discrete features are
     scored using a method suitable for the majority of features.
 
     Parameters
@@ -32,8 +33,8 @@ class SelectBestFeatures:
     method : Orange.preprocess.score.ClassificationScorer, Orange.preprocess.score.SklScorer
         Univariate feature scoring method.
 
-    k : int
-        The number of top features to select.
+    k : int or float
+        The number or propotion of top features to select.
 
     threshold : float
         A threshold that a feature should meet according to the provided method.
@@ -50,6 +51,12 @@ class SelectBestFeatures:
         self.decreasing = decreasing
 
     def __call__(self, data):
+        n_attrs = len(data.domain.attributes)
+        if isinstance(self.k, float):
+            effective_k = np.round(self.k * n_attrs).astype(int) or 1
+        else:
+            effective_k = self.k
+
         method = self.method
         # select default method according to the provided data
         if method is None:
@@ -65,12 +72,6 @@ class SelectBestFeatures:
             else:
                 method = UnivariateLinearRegression()
 
-        if not isinstance(data.domain.class_var, method.class_type):
-            raise ValueError(("Scoring method {} requires a class variable " +
-                              "of type {}.").format(
-                (method if type(method) == type else type(method)).__name__,
-                method.class_type.__name__)
-            )
         features = data.domain.attributes
         try:
             scores = method(data)
@@ -79,7 +80,7 @@ class SelectBestFeatures:
         best = sorted(zip(scores, features), key=itemgetter(0),
                       reverse=self.decreasing)
         if self.k:
-            best = best[:self.k]
+            best = best[:effective_k]
         if self.threshold:
             pred = ((lambda x: x[0] >= self.threshold) if self.decreasing else
                     (lambda x: x[0] <= self.threshold))
@@ -87,11 +88,12 @@ class SelectBestFeatures:
 
         domain = Orange.data.Domain([f for s, f in best],
                                     data.domain.class_vars, data.domain.metas)
-        return data.from_table(domain, data)
+        return data.transform(domain)
 
     def score_only_nice_features(self, data, method):
+        # dtype must be defined because array can be empty
         mask = np.array([isinstance(a, method.feature_type)
-                         for a in data.domain.attributes])
+                         for a in data.domain.attributes], dtype=np.bool)
         features = [f for f in data.domain.attributes
                     if isinstance(f, method.feature_type)]
         scores = [method(data, f) for f in features]
@@ -101,10 +103,10 @@ class SelectBestFeatures:
         return all_scores
 
 
-class SelectRandomFeatures:
+class SelectRandomFeatures(Reprable):
     """
     A feature selector that selects random `k` features from an input
-    data set and returns a data set with selected features. Parameter
+    dataset and returns a dataset with selected features. Parameter
     `k` is either an integer (number of feature) or float (from 0.0 to
     1.0, proportion of retained features).
 
@@ -119,39 +121,13 @@ class SelectRandomFeatures:
         self.k = k
 
     def __call__(self, data):
-        if type(self.k) == float:
-            self.k = int(len(data.domain.attributes) * self.k)
+        if isinstance(self.k, float):
+            effective_k = int(len(data.domain.attributes) * self.k)
+        else:
+            effective_k = self.k
+
         domain = Orange.data.Domain(
             random.sample(data.domain.attributes,
-                          min(self.k, len(data.domain.attributes))),
+                          min(effective_k, len(data.domain.attributes))),
             data.domain.class_vars, data.domain.metas)
-        return data.from_table(domain, data)
-
-
-class RemoveNaNColumns(Preprocess):
-    """
-    Remove features from the data domain if they contain
-    `threshold` or more unknown values.
-
-    `threshold` can be an integer or a float in the range (0, 1) representing
-    the fraction of the data size. When not provided, columns with only missing
-    values are removed (default).
-    """
-    def __init__(self, threshold=None):
-        self.threshold = threshold
-
-    def __call__(self, data, threshold=None):
-        # missing entries in sparse data are treated as zeros so we skip removing NaNs
-        if issparse(data.X):
-            return data
-
-        if threshold is None:
-            threshold = data.X.shape[0] if self.threshold is None else \
-                        self.threshold
-        if isinstance(threshold, float):
-            threshold = threshold * data.X.shape[0]
-        nans = np.sum(np.isnan(data.X), axis=0)
-        att = [a for a, n in zip(data.domain.attributes, nans) if n < threshold]
-        domain = Orange.data.Domain(att, data.domain.class_vars,
-                                    data.domain.metas)
-        return Orange.data.Table(domain, data)
+        return data.transform(domain)

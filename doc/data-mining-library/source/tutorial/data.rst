@@ -8,14 +8,16 @@ This section describes how to load the data in Orange. We also show how to explo
 Data Input
 ----------
 
-..  index:: 
+..  index::
     single: data; input
 
-Orange can read files in native tab-delimited format, or can load data from any of the major standard spreadsheet file type, like CSV and Excel. Native format starts with a header row with feature (column) names. Second header row gives the attribute type, which can be continuous, discrete, string. The third header line contains meta information to identify dependent features (class), irrelevant features (ignore) or meta features (meta). Here are the first few lines from a data set :download:`lenses.tab <code/lenses.tab>`::
+Orange can read files in native tab-delimited format, or can load data from any of the major standard spreadsheet file types, like CSV and Excel. Native format starts with a header row with feature (column) names. The second header row gives the attribute type, which can be continuous, discrete, time, or string. The third header line contains meta information to identify dependent features (class), irrelevant features (ignore) or meta features (meta).
+More detailed specification is available in :doc:`../reference/data.io`.
+Here are the first few lines from a dataset :download:`lenses.tab <code/lenses.tab>`::
 
     age       prescription  astigmatic    tear_rate     lenses
-    discrete  discrete      discrete      discrete      discrete 
-                                                       class
+    discrete  discrete      discrete      discrete      discrete
+                                                        class
     young     myope         no            reduced       none
     young     myope         no            normal        soft
     young     myope         yes           reduced       none
@@ -23,27 +25,27 @@ Orange can read files in native tab-delimited format, or can load data from any 
     young     hypermetrope  no            reduced       none
 
 
-Values are tab-limited. This data set has four attributes (age of the patient, spectacle prescription, notion on astigmatism, and information on tear production rate) and an associated three-valued dependent variable encoding lens prescription for the patient (hard contact lenses, soft contact lenses, no lenses). Feature descriptions could use one letter only, so the header of this data set could also read::
+Values are tab-limited. This dataset has four attributes (age of the patient, spectacle prescription, notion on astigmatism, and information on tear production rate) and an associated three-valued dependent variable encoding lens prescription for the patient (hard contact lenses, soft contact lenses, no lenses). Feature descriptions could use one letter only, so the header of this dataset could also read::
 
     age       prescription  astigmatic    tear_rate     lenses
-    d         d             d             d             d 
-                                                       c
+    d         d             d             d             d
+                                                        c
 
-The rest of the table gives the data. Note that there are 5 instances in our table above. For the full data set, check out or download :download:`lenses.tab <code/lenses.tab>`) to a target directory. You can also skip this step as Orange comes preloaded with several demo data sets, lenses being one of them. Now, open a python shell, import Orange and load the data:
+The rest of the table gives the data. Note that there are 5 instances in our table above. For the full dataset, check out or download :download:`lenses.tab <code/lenses.tab>`) to a target directory. You can also skip this step as Orange comes preloaded with several demo datasets, lenses being one of them. Now, open a python shell, import Orange and load the data:
 
     >>> import Orange
     >>> data = Orange.data.Table("lenses")
     >>>
 
-Note that for the file name no suffix is needed; as Orange checks if any files in the current directory are of the readable type. The call to ``Orange.data.Table`` creates an object called ``data`` that holds your data set and information about the lenses domain:
+Note that for the file name no suffix is needed, as Orange checks if any files in the current directory are of a readable type. The call to ``Orange.data.Table`` creates an object called ``data`` that holds your dataset and information about the lenses domain:
 
     >>> data.domain.attributes
-    (DiscreteVariable('age', values=['pre-presbyopic', 'presbyopic', 'young']),
-     DiscreteVariable('prescription', values=['hypermetrope', 'myope']),
-     DiscreteVariable('astigmatic', values=['no', 'yes']),
-     DiscreteVariable('tear_rate', values=['normal', 'reduced']))
+    (DiscreteVariable('age', values=('pre-presbyopic', 'presbyopic', 'young')),
+     DiscreteVariable('prescription', values=('hypermetrope', 'myope')),
+     DiscreteVariable('astigmatic', values=('no', 'yes')),
+     DiscreteVariable('tear_rate', values=('normal', 'reduced')))
     >>> data.domain.class_var
-    DiscreteVariable('lenses', values=['hard', 'none', 'soft'])
+    DiscreteVariable('lenses', values=('hard', 'none', 'soft'))
     >>> for d in data[:3]:
        ...:     print(d)
        ...:
@@ -52,7 +54,7 @@ Note that for the file name no suffix is needed; as Orange checks if any files i
     [young, myope, yes, reduced | none]
     >>>
 
-The following script wraps-up everything we have done so far and lists first 5 data instances with ``soft`` perscription:
+The following script wraps-up everything we have done so far and lists first 5 data instances with ``soft`` prescription:
 
 .. literalinclude:: code/data-lenses.py
 
@@ -110,7 +112,7 @@ Data Instances
 ..  index::
     single: data; examples
 
-Data table stores data instances (or examples). These can be index or traversed as any Python list. Data instances can be considered as vectors, accessed through element index, or through feature name.
+Data table stores data instances (or examples). These can be indexed or traversed as any Python list. Data instances can be considered as vectors, accessed through element index, or through feature name.
 
 ..  literalinclude:: code/data-instances1.py
 
@@ -125,12 +127,12 @@ The script above displays the following output::
     Value of 'sepal width' for the first instance: 3.500
     The 3rd value of the 25th data instance: 1.900
 
-Iris data set we have used above has four continous attributes. Here's a script that computes their mean:
+The Iris dataset we have used above has four continuous attributes. Here's a script that computes their mean:
 
 ..  literalinclude:: code/data-instances2.py
     :lines: 3-
 
-Above also illustrates indexing of data instances with objects that store features; in ``d[x]`` variable ``x`` is an Orange object. Here's the output::
+The above script also illustrates indexing of data instances with objects that store features; in ``d[x]`` variable ``x`` is an Orange object. Here's the output::
 
     Feature         Mean
     sepal length    5.84
@@ -139,7 +141,7 @@ Above also illustrates indexing of data instances with objects that store featur
     petal width     1.20
 
 
-A slightly more complicated, but more interesting is a code that computes per-class averages:
+A slightly more complicated, but also more interesting, code that computes per-class averages:
 
 ..  literalinclude:: code/data-instances3.py
     :lines: 3-
@@ -152,13 +154,13 @@ Of the four features, petal width and length look quite discriminative for the t
     petal length               1.46            4.26            5.55
     petal width                0.24            1.33            2.03
 
-Finally, here is a quick code that computes the class distribution for another data set:
+Finally, here is a quick code that computes the class distribution for another dataset:
 
 ..  literalinclude:: code/data-instances4.py
 
-Orange Data Sets and NumPy
---------------------------
-Orange data sets are actually wrapped `NumPy <http://www.numpy.org>`_ arrays. Wrapping is performed to retain the information about the feature names and values, and NumPy arrays are used for speed and compatibility with different machine learning toolboxes, like `scikit-learn <http://scikit-learn.org>`_, on which Orange relies. Let us display the values of these arrays for the first three data instances of the iris data set::
+Orange Datasets and NumPy
+-------------------------
+Orange datasets are actually wrapped `NumPy <http://www.numpy.org>`_ arrays. Wrapping is performed to retain the information about the feature names and values, and NumPy arrays are used for speed and compatibility with different machine learning toolboxes, like `scikit-learn <http://scikit-learn.org>`_, on which Orange relies. Let us display the values of these arrays for the first three data instances of the iris dataset::
 
     >>> data = Orange.data.Table("iris")
     >>> data.X[:3]
@@ -174,7 +176,7 @@ Notice that we access the arrays for attributes and class separately, using ``da
     >>> np.mean(data.X, axis=0)
     array([ 5.84333333,  3.054     ,  3.75866667,  1.19866667])
 
-We can also construct a (classless) data set from a numpy array::
+We can also construct a (classless) dataset from a numpy array::
 
     >>> X = np.array([[1,2], [4,5]])
     >>> data = Orange.data.Table(X)
@@ -183,13 +185,13 @@ We can also construct a (classless) data set from a numpy array::
 
 If we want to provide meaninful names to attributes, we need to construct an appropriate data domain::
 
-    >>> domain = Orange.data.Domain([Orange.data.ContinuousVariable("lenght"), 
+    >>> domain = Orange.data.Domain([Orange.data.ContinuousVariable("lenght"),
                                      Orange.data.ContinuousVariable("width")])
     >>> data = Orange.data.Table(domain, X)
     >>> data.domain
     [lenght, width]
 
-Here is another example, this time with construction of data set that includes a numerical class and different type of attributes:
+Here is another example, this time with the construction of a dataset that includes a numerical class and different types of attributes:
 
 ..  literalinclude:: code/data-domain-numpy.py
     :lines: 4-
@@ -205,31 +207,34 @@ Meta Attributes
 
 Often, we wish to include descriptive fields in the data that will not be used in any computation (distance estimation, modeling), but will serve for identification or additional information. These are called meta attributes, and are marked with ``meta`` in the third header row:
 
-..  literalinclude:: code/student-grades.tab
+..  literalinclude:: code/zoo.tab
 
-Values of meta attributes and all other (non-meta) attributes are treated similarly in Orange, but stored in the separate numpy arrays:
+Values of meta attributes and all other (non-meta) attributes are treated similarly in Orange, but stored in separate numpy arrays:
 
-    >>> data = Orange.data.Table("student-grades")
+    >>> data = Orange.data.Table("zoo")
     >>> data[0]["name"]
-    >>> data[0]["biology"]
+    >>> data[0]["type"]
     >>> for d in data:
-        ...:     print("{}/{}: {}".format(d["name"], d["gender"], d["math"]))
+        ...:     print("{}/{}: {}".format(d["name"], d["type"], d["legs"]))
         ...:
-    jane/f: 10.000
-    bill/m: 7.000
-    ian/m: 8.000
+    aardvark/mammal: 4
+    antelope/mammal: 4
+    bass/fish: 0
+    bear/mammal: 4
     >>> data.X
-    array([[ 10.,   7.,   8.],
-           [  7.,   6.,  10.],
-           [  8.,  10.,  10.]])
+    array([[ 1.,  0.,  1.,  1.,  2.],
+           [ 1.,  0.,  1.,  1.,  2.],
+           [ 0.,  1.,  0.,  1.,  0.],
+           [ 1.,  0.,  1.,  1.,  2.]]))
     >>> data.metas
-    array([['jane', 0.0],
-           ['bill', 1.0],
-           ['ian', 1.0]], dtype=object)
+    array([['aardvark'],
+           ['antelope'],
+           ['bass'],
+           ['bear']], dtype=object))
 
-Meta attributes may be passed to ``Orange.data.Table`` after providing arrays for attribute and class values::
+Meta attributes may be passed to ``Orange.data.Table`` after providing arrays for attribute and class values:
 
-..  literalinclude:: code/student-grades.tab
+..   literalinclude:: code/data-metas.py
 
 The script outputs::
 
@@ -244,7 +249,7 @@ Missing Values
 ..  index::
     single: data; missing values
 
-Consider the following exploration of the data set on votes of the US senate::
+Consider the following exploration of the dataset on votes of the US senate::
 
     >>> import numpy as np
     >>> data = Orange.data.Table("voting.tab")
@@ -255,7 +260,7 @@ Consider the following exploration of the data set on votes of the US senate::
     >>> np.isnan(data[2][1])
     False
 
-The particular data instance included missing data (represented with '?') for the first and the fourth attribute. In the original data set file, the missing values are, by default, represented with a blank space. We can now examine each attribute and report on proportion of data instances for which this feature was undefined:
+The particular data instance included missing data (represented with '?') for the first and the fourth attribute. In the original dataset file, the missing values are, by default, represented with a blank space. We can now examine each attribute and report on proportion of data instances for which this feature was undefined:
 
 ..  literalinclude:: code/data-missing.py
     :lines: 4-
@@ -269,7 +274,7 @@ First three lines of the output of this script are::
 A single-liner that reports on number of data instances with at least one missing value is::
 
     >>> sum(any(np.isnan(d[x]) for x in data.domain.attributes) for d in data)
-    203 
+    203
 
 .. sum([np.any(np.isnan(x)) for x in data.X])
 
@@ -279,17 +284,17 @@ Data Selection and Sampling
 ..  index::
     single: data; sampling
 
-Besides the name of the data file, ``Orange.data.Table`` can accept the data domain and a list of data items and returns a new data set. This is useful for any data subsetting:
+Besides the name of the data file, ``Orange.data.Table`` can accept the data domain and a list of data items and returns a new dataset. This is useful for any data subsetting:
 
 ..  literalinclude:: code/data-subsetting.py
     :lines: 3-
 
 The code outputs::
 
-    Data set instances: 150
+    Dataset instances: 150
     Subset size: 99
 
-and inherits the data description (domain) from the original data set. Changing the domain requires setting up a new domain descriptor. This feature is useful for any kind of feature selection:
+and inherits the data description (domain) from the original dataset. Changing the domain requires setting up a new domain descriptor. This feature is useful for any kind of feature selection:
 
 ..  literalinclude:: code/data-feature-selection.py
     :lines: 3-
@@ -297,7 +302,7 @@ and inherits the data description (domain) from the original data set. Changing 
 ..  index::
     single: feature; selection
 
-We could also construct a random sample of the data set::
+We could also construct a random sample of the dataset::
 
     >>> sample = Orange.data.Table(data.domain, random.sample(data, 3))
     >>> sample

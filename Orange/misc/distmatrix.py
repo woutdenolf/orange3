@@ -1,7 +1,5 @@
 import numpy as np
 
-from Orange.data import Table, StringVariable, Domain
-from Orange.data.io import detect_encoding
 from Orange.util import deprecated
 
 
@@ -51,7 +49,7 @@ class DistMatrix(np.ndarray):
 
     def __array_wrap__(self, out_arr, context=None):
         if out_arr.ndim == 0:  # a single scalar
-            return out_arr.item()
+            return out_arr[()]
         return np.ndarray.__array_wrap__(self, out_arr, context)
 
     """
@@ -128,7 +126,7 @@ class DistMatrix(np.ndarray):
 
         If the file has column labels, they follow in the second line.
         Row labels appear at the beginning of each row.
-        Labels are arbitrary strings that connot contain newlines and
+        Labels are arbitrary strings that cannot contain newlines and
         tabulators. Labels are stored as instances of `Table` with a single
         meta attribute named "label".
 
@@ -140,6 +138,10 @@ class DistMatrix(np.ndarray):
         Args:
             filename: file name
         """
+        # prevent circular imports
+        from Orange.data import Table, StringVariable, Domain
+        from Orange.data.io import detect_encoding
+
         with open(filename, encoding=detect_encoding(filename)) as fle:
             line = fle.readline()
             if not line:
@@ -212,6 +214,9 @@ class DistMatrix(np.ndarray):
 
     @staticmethod
     def _trivial_labels(items):
+        # prevent circular imports
+        from Orange.data import Table, StringVariable
+
         return items and \
                isinstance(items, Table) and \
                len(items.domain.metas) == 1 and \
@@ -221,7 +226,7 @@ class DistMatrix(np.ndarray):
         """
         Returns `True` if row labels can be automatically determined from data
 
-        For this, the `row_items` must be an instance of ``Orange.data.Table`
+        For this, the `row_items` must be an instance of `Orange.data.Table`
         whose domain contains a single meta attribute, which has to be a string.
         The domain may contain other variables, but not meta attributes.
         """
@@ -232,7 +237,7 @@ class DistMatrix(np.ndarray):
         Returns `True` if column labels can be automatically determined from
         data
 
-        For this, the `col_items` must be an instance of ``Orange.data.Table`
+        For this, the `col_items` must be an instance of `Orange.data.Table`
         whose domain contains a single meta attribute, which has to be a string.
         The domain may contain other variables, but not meta attributes.
         """

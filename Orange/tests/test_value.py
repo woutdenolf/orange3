@@ -5,7 +5,8 @@ import pickle
 import unittest
 import numpy as np
 
-from Orange.data import Table, Domain, DiscreteVariable
+from Orange.data import Table, Domain, Value,\
+    DiscreteVariable, ContinuousVariable, StringVariable, TimeVariable
 
 
 class TestValue(unittest.TestCase):
@@ -28,16 +29,16 @@ class TestValue(unittest.TestCase):
         self.assertEqual(a.value, b.value)
 
     def test_compare_continuous(self):
-        auto = Table('auto-mpg')
-        acc1 = auto[0]['acceleration']  # 12
-        acc2 = auto[1]['acceleration']  # 11.5
+        auto = Table('housing')
+        acc1 = auto[0]['MEDV']  # 24.0
+        acc2 = auto[1]['MEDV']  # 21.6
         self.assertTrue(acc1 > acc2)
-        self.assertTrue(acc1 >= 12.0)
+        self.assertTrue(acc1 >= 24.0)
         self.assertFalse(acc1 != acc1)
 
     def test_compare_discrete(self):
-        data = Table(Domain([DiscreteVariable(name="G",values=["M", "F"])]),
-                     np.array([[0],[1]]))
+        data = Table(Domain([DiscreteVariable(name="G", values=("M", "F"))]),
+                     np.array([[0], [1]]))
         self.assertTrue(data[0]['G'] < data[1]['G'])
         self.assertTrue(data[0]['G'] >= data[0]['G'])
         self.assertTrue(data[0]['G'] < 1)
@@ -50,3 +51,16 @@ class TestValue(unittest.TestCase):
         zoo2 = zoo[1]['name']  # antelope
         self.assertTrue(zoo1 < zoo2)
         self.assertTrue(zoo1 >= "aardvark")
+
+    def test_hash(self):
+        v = 1234.5
+        val = Value(ContinuousVariable("var"), v)
+        self.assertTrue(val == v and hash(val) == hash(v))
+        v = "test"
+        val = Value(StringVariable("var"), v)
+        self.assertTrue(val == v and hash(val) == hash(v))
+        v = 1234.5
+        val = Value(TimeVariable("var"), v)
+        self.assertTrue(val == v and hash(val) == hash(v))
+        val = Value(DiscreteVariable("var", ["red", "green", "blue"]), 1)
+        self.assertRaises(TypeError, hash, val)

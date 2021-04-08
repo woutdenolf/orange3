@@ -2,7 +2,6 @@
 # pylint: disable=missing-docstring
 
 from math import isnan
-import warnings
 import unittest
 from unittest.mock import MagicMock
 
@@ -12,6 +11,7 @@ from numpy.testing import assert_array_equal
 from Orange.data import \
     Instance, Domain, Unknown, Value, \
     DiscreteVariable, ContinuousVariable, StringVariable
+from Orange.tests import assert_array_nanequal
 
 
 class TestInstance(unittest.TestCase):
@@ -75,11 +75,10 @@ class TestInstance(unittest.TestCase):
         self.assertEqual(inst._metas.shape, (3, ))
         self.assertTrue(all(isnan(x) for x in inst._x))
         self.assertTrue(all(isnan(x) for x in inst._y))
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", FutureWarning)
-            assert_array_equal(inst._metas,
-                               np.array([var.Unknown for var in domain.metas],
-                                        dtype=object))
+
+        assert_array_nanequal(inst._metas,
+                              np.array([var.Unknown for var in domain.metas],
+                                       dtype=object))
 
     def test_init_x_arr(self):
         domain = self.create_domain(["x", DiscreteVariable("g", values="MF")])
@@ -162,12 +161,11 @@ class TestInstance(unittest.TestCase):
                                      domain.class_vars,
                                      [self.metas[0], "w", domain[0]])
         inst2 = Instance(domain2, inst)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", FutureWarning)
-            assert_array_equal(inst2._x, np.array([Unknown, 0, 43]))
-            self.assertEqual(inst2._y[0], 1)
-            assert_array_equal(inst2._metas, np.array([0, Unknown, 42],
-                                                      dtype=object))
+
+        assert_array_nanequal(inst2._x, np.array([Unknown, 0, 43]))
+        self.assertEqual(inst2._y[0], 1)
+        assert_array_nanequal(inst2._metas, np.array([0, Unknown, 42],
+                                                     dtype=object))
 
     def test_get_item(self):
         domain = self.create_domain(["x", DiscreteVariable("g", values="MF")],
@@ -231,39 +229,39 @@ class TestInstance(unittest.TestCase):
     def test_str(self):
         domain = self.create_domain(["x", DiscreteVariable("g", values="MF")])
         inst = Instance(domain, [42, 0])
-        self.assertEqual(str(inst), "[42.000, M]")
+        self.assertEqual(str(inst), "[42, M]")
 
         domain = self.create_domain(["x", DiscreteVariable("g", values="MF")],
                                     [DiscreteVariable("y", values="ABC")])
         inst = Instance(domain, [42, "M", "B"])
-        self.assertEqual(str(inst), "[42.000, M | B]")
+        self.assertEqual(str(inst), "[42, M | B]")
 
         domain = self.create_domain(["x", DiscreteVariable("g", values="MF")],
                                     [DiscreteVariable("y", values="ABC")],
                                     self.metas)
         inst = Instance(domain, [42, "M", "B", "X", 43, "Foo"])
-        self.assertEqual(str(inst), "[42.000, M | B] {X, 43.000, Foo}")
+        self.assertEqual(str(inst), "[42, M | B] {X, 43, Foo}")
 
         domain = self.create_domain([],
                                     [DiscreteVariable("y", values="ABC")],
                                     self.metas)
         inst = Instance(domain, ["B", "X", 43, "Foo"])
-        self.assertEqual(str(inst), "[ | B] {X, 43.000, Foo}")
+        self.assertEqual(str(inst), "[ | B] {X, 43, Foo}")
 
         domain = self.create_domain([],
                                     [],
                                     self.metas)
         inst = Instance(domain, ["X", 43, "Foo"])
-        self.assertEqual(str(inst), "[] {X, 43.000, Foo}")
+        self.assertEqual(str(inst), "[] {X, 43, Foo}")
 
         domain = self.create_domain(self.attributes)
         inst = Instance(domain, range(len(self.attributes)))
         self.assertEqual(
             str(inst),
-            "[{}]".format(", ".join("{:.3f}".format(x)
+            "[{}]".format(", ".join(f"{x:g}"
                                     for x in range(len(self.attributes)))))
 
-        for attr in domain:
+        for attr in domain.variables:
             attr.number_of_decimals = 0
         self.assertEqual(
             str(inst),
@@ -273,9 +271,13 @@ class TestInstance(unittest.TestCase):
     def test_repr(self):
         domain = self.create_domain(self.attributes)
         inst = Instance(domain, range(len(self.attributes)))
+        self.assertEqual(repr(inst), "[0, 1, 2, 3, 4, ...]")
+
+        for attr in domain.variables:
+            attr.number_of_decimals = 3
         self.assertEqual(repr(inst), "[0.000, 1.000, 2.000, 3.000, 4.000, ...]")
 
-        for attr in domain:
+        for attr in domain.variables:
             attr.number_of_decimals = 0
         self.assertEqual(repr(inst), "[0, 1, 2, 3, 4, ...]")
 

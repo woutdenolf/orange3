@@ -96,10 +96,11 @@ Inspection
 Row manipulation
 ----------------
 
-.. automethod:: Table.append
-.. automethod:: Table.extend
-.. automethod:: Table.insert
-.. automethod:: Table.clear
+.. note::
+   Methods that change the table length (`append`, `extend`, `insert`, `clear`,
+   and resizing through deleting, slicing or by other means), were deprecated
+   and removed in Orange 3.24.
+
 .. automethod:: Table.shuffle
 
 Weights

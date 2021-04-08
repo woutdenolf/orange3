@@ -4,10 +4,12 @@
 import unittest
 
 import numpy as np
+import scipy.sparse as sp
 
 from Orange.data import Table, Domain, DiscreteVariable, ContinuousVariable
 from Orange.classification.tree import \
     TreeModel, Node, DiscreteNode, MappedDiscreteNode, NumericNode
+from Orange.tests import test_filename
 
 
 class TestTree:
@@ -147,7 +149,7 @@ class TestTree:
                          ContinuousVariable("r3")],
                         self.class_var)
 
-        data = Table(domain)
+        data = Table.from_domain(domain)
         tree = clf(data)
         self.assertIsInstance(tree.root, Node)
         np.testing.assert_almost_equal(tree.predict(np.array([[0., 0., 0.]])),
@@ -224,12 +226,12 @@ class TestRegressor(TestTree, unittest.TestCase):
         unittest.TestCase.setUpClass()
         TestTree.setUpClass()
 
-        cls.data = Table('housing')
-        imports = Table("imports-85")
+        cls.data = Table("housing")
+        imports = Table(test_filename("datasets/imports-85.tab"))
         new_domain = Domain([attr for attr in imports.domain.attributes
                              if attr.is_continuous or len(attr.values) <= 16],
                             imports.domain.class_var)
-        cls.data_mixed = Table(new_domain, imports)
+        cls.data_mixed = imports.transform(new_domain)
 
         cls.class_var = ContinuousVariable("y")
         cls.blind_prediction = 0
@@ -366,7 +368,7 @@ class TestTreeModel(unittest.TestCase):
         a = DiscreteVariable("d4", "ab")
         y = ContinuousVariable("ey")
         domain = Domain([a], y)
-        data = Table(domain)
+        data = Table.from_domain(domain)
         values = np.array([[42., 43], [44, 45]])
         root = DiscreteNode(a, 0, values[1])
         root.children = [Node(None, -1, values[0]), None]
@@ -393,11 +395,56 @@ class TestTreeModel(unittest.TestCase):
 
     def test_print(self):
         model = TreeModel(self.data, self.root)
-        self.assertEqual(model.print_tree(), """             [ 1 42] v1 ≤ 13.000
+        self.assertEqual(model.print_tree(), """             [ 1 42] v1 ≤ 13
              [ 2 42]     v2 a
              [ 3 42]     v2 b
              [ 4 42]     v2 c
-             [ 5 42] v1 > 13.000
+             [ 5 42] v1 > 13
              [ 6 42]     v3 f
              [ 7 42]     v3 d or e
 """)
+
+    def test_compile_and_run_cont_sparse(self):
+        # pylint: disable=protected-access
+        model = TreeModel(self.data, self.root)
+        expected_values = np.vstack((np.arange(8), [42] * 8)).T
+        np.testing.assert_equal(model._values, expected_values)
+        self.assertEqual(model._thresholds[0], 13)
+        self.assertEqual(model._thresholds.shape, (8,))
+
+        nan = float("nan")
+        x = sp.csr_matrix(np.array(
+            [[nan, 0, 0],
+             [13, nan, 0],
+             [13, 0, 0],
+             [13, 1, 0],
+             [13, 2, 0],
+             [14, 2, nan],
+             [14, 2, 2],
+             [14, 2, 1]], dtype=float
+        ))
+        np.testing.assert_equal(model.get_values(x), expected_values)
+
+        x = sp.csc_matrix(np.array(
+            [[nan, 0, 0],
+             [13, nan, 0],
+             [13, 0, 0],
+             [13, 1, 0],
+             [13, 2, 0],
+             [14, 2, nan],
+             [14, 2, 2],
+             [14, 2, 1]], dtype=float
+        ))
+        np.testing.assert_equal(model.get_values(x), expected_values)
+
+        x = sp.lil_matrix(np.array(
+            [[nan, 0, 0],
+             [13, nan, 0],
+             [13, 0, 0],
+             [13, 1, 0],
+             [13, 2, 0],
+             [14, 2, nan],
+             [14, 2, 2],
+             [14, 2, 1]], dtype=float
+        ))
+        np.testing.assert_equal(model.get_values(x), expected_values)

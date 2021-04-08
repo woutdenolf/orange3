@@ -1,26 +1,30 @@
 import numpy as np
-from AnyQt.QtCore import Qt
 
 from Orange.util import scale
 from Orange.misc import DistMatrix
 from Orange.widgets import widget, gui, settings
+from Orange.widgets.utils.widgetpreview import WidgetPreview
+from Orange.widgets.widget import Input, Output
 
 
 class OWDistanceTransformation(widget.OWWidget):
     name = "Distance Transformation"
     description = "Transform distances according to selected criteria."
     icon = "icons/DistancesTransformation.svg"
+    keywords = []
 
-    inputs = [("Distances", DistMatrix, "set_data")]
-    outputs = [("Distances", DistMatrix)]
+    class Inputs:
+        distances = Input("Distances", DistMatrix)
+
+    class Outputs:
+        distances = Output("Distances", DistMatrix, dynamic=False)
 
     want_main_area = False
     resizing_enabled = False
-    buttons_area_orientation = Qt.Vertical
 
     normalization_method = settings.Setting(0)
     inversion_method = settings.Setting(0)
-    autocommit = settings.Setting(False)
+    autocommit = settings.Setting(True)
 
     normalization_options = (
         ("No normalization", lambda x: x),
@@ -52,11 +56,9 @@ class OWDistanceTransformation(widget.OWWidget):
                          btnLabels=[x[0] for x in self.inversion_options],
                          callback=self._invalidate)
 
-        box = gui.auto_commit(self.buttonsArea, self, "autocommit", "Apply",
-                              checkbox_label="Apply automatically", box=None)
-        box.layout().insertWidget(0, self.report_button)
-        box.layout().insertSpacing(1, 8)
+        gui.auto_apply(self.buttonsArea, self, "autocommit")
 
+    @Inputs.distances
     def set_data(self, data):
         self.data = data
         self.unconditional_commit()
@@ -71,7 +73,7 @@ class OWDistanceTransformation(widget.OWWidget):
             # invert
             inv = self.inversion_options[self.inversion_method][1]
             distances = inv(distances)
-        self.send("Distances", distances)
+        self.Outputs.distances.send(distances)
 
     def send_report(self):
         norm, normopt = self.normalization_method, self.normalization_options
@@ -87,3 +89,10 @@ class OWDistanceTransformation(widget.OWWidget):
 
     def _invalidate(self):
         self.commit()
+
+
+if __name__ == "__main__":  # pragma: no cover
+    import Orange.distance
+    data = Orange.data.Table("iris")
+    dist = Orange.distance.Euclidean(data)
+    WidgetPreview(OWDistanceTransformation).run(dist)

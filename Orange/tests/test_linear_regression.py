@@ -2,7 +2,10 @@
 # pylint: disable=missing-docstring
 
 import unittest
+
 import numpy as np
+from sklearn import linear_model
+
 from Orange.data import Table
 from Orange.regression import (LinearRegressionLearner,
                                RidgeRegressionLearner,
@@ -11,7 +14,6 @@ from Orange.regression import (LinearRegressionLearner,
                                ElasticNetCVLearner,
                                MeanLearner)
 from Orange.evaluation import CrossValidation, RMSE
-from sklearn import linear_model
 
 
 class TestLinearRegressionLearner(unittest.TestCase):
@@ -29,7 +31,7 @@ class TestLinearRegressionLearner(unittest.TestCase):
 
         x1, x2 = np.split(x, 2)
         y1, y2 = np.split(y, 2)
-        t = Table(x1, y1)
+        t = Table.from_numpy(None, x1, y1)
         learn = LinearRegressionLearner()
         clf = learn(t)
         z = clf(x2)
@@ -42,7 +44,8 @@ class TestLinearRegressionLearner(unittest.TestCase):
         elasticCV = ElasticNetCVLearner()
         mean = MeanLearner()
         learners = [ridge, lasso, elastic, elasticCV, mean]
-        res = CrossValidation(self.housing, learners, k=2)
+        cv = CrossValidation(k=2)
+        res = cv(self.housing, learners)
         rmse = RMSE(res)
         for i in range(len(learners) - 1):
             self.assertLess(rmse[i], rmse[-1])
@@ -79,7 +82,7 @@ class TestLinearRegressionLearner(unittest.TestCase):
                 np.testing.assert_array_almost_equal(score, scores[:, i])
 
     def test_coefficients(self):
-        data = Table([[11], [12], [13]], [0, 1, 2])
+        data = Table.from_numpy(None, [[11], [12], [13]], [0, 1, 2])
         model = LinearRegressionLearner()(data)
         self.assertAlmostEqual(float(model.intercept), -11)
         self.assertEqual(len(model.coefficients), 1)
@@ -104,10 +107,10 @@ class TestLinearRegressionLearner(unittest.TestCase):
         for a in alphas:
             lasso = LassoRegressionLearner(alpha=a)
             lasso_model = lasso(self.housing)
-            elastic = ElasticNetLearner(alpha=a, l1_ratio=1)
-            elastic_model = elastic(self.housing)
-            d = np.sum(lasso_model.coefficients - elastic_model.coefficients)
-            self.assertEqual(d, 0)
+            en = ElasticNetLearner(alpha=a, l1_ratio=1)
+            en_model = en(self.housing)
+            np.testing.assert_allclose(
+                lasso_model.coefficients, en_model.coefficients, atol=1e-07)
 
     def test_linear_regression_repr(self):
         learner = LinearRegressionLearner()

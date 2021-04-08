@@ -3,23 +3,54 @@
 
 import unittest
 import os
+from functools import wraps
+from typing import Callable
 
 import numpy as np
 
-from Orange.data import io, ContinuousVariable, DiscreteVariable
+from Orange.data import io, ContinuousVariable, DiscreteVariable, Table
 
 
 def get_dataset(name):
     return os.path.join(os.path.dirname(__file__), "xlsx_files", name)
 
 
-def read_file(name):
-    return io.ExcelReader(get_dataset(name)).read()
+def get_xlsx_reader(name: str) -> io.ExcelReader:
+    return io.ExcelReader(get_dataset(name + ".xlsx"))
+
+
+def get_xls_reader(name: str) -> io.XlsReader:
+    return io.XlsReader(get_dataset(name + ".xls"))
+
+
+def read_file(reader: Callable, name: str) -> Table:
+    return reader(name).read()
+
+
+def test_xlsx_xls(f):
+    @wraps(f)
+    def wrapper(self):
+        f(self, get_xlsx_reader)
+        f(self, get_xls_reader)
+    return wrapper
+
+
+class TestExcelReader(unittest.TestCase):
+    def test_read_round_floats(self):
+        table = read_file(get_xlsx_reader, "round_floats")
+        domain = table.domain
+        self.assertIsNone(domain.class_var)
+        self.assertEqual(len(domain.metas), 0)
+        self.assertEqual(len(domain.attributes), 3)
+        self.assertIsInstance(domain[0], ContinuousVariable)
+        self.assertIsInstance(domain[1], ContinuousVariable)
+        self.assertEqual(domain[2].values, ("1", "2"))
 
 
 class TestExcelHeader0(unittest.TestCase):
-    def test_read(self):
-        table = read_file("header_0.xlsx")
+    @test_xlsx_xls
+    def test_read(self, reader: Callable[[str], io.FileFormat]):
+        table = read_file(reader, "header_0")
         domain = table.domain
         self.assertIsNone(domain.class_var)
         self.assertEqual(len(domain.metas), 0)
@@ -35,23 +66,37 @@ class TestExcelHeader0(unittest.TestCase):
 
 
 class TextExcelSheets(unittest.TestCase):
-    def setUp(self):
-        self.reader = io.ExcelReader(get_dataset("header_0_sheet.xlsx"))
-
-    def test_sheets(self):
-        self.assertSequenceEqual(self.reader.sheets,
+    @test_xlsx_xls
+    def test_sheets(self, reader: Callable[[str], io.FileFormat]):
+        reader = reader("header_0_sheet")
+        self.assertSequenceEqual(reader.sheets,
                                  ["Sheet1", "my_sheet", "Sheet3"])
 
-    def test_named_sheet(self):
-        self.reader.select_sheet("my_sheet")
-        table = self.reader.read()
+    @test_xlsx_xls
+    def test_named_sheet(self, reader: Callable[[str], io.FileFormat]):
+        reader = reader("header_0_sheet")
+        reader.select_sheet("my_sheet")
+        table = reader.read()
+        self.assertEqual(len(table.domain.attributes), 4)
+        self.assertEqual(table.name, 'header_0_sheet-my_sheet')
+
+    def test_named_sheet_table_xlsx(self):
+        table = Table.from_file(get_dataset("header_0_sheet.xlsx"),
+                                sheet="my_sheet")
+        self.assertEqual(len(table.domain.attributes), 4)
+        self.assertEqual(table.name, 'header_0_sheet-my_sheet')
+
+    def test_named_sheet_table_xls(self):
+        table = Table.from_file(get_dataset("header_0_sheet.xls"),
+                                sheet="my_sheet")
         self.assertEqual(len(table.domain.attributes), 4)
         self.assertEqual(table.name, 'header_0_sheet-my_sheet')
 
 
 class TestExcelHeader1(unittest.TestCase):
-    def test_no_flags(self):
-        table = read_file("header_1_no_flags.xlsx")
+    @test_xlsx_xls
+    def test_no_flags(self, reader: Callable[[str], io.FileFormat]):
+        table = read_file(reader, "header_1_no_flags")
         domain = table.domain
         self.assertEqual(len(domain.metas), 0)
         self.assertEqual(len(domain.attributes), 4)
@@ -59,17 +104,18 @@ class TestExcelHeader1(unittest.TestCase):
         self.assertIsInstance(domain[1], ContinuousVariable)
         self.assertIsInstance(domain[2], DiscreteVariable)
         self.assertIsInstance(domain[3], ContinuousVariable)
-        for i, var in enumerate(domain):
+        for i, var in enumerate(domain.variables):
             self.assertEqual(var.name, chr(97 + i))
-        self.assertEqual(domain[0].values, ["green", "red"])
+        self.assertEqual(domain[0].values, ("green", "red"))
         np.testing.assert_almost_equal(table.X,
                                        np.array([[1, 0.5, 0, 21],
                                                  [1, 0.1, 0, 123],
                                                  [0, 0, np.nan, 0]]))
         np.testing.assert_equal(table.Y, np.array([]).reshape(3, 0))
 
-    def test_flags(self):
-        table = read_file("header_1_flags.xlsx")
+    @test_xlsx_xls
+    def test_flags(self, reader: Callable[[str], io.FileFormat]):
+        table = read_file(reader, "header_1_flags")
         domain = table.domain
 
         self.assertEqual(len(domain.attributes), 1)
@@ -89,7 +135,7 @@ class TestExcelHeader1(unittest.TestCase):
         for n, var in zip("acf", domain.metas):
             self.assertEqual(var.name, n)
         self.assertIsInstance(domain.metas[0], DiscreteVariable)
-        self.assertEqual(domain.metas[0].values, ["green", "red"])
+        self.assertEqual(domain.metas[0].values, ("green", "red"))
         self.assertIsInstance(domain.metas[1], ContinuousVariable)
         np.testing.assert_almost_equal(
             table.metas[:, 0], np.array([1, 1, 0] * 7 + [1, 1]))
@@ -98,8 +144,9 @@ class TestExcelHeader1(unittest.TestCase):
 
 
 class TestExcelHeader3(unittest.TestCase):
-    def test_read(self):
-        table = read_file("header_3.xlsx")
+    @test_xlsx_xls
+    def test_read(self, reader: Callable[[str], io.FileFormat]):
+        table = read_file(reader, "header_3")
         domain = table.domain
 
         self.assertEqual(len(domain.attributes), 2)
@@ -124,7 +171,7 @@ class TestExcelHeader3(unittest.TestCase):
         for n, var in zip("acf", domain.metas):
             self.assertEqual(var.name, n)
         self.assertIsInstance(domain.metas[0], DiscreteVariable)
-        self.assertEqual(domain.metas[0].values, ["green", "red"])
+        self.assertEqual(domain.metas[0].values, ("green", "red"))
         self.assertIsInstance(domain.metas[1], ContinuousVariable)
         np.testing.assert_almost_equal(
             table.metas[:, 0], np.array([1, 1, 0] * 7 + [1, 1]))
@@ -132,6 +179,14 @@ class TestExcelHeader3(unittest.TestCase):
             table.metas[:, 1], np.array([0, 1, 2, 3] * 5 + [0, 1, 2]))
         np.testing.assert_equal(
             table.metas[:, 2], np.array(list("abcdefghijklmnopqrstuvw")))
+
+
+class TestMissingValues(unittest.TestCase):
+    @test_xlsx_xls
+    def test_read_errors(self, reader: Callable[[str], io.FileFormat]):
+        table = read_file(reader, "missing")
+        values = table.get_column_view("C")[0]
+        self.assertTrue(np.isnan(values).all())
 
 
 if __name__ == "__main__":

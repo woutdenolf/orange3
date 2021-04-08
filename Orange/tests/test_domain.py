@@ -1,36 +1,37 @@
 # Test methods with long descriptive names can omit docstrings
 # pylint: disable=missing-docstring
-
+import warnings
 from time import time
 from numbers import Real
-from itertools import starmap
+from itertools import starmap, chain
 import unittest
-import pickle
 
 import numpy as np
 from numpy.testing import assert_array_equal
 
-from Orange.data import (ContinuousVariable, DiscreteVariable, Domain, Table,
-                         StringVariable, Variable, DomainConversion)
+from Orange.data import (
+    ContinuousVariable, DiscreteVariable, StringVariable, TimeVariable,
+    Domain, Table, DomainConversion)
 from Orange.data.domain import filter_visible
 from Orange.preprocess import Continuize, Impute
 from Orange.tests.base import create_pickling_tests
+from Orange.util import OrangeDeprecationWarning
 
 
 def create_domain(*ss):
-    Variable._clear_all_caches()
-    vars = dict(
+    vars_ = dict(
         age=ContinuousVariable(name="AGE"),
-        gender=DiscreteVariable(name="Gender", values=["M", "F"]),
+        gender=DiscreteVariable(name="Gender", values=("M", "F")),
         incomeA=ContinuousVariable(name="incomeA"),
         income=ContinuousVariable(name="income"),
-        education=DiscreteVariable(name="education", values=["GS", "HS", "C"]),
+        education=DiscreteVariable(name="education", values=("GS", "HS", "C")),
         ssn=StringVariable(name="SSN"),
         race=DiscreteVariable(name="race",
-                              values=["White", "Hypsanic", "African", "Other"]))
+                              values=("White", "Hypsanic", "African", "Other")),
+        arrival=TimeVariable("arrival"))
 
     def map_vars(s):
-        return [vars[x] for x in s]
+        return [vars_[x] for x in s]
     return Domain(*[map_vars(s) for s in ss])
 
 
@@ -51,10 +52,10 @@ PickleDomain = create_pickling_tests(
 )
 
 
-age, gender, incomeA, income, education, ssn, race = \
+age, gender, incomeA, income, education, ssn, race, arrival = \
     create_domain([], [],
                   ["age", "gender", "incomeA", "income", "education", "ssn",
-                   "race"]).metas
+                   "race", "arrival"]).metas
 
 
 class TestDomainInit(unittest.TestCase):
@@ -118,11 +119,11 @@ class TestDomainInit(unittest.TestCase):
     def test_init_metas(self):
         attributes = (age, gender, income)
         metas = (ssn, race)
-        d = Domain(attributes, race, metas=metas)
-        self.assertEqual(d.variables, attributes + (race, ))
+        d = Domain(attributes, education, metas=metas)
+        self.assertEqual(d.variables, attributes + (education, ))
         self.assertEqual(d.attributes, attributes)
-        self.assertEqual(d.class_var, race)
-        self.assertEqual(d.class_vars, (race, ))
+        self.assertEqual(d.class_var, education)
+        self.assertEqual(d.class_vars, (education, ))
         self.assertEqual(d.metas, metas)
 
     def test_from_numpy_names(self):
@@ -157,12 +158,17 @@ class TestDomainInit(unittest.TestCase):
         self.assertRaises(ValueError, Domain.from_numpy, np.zeros((2, 2, 2)))
         self.assertRaises(ValueError, Domain.from_numpy, np.zeros((2, 2)), np.zeros((2, 2, 2)))
 
+    def test_nonunique_domain_error(self):
+        self.assertRaises(Exception, Domain, [ContinuousVariable('a'),
+                                              ContinuousVariable('a')])
+
     def test_from_numpy_values(self):
         for aran_min, aran_max, vartype in [(1, 3, ContinuousVariable),
                                             (0, 2, DiscreteVariable),
                                             (18, 23, ContinuousVariable)]:
             n_rows, n_cols, = aran_max - aran_min, 1
-            d = Domain.from_numpy(np.zeros((1, 1)), np.arange(aran_min, aran_max).reshape(n_rows, n_cols))
+            d = Domain.from_numpy(np.zeros((1, 1)),
+                                  np.arange(aran_min, aran_max).reshape(n_rows, n_cols))
             self.assertTrue(d.anonymous)
             self.assertIsInstance(d.class_var, vartype)
             if isinstance(vartype, DiscreteVariable):
@@ -227,7 +233,7 @@ class TestDomainInit(unittest.TestCase):
             self.assertEqual(d.index(idx), var)
 
     def test_get_item_slices(self):
-        d = Domain((age, gender, income, race), metas=(ssn, race))
+        d = Domain((age, gender, income, race), metas=(ssn, education))
         self.assertEqual(d[:2], (age, gender))
         self.assertEqual(d[1:3], (gender, income))
         self.assertEqual(d[2:], (income, race))
@@ -252,7 +258,9 @@ class TestDomainInit(unittest.TestCase):
 
     def test_contains(self):
         d = Domain((age, gender, income), metas=(ssn,))
-        for var in ["AGE", age, 0, np.int_(0), "income", income, 2, np.int_(2), "SSN", ssn, -1, np.int_(-1)]:
+        for var in ["AGE", age, 0, np.int_(0),
+                    "income", income, 2, np.int_(2),
+                    "SSN", ssn, -1, np.int_(-1)]:
             self.assertIn(var, d)
 
         for var in ["no_such_thing", race, 3, np.int_(3), -2, np.int_(-2)]:
@@ -264,14 +272,21 @@ class TestDomainInit(unittest.TestCase):
             [] in d
 
     def test_iter(self):
-        d = Domain((age, gender, income), metas=(ssn,))
-        self.assertEqual([var for var in d], [age, gender, income])
+        with warnings.catch_warnings(record=True):
+            warnings.simplefilter("error")
 
-        d = Domain((age, ), metas=(ssn,))
-        self.assertEqual([var for var in d], [age])
+            d = Domain((age, gender, income), metas=(ssn,))
+            with self.assertRaises(OrangeDeprecationWarning):
+                list(d)
 
-        d = Domain((), metas=(ssn,))
-        self.assertEqual([var for var in d], [])
+            warnings.simplefilter("ignore")
+            self.assertEqual([var for var in d], [age, gender, income])
+
+            d = Domain((age, ), metas=(ssn,))
+            self.assertEqual([var for var in d], [age])
+
+            d = Domain((), metas=(ssn,))
+            self.assertEqual([var for var in d], [])
 
     def test_str(self):
         cases = (
@@ -346,21 +361,39 @@ class TestDomainInit(unittest.TestCase):
         d = Domain([], [race], [gender])
         self.assertFalse(d.has_continuous_attributes(True, True))
 
+    def test_has_time(self):
+        self.assertFalse(Domain([]).has_time_attributes())
+        self.assertFalse(Domain([], [age]).has_time_attributes())
+        self.assertFalse(Domain([], [race]).has_time_attributes())
+        self.assertFalse(Domain([], [arrival]).has_time_attributes())
+        self.assertFalse(Domain([], [], [arrival]).has_time_attributes())
+
+        self.assertTrue(Domain([arrival], []).has_time_attributes())
+        self.assertTrue(Domain([], [arrival]).has_time_attributes(
+            include_class=True))
+        self.assertTrue(Domain([], [], [arrival]).has_time_attributes(
+            include_metas=True))
+
+        self.assertFalse(Domain([arrival], []).has_time_class)
+        self.assertTrue(Domain([], [arrival]).has_time_class)
+        self.assertFalse(Domain([], [], [arrival]).has_time_class)
+
     def test_get_conversion(self):
         compute_value = lambda: 42
-        new_income = income.copy(compute_value=compute_value)
+        new_income = income.copy(compute_value=compute_value, name='new_income')
 
         d = Domain((age, gender, income), metas=(ssn, race))
-        e = Domain((gender, race), None, metas=(age, gender, ssn))
-        f = Domain((gender,), (race, income), metas=(age, income, ssn))
+        e = Domain((gender, race), None, metas=(age, income, ssn))
+        f = Domain((gender,), (race, income), metas=(age, incomeA, ssn))
         g = Domain((), metas=(age, gender, ssn))
-        h = Domain((gender,), (race, new_income), metas=(age, new_income, ssn))
+        h = Domain((gender,), (race, income), metas=(age, new_income, ssn))
 
-        for conver, domain, attr, class_vars, metas in ((d, e, [1, -2], [], [0, 1, -1]),
-                                                        (d, f, [1], [-2, 2], [0, 2, -1]),
-                                                        (f, g, [], [], [-1, 0, -3]),
-                                                        (g, h, [-2], [None, compute_value], [-1, compute_value, -3])):
-            to_domain = domain.get_conversion(conver)
+        for conver, domain, attr, class_vars, metas in (
+                (d, e, [1, -2], [], [0, 2, -1]),
+                (d, f, [1], [-2, 2], [0, None, -1]),
+                (f, g, [], [], [-1, 0, -3]),
+                (g, h, [-2], [None, None], [-1, compute_value, -3])):
+            to_domain = DomainConversion(conver, domain)
             self.assertIs(to_domain.source, conver)
             self.assertEqual(to_domain.attributes, attr)
             self.assertEqual(to_domain.class_vars, class_vars)
@@ -375,14 +408,14 @@ class TestDomainInit(unittest.TestCase):
         assert_array_equal(y, np.array([0]))
         metas_exp = [gender.Unknown, education.Unknown, ssn.Unknown]
 
-        def eq(a, b):
+        def equal(a, b):
             if isinstance(a, Real) and isinstance(b, Real) and \
                     np.isnan(a) and np.isnan(b):
                 return True
             else:
                 return a == b
 
-        self.assertTrue(all(starmap(eq, zip(metas, metas_exp))))
+        self.assertTrue(all(starmap(equal, zip(metas, metas_exp))))
 
         x, y, metas = domain.convert([42, 13, "White", "M", "HS", "1234567"])
         assert_array_equal(x, np.array([42, 13]))
@@ -406,16 +439,10 @@ class TestDomainInit(unittest.TestCase):
         domain = Domain([DiscreteVariable("a", values="01"),
                          DiscreteVariable("b", values="01")],
                         DiscreteVariable("y", values="01"))
-        table = Table(domain, [[0, 1], [1, np.NaN]], [0, 1])
-        pre1 = Continuize(Impute(table))
-        pre2 = Table(pre1.domain, table)
+        table = Table.from_list(domain, [[0, 1], [1, np.NaN]], [0, 1])
+        pre1 = Continuize()(Impute()(table))
+        pre2 = table.transform(pre1.domain)
         np.testing.assert_almost_equal(pre1.X, pre2.X)
-
-    def test_unpickling_recreates_known_domains(self):
-        Variable._clear_all_caches()
-        domain = Domain([])
-        unpickled_domain = pickle.loads(pickle.dumps(domain))
-        self.assertTrue(hasattr(unpickled_domain, '_known_domains'))
 
     def test_different_domains_with_same_attributes_are_equal(self):
         domain1 = Domain([])
@@ -462,6 +489,70 @@ class TestDomainInit(unittest.TestCase):
             self.assertEqual(c1.metas, metas)
 
         self.assertLessEqual(time() - start, 1)
+
+    def test_copy(self):
+        age.number_of_decimals = 5
+        attributes = (age, gender, income)
+
+        domain = Domain(attributes, [race], [ssn])
+
+        new_domain = domain.copy()
+        new_domain[age].number_of_decimals = 10
+
+        self.assertEqual(domain[age].number_of_decimals, 5)
+        self.assertEqual(new_domain[age].number_of_decimals, 10)
+
+    def test_domain_conversion_sparsity(self):
+        destination = Domain(
+            attributes=[
+                ContinuousVariable(name='a'),
+                ContinuousVariable(name='b'),
+                ContinuousVariable(name='c'),
+            ],
+            class_vars=[DiscreteVariable('d', values=('e', ))],
+            metas=[StringVariable('f')]
+        )
+
+        # all dense
+        source = Domain(attributes=[])
+        conversion = DomainConversion(source, destination)
+        self.assertFalse(conversion.sparse_X)
+        self.assertFalse(conversion.sparse_Y)
+        self.assertFalse(conversion.sparse_metas)
+
+        # set destination attributes as sparse
+        for a in destination.attributes:
+            a.sparse = True
+        source = Domain(attributes=[])
+        conversion = DomainConversion(source, destination)
+        self.assertTrue(conversion.sparse_X)
+        self.assertFalse(conversion.sparse_Y)
+        self.assertFalse(conversion.sparse_metas)
+
+        # set all destination variable as sparse
+        for a in chain(destination.variables, destination.metas):
+            a.sparse = True
+        source = Domain(attributes=[])
+        conversion = DomainConversion(source, destination)
+        self.assertTrue(conversion.sparse_X)
+        self.assertTrue(conversion.sparse_Y)
+        self.assertFalse(conversion.sparse_metas)
+
+    def test_get_item_similar_vars(self):
+        a = DiscreteVariable("Cluster", values=["c"])
+        var1 = a.renamed("Cluster x")
+        var2 = DiscreteVariable("Cluster", values=["a", "b"])
+
+        domain = Domain(
+            [],
+            metas=[var1, var2]
+        )
+        # pylint: disable=protected-access
+        self.assertDictEqual(
+            {-1: -1, -2: -2, var1: -1, var2: -2, var1.name: -1, var2.name: -2},
+            domain._indices
+        )
+        self.assertIs(domain[domain.metas[0]], domain.metas[0])
 
 
 class TestDomainFilter(unittest.TestCase):
