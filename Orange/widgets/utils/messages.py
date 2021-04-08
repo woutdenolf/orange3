@@ -309,6 +309,13 @@ class WidgetMessagesMixin(MessagesMixin):
         bar_background = "#ceceff"
         bar_icon = QStyle.SP_MessageBoxInformation
 
+    class Processing(MessageGroup):
+        """Base class for groups of information messages in widgets"""
+        severity = 0
+        icon_path = None
+        bar_background = "#ceceff"
+        bar_icon = QStyle.SP_MessageBoxInformation
+
     def __init__(self):
         super().__init__()
         self.message_bar = self.message_label = self.message_icon = None
@@ -402,6 +409,10 @@ class WidgetMessagesMixin(MessagesMixin):
         if not isinstance(text_or_id, str) and text_or_id is not None:
             warn("'{}' with id is deprecated; use {} class".
                  format(what, what.title()), stacklevel=3)
+
+    def processing_info(self, text_or_id=None, text=None, shown=True):
+        self._warn_obsolete(text_or_id, "processing")
+        self.Processing._add_general(text_or_id, text, shown)
 
     def information(self, text_or_id=None, text=None, shown=True):
         self._warn_obsolete(text_or_id, "information")

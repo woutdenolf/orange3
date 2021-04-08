@@ -774,6 +774,8 @@ class Message(object):
     Information = QStyle.SP_MessageBoxInformation
     Warning = QStyle.SP_MessageBoxWarning
     Critical = QStyle.SP_MessageBoxCritical
+    # some information regarding processing
+    Processing = QStyle.SP_MessageBoxInformation
 
     def __init__(self, text, persistent_id, icon=None, moreurl=None):
         assert isinstance(text, str)
