@@ -56,6 +56,8 @@ MAX_LOG_FILE = 10
 
 LOG_FILE_NAME = 'orange.log'
 
+LOG_FOLDER = '/var/log/orange'
+
 
 def fix_osx_10_9_private_font():
     # Fix fonts on Os X (QTBUG 47206, 40833, 32789)
