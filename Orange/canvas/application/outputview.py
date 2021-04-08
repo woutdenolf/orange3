@@ -238,17 +238,23 @@ def update_font(basefont, weight=None, italic=None, underline=None,
     return font
 
 
-class formater(object):
+class Formatter(QObject):
     def __init__(self, outputview, charformat):
+        # type: (OutputView, QTextCharFormat) -> None
+        # Parent to the output view. Ensure the formatter does not outlive it.
+        super().__init__(outputview)
         self.outputview = outputview
         self.charformat = charformat
 
+    @Slot(str)
     def write(self, string):
         self.outputview.writeWithFormat(string, self.charformat)
 
+    @Slot(object)
     def writelines(self, lines):
-        self.outputview.writelines(lines, self.charformat)
+        self.outputview.writelinesWithFormat(lines, self.charformat)
 
+    @Slot()
     def flush(self):
         self.outputview.flush()
 
@@ -256,7 +262,7 @@ class formater(object):
                  italic=None, underline=None, font=None):
         charformat = update_char_format(self.charformat, color, background,
                                         weight, italic, underline, font)
-        return formater(self.outputview, charformat)
+        return Formatter(self.outputview, charformat)
 
     def unformated(self, color=None, background=None, weight=None,
                  italic=None, underline=None, font=None):
@@ -271,6 +277,16 @@ class formater(object):
     def __exit__(self, *args):
         self.outputview = None
         self.charformat = None
+        self.setParent(None)
+
+
+class formater(Formatter):
+    def __init__(self, *args, **kwargs):
+        warnings.warn(
+            "Deprecated: Renamed to Formatter.",
+            DeprecationWarning, stacklevel=2
+        )
+        super().__init__(*args, **kwargs)
 
 
 class TextStream(QObject):
