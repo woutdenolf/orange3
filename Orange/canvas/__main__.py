@@ -19,7 +19,7 @@ import pkg_resources
 
 from AnyQt.QtGui import QFont, QColor, QDesktopServices
 from AnyQt.QtWidgets import QMessageBox
-from AnyQt.QtCore import Qt, QDir, QUrl, QSettings
+from AnyQt.QtCore import Qt, QDir, QUrl, QSettings, QLocale
 
 import AnyQt.importhooks
 
@@ -222,6 +222,7 @@ def main(argv=None):
     log.debug("Starting CanvasApplicaiton with argv = %r.", qt_argv)
     app = CanvasApplication(qt_argv)
 
+    QLocale.setDefault(QLocale(QLocale.English))
     # NOTE: config.init() must be called after the QApplication constructor
     config.init()
 
