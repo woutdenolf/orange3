@@ -142,6 +142,7 @@ def check_for_updates():
                     self.resultReady.emit(contents)
 
         def compare_versions(latest):
+            return
             version = pkg_resources.parse_version
             skipped = settings.value('startup/latest-skipped-version', "", type=str)
             if version(latest) <= version(current) or \
