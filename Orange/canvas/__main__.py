@@ -401,8 +401,8 @@ def main(argv=None):
     stream_hander.setLevel(level=levels[options.log_level])
     rootlogger.addHandler(stream_hander)
 
-    if os.path.exists(LOG_FOLDER):
-        rootlogger.warning("%s is not existing. Can't save log file"
+    if not os.path.exists(LOG_FOLDER):
+        rootlogger.warning("%s doesn't exists. Can't save log file"
                            "" % LOG_FOLDER)
 
     if not os.access(LOG_FOLDER, os.W_OK):
