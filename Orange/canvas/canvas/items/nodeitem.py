@@ -925,8 +925,7 @@ class NodeItem(QGraphicsWidget):
                                                    icon=self._advancement_icon.currentIcon(),
                                                    iconSize=QSize(16, 16))
             self._advancement_icon.register(self.processingItem)
-
-        self.processingItem.hide()
+            self.processingItem.hide()
 
         self.prepareGeometryChange()
         self.__boundingRect = None
